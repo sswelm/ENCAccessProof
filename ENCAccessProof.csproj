@@ -10,6 +10,11 @@
     <DebugType>portable</DebugType>
   </PropertyGroup>
 
+  <!-- baker/ is the Unity *editor* mesh baker (needs UnityEditor); it ships in the mod, not this plugin. -->
+  <ItemGroup>
+    <Compile Remove="baker\**\*.cs" />
+  </ItemGroup>
+
   <!-- net471 builds with just the .NET SDK (this package IS on nuget.org). -->
   <ItemGroup>
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />

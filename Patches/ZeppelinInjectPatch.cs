@@ -23,7 +23,7 @@ namespace ENCAccessProof
         private static object ourSkeleton;
         private static object boundFxMgr;   // the FX mesh-content manager our mesh is currently uploaded against
         private static int ourMeshIndex;
-        private static bool tried, loaded, uploaded;
+        private static bool tried, loaded, uploaded, dumped;
 
         private static MethodBase TargetMethod()
         {
@@ -41,6 +41,8 @@ namespace ENCAccessProof
             // ONLY the missile SKELETON (not its projectile/effect collections, which would break the bomb FX)
             if (name.IndexOf("CruiseMissile", StringComparison.OrdinalIgnoreCase) >= 0 && name.IndexOf("Skeleton", StringComparison.OrdinalIgnoreCase) >= 0)
             {
+                DumpRenderInfo(__instance, __result);   // shakee's request (once): animation/skeleton/matref/shader-layer
+
                 // (Re)upload our mesh into the GPU mesh-content manager if needed (gives it a valid MeshIndex).
                 // Re-uploads after a save load / FX reload, when the manager instance changes.
                 EnsureUploaded(__instance, __result);
@@ -73,6 +75,73 @@ namespace ENCAccessProof
                 Plugin.Log.LogInfo($"[ENCProof] repointed missile mesh index {old} -> {idx} (reapplied after an engine/load reset)");
             }
             catch (Exception e) { Plugin.Log.LogError("[ENCProof] swap error: " + e); }
+        }
+
+        // shakee's request: dump the unit's animation + skeleton + the full material-ref -> shader-layer catalog to a
+        // shareable file, to see "how a custom material needs to look". Runs once, when the FX content is loaded.
+        private static void DumpRenderInfo(object mgr, object missileSkel)
+        {
+            if (dumped) return;
+            try
+            {
+                var content = GetMember(mgr, "Content");
+                var entries = content != null ? GetMember(content, "OutputLayerEntries") as Array : null;
+                if (entries == null || entries.Length == 0) return;   // FX content not ready yet -> retry next call
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("=== ENC RENDER DUMP  (animation / skeleton / material ref / shader layer) ===");
+
+                // --- SKELETON ---
+                sb.AppendLine("\n[SKELETON]  " + (missileSkel as UnityEngine.Object)?.name);
+                sb.AppendLine("  SkeletonId=" + GetMember(missileSkel, "SkeletonId") + "  BonesCount=" + GetMember(missileSkel, "BonesCount"));
+                if (GetMember(missileSkel, "BoneInfos") is Array bones)
+                {
+                    string names = "";
+                    foreach (var b in bones) names += (names.Length > 0 ? ", " : "") + GetMember(b, "Name");
+                    sb.AppendLine("  bones=[" + names + "]");
+                }
+                if (AccessTools.Field(missileSkel.GetType(), "skinnedMeshInfos")?.GetValue(missileSkel) is Array smi)
+                    foreach (var it in smi)
+                    {
+                        var fx = AccessTools.Field(it.GetType(), "FxMeshContent")?.GetValue(it);
+                        sb.AppendLine("  mesh: name=" + GetMember(it, "MeshName") + " MeshIndex=" + GetMember(it, "MeshIndex") +
+                                      " format=" + (fx != null ? GetMember(fx, "encodingFormat") : null) +
+                                      " fxGuid=" + (fx != null ? GetMember(fx, "Guid") : null));
+                    }
+
+                // --- ANIMATION ---
+                sb.AppendLine("\n[ANIMATION]");
+                sb.AppendLine("  AnimatorController=" + GetMember(missileSkel, "AnimatorController"));
+                sb.AppendLine("  AnimatorOverrideController=" + GetMember(missileSkel, "AnimatorOverrideController"));
+                var animClips = GetMember(content, "AnimationClipCollections") as Array;
+                sb.AppendLine("  AnimationClipCollections count=" + (animClips != null ? animClips.Length : 0));
+
+                // --- MATERIAL REF -> SHADER (OUTPUT) LAYER CATALOG ---
+                // Each FxOutputLayer holds RenderOutputs[]; each RenderOutput carries the actual material-asset GUIDs
+                // (high/mid res) + keyword, and (once loaded) a runtime render material whose shader we can name.
+                sb.AppendLine("\n[OUTPUT-LAYER CATALOG]  matRef GUID -> FxOutputLayer -> renderOutputs{material GUIDs, shader}   (count=" + entries.Length + ")");
+                foreach (var e in entries)
+                {
+                    var ol = GetMember(e, "OutputLayerInstance");
+                    sb.Append("  matRef=" + GetMember(e, "Material") + "  layer=" + ((ol as UnityEngine.Object)?.name ?? "null") +
+                              "  preview=" + (ol != null ? GetMember(ol, "previewMaterialRef") : null));
+                    if (ol != null && GetMember(ol, "RenderOutputs") is Array outs)
+                        foreach (var ro in outs)
+                        {
+                            var rm = GetMember(ro, "renderMaterial") as UnityEngine.Object;
+                            string shader = rm != null ? (AccessTools.Property(rm.GetType(), "shader")?.GetValue(rm) as UnityEngine.Object)?.name ?? "null" : "null";
+                            sb.Append("  {highResMat=" + GetMember(ro, "highResMaterialGuid") + " midResMat=" + GetMember(ro, "midResMaterialGuid") +
+                                      " kw='" + GetMember(ro, "materialKeyword") + "' runtimeMat=" + (rm?.name ?? "null") + " shader=" + shader + "}");
+                        }
+                    sb.AppendLine();
+                }
+
+                var path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "ENC_RenderDump.txt");
+                System.IO.File.WriteAllText(path, sb.ToString());
+                Plugin.Log.LogInfo("[ENCProof] render dump (" + entries.Length + " output layers) written to " + path);
+                dumped = true;
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[ENCProof] dump error: " + ex); }
         }
 
         // (Re)upload our mesh into the GPU mesh-content manager. Re-runs when the manager instance changes (a save
