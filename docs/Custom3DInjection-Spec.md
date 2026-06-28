@@ -1,10 +1,11 @@
 # Humankind Custom 3D Asset Injection — Progress, Mechanism + Asset Spec
 
-*Status: **✅ WORKING (2026-06-28). A custom mesh renders in the live game.** A hand-built cube now draws on the
-zeppelin/cruise-missile unit and bombards with no hang. THE KEY: do NOT inject a custom skeleton (that's what hung).
-Keep the unit's REAL skeleton + animation + material, and only repoint its mesh entry's GPU `MeshIndex` to a custom
-mesh we upload at runtime. Custom GEOMETRY is solved; custom TEXTURE/MATERIAL is the next frontier (the box wears the
-missile's material — the "amplitude passable material+shader" problem shakee is also stuck on).*
+*Status: **✅ WORKING (2026-06-28). A fully custom unit — mesh AND texture — renders in the live game, no exe
+patching.** A procedural zeppelin (hull + gondolas + tail fins) wearing a procedural cream+crimson skin draws on the
+zeppelin/cruise-missile unit and bombards, surviving save loads. THE KEY: do NOT inject a custom skeleton (that's what
+hung). Keep the unit's REAL skeleton + animation, repoint its mesh entry's GPU `MeshIndex` to a mesh we upload at
+runtime, and override the render material's `_MainTex` (re-applied each frame to beat the async proxy rebind). Both
+the mesh and the texture are generated/baked by us; nothing is exe-level.*
 
 ## ✅ THE WORKING RECIPE (custom geometry on an animated unit)
 
@@ -37,6 +38,33 @@ single `Base` bone. Mesh-space axes that matched in-game: **+Y/-Y = long axis (f
 silently (obfuscated, untraceable). Reusing the real skeleton avoids that path entirely. Proven by: it hung
 identically whether our fragment mesh was empty (0) or real (683) — i.e. independent of the mesh — so it was the
 skeleton object; swapping only the mesh on the real skeleton then worked.
+
+## ✅ CUSTOM TEXTURE (runtime, no art)
+
+Every unit shares ONE shader: **`Amplitude/ParticleSkinnedMeshRender`** (confirmed across all 643 output layers).
+The look is the *material*, not the shader. Each unit's material is a 6-map PBR set; the slot names (from the dump):
+`_MainTex` = AlbedoTransparency, `_NormalMap`, `_MetallicMap`, `_RoughnessMap`, `_AmbiantOcclusionMap` [sic],
+`_EmissiveMap`.
+
+**Runtime injection (plugin-only, what we did):**
+1. Find the unit's `FxOutputLayer` (via `AnimationManagerContent.OutputLayerEntries`, matched by name/matRef).
+2. For each `FxOutputLayer.RenderOutputs[]`, set our `Texture2D` on `currentRenderMaterial._MainTex`
+   (`material.SetTexture("_MainTex", tex)`). The draw uses `currentRenderMaterial` via `DrawProceduralIndirect`.
+3. **Gotcha — async proxies.** `useProxys=True`: the `*_Proxy` textures load asynchronously and rebind `_MainTex`
+   over ours if set once. **Fix: re-apply every frame** from `Plugin.Update` (the BaseUnityPlugin is a MonoBehaviour),
+   so we win once the proxy settles.
+
+Caveats: this overrides the *shared* material (global to that matRef), and our procedural mesh has only primitive UVs
+(the texture wraps as rings, not a designed unwrap).
+
+**Cleaner per-unit / polished skin (data route, shakee-enabled):** override the unit's texture *asset* in the Mod
+Editor (vanilla textures are importable/overridable from the archives — `Data/Units/Textures`, each with full-res +
+MidRes + Proxy), or author a new Material on `Amplitude/ParticleSkinnedMeshRender` + a new `FxOutputLayer` and
+register it in `OutputLayerEntries` (the one engine-baked step, which the plugin can do at runtime).
+
+The plugin dumps the skeleton + animation + the full matRef→FxOutputLayer→material/shader catalog + texture slots to
+`<Humankind>/ENC_RenderDump.txt` (see `DumpRenderInfo` in `Patches/ZeppelinInjectPatch.cs`) — the reference for
+authoring or reusing any unit's material.
 
 **Next frontier — custom material/texture:** the mesh wears the borrowed unit's material. A custom texture needs an
 Amplitude-passable material + `FxOutputLayer` (`OutputLayerFromMaterialGuid`), which shakee flags as "#3 of the

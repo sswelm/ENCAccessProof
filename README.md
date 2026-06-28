@@ -22,8 +22,11 @@ compute). Keep the unit's REAL skeleton and only swap the **mesh** it draws.
    - **Reload-robust:** re-apply the swap on every call (the engine resets it on re-present/turn), and re-upload when
      the FX manager instance changes (a save load rebuilds it).
 
-The model wears the borrowed unit's material — a custom **texture/material** is the remaining frontier (the
-"amplitude-passable material + shader" problem).
+A custom **texture** works too, runtime-injected with no art: set our `Texture2D` on the unit material's `_MainTex`
+and re-apply it each frame from `Plugin.Update` (to beat the async proxy-texture rebind). Every unit shares one shader
+(`Amplitude/ParticleSkinnedMeshRender`), so the look is purely the material — see the texture section in
+[docs/Custom3DInjection-Spec.md](docs/Custom3DInjection-Spec.md). So **mesh and texture are both custom**, entirely
+via the plugin (a polished per-unit skin still wants real UVs + texture assets).
 
 ## Also proves (foundation)
 - Plugin **loads** under BepInEx; a Harmony hook **fires in-game**.
