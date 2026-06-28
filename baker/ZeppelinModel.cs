@@ -1,10 +1,15 @@
-// ZeppelinModel.cs  (TEMPORARY, ENC editor) — build a simple zeppelin (airship) model rigged to ONE "Base"
-// bone, then bake it into an Amplitude Skeleton/MeshCollection asset that ships in the mod. The BepInEx
-// plugin then registers that skeleton at runtime and points the zeppelin unit at it. Because the mesh + its
-// skeleton are authored together (consistent), the pawn binds cleanly — one zeppelin, no detached/doubled parts.
+// ZeppelinModel.cs  (ENC editor) — bake a real airship FBX into an Amplitude Skeleton/MeshCollection (+ a texture
+// atlas) that ships in the mod, rigged 100% to ONE "Base" bone. The BepInEx plugin loads the skeleton + atlas at
+// runtime and points the zeppelin unit at them (mesh via MeshIndex swap, texture via _MainTex).
 //
-// RUN:  Tools > Zeppelin > Build Zeppelin Skeleton
-// Then BUILD the mod and tell Cloud the two GUIDs it logs.
+// MODEL: "Дирижабль HD" by MMD_SonicNewYear — Sketchfab, CC-BY (Attribution). Download the FBX + hull albedo PNGs
+//        into Assets/Resources/Airship/  (R00_Baloon.fbx, R00_Baloon_hull_0_albedo.png, R00_Baloon_hull_1_albedo.png).
+//
+// What this does to make a third-party model engine-ready: combine all parts into ONE mesh, atlas the hull albedos
+// and remap UVs, force the atlas opaque + paint over its near-black UV dead-zone, normalize scale/orientation, and
+// fix the model's inconsistent winding (radial-outward) so it renders correctly single-sided.
+//
+// RUN:  Tools > Zeppelin > Build Zeppelin Skeleton    (then BUILD the mod)
 
 using System;
 using System.Collections.Generic;
@@ -18,38 +23,103 @@ public static class ZeppelinModel
 {
     const string PrefabPath   = "Assets/Resources/Zeppelin_Model.prefab";
     const string SkeletonPath = "Assets/Resources/Zeppelin_Skeleton.asset";
+    const string FbxPath      = "Assets/Resources/Airship/R00_Baloon.fbx";
+    const string TexDir       = "Assets/Resources/Airship/";
+    const string AtlasPath    = "Assets/Resources/Airship/Zeppelin_Atlas.asset";
+    const float  TargetLength = 4.0f;                              // long-axis size (the procedural hull was ~4)
+    static readonly Vector3 OrientEuler = new Vector3(0f, 180f, 0f); // 180° roll about the long axis -> right-side up
 
     [MenuItem("Tools/Zeppelin/Build Zeppelin Skeleton")]
     static void Build()
     {
         if (!AssetDatabase.IsValidFolder("Assets/Resources")) AssetDatabase.CreateFolder("Assets", "Resources");
 
-        // --- 1) procedural ZEPPELIN mesh (ref: Zeppelin.png): an elongated ellipsoid hull + 3 engine gondolas
-        //        slung underneath + a cross of 4 tail fins, all combined into ONE skinned mesh.
-        //        Axes in mesh space: Y = long axis (the missile's long axis); underside (gondolas) = -Z; rear = -Y.
-        //        If the gondolas come out on the side/top instead of underneath, flip the Z sign on them. ---
-        var parts = new List<CombineInstance>();
-        var temps = new List<GameObject>();
-        void AddPart(PrimitiveType type, Vector3 pos, Vector3 scale)
-        {
-            var go = GameObject.CreatePrimitive(type);
-            temps.Add(go);
-            parts.Add(new CombineInstance { mesh = go.GetComponent<MeshFilter>().sharedMesh, transform = Matrix4x4.TRS(pos, Quaternion.identity, scale) });
-        }
-        // Travel/forward direction is mesh -Y (proven in-game), so the NOSE is at -Y, the tail fins trail at +Y,
-        // and the gondolas sit slightly forward of centre (toward -Y).
-        AddPart(PrimitiveType.Sphere, Vector3.zero, new Vector3(0.95f, 4.0f, 0.95f));               // hull (cigar)
-        AddPart(PrimitiveType.Cube, new Vector3(0f, -0.7f, -0.52f), new Vector3(0.16f, 0.28f, 0.22f)); // fore gondola
-        AddPart(PrimitiveType.Cube, new Vector3(0f, -0.1f, -0.55f), new Vector3(0.18f, 0.34f, 0.26f)); // control car
-        AddPart(PrimitiveType.Cube, new Vector3(0f, 0.5f, -0.52f), new Vector3(0.16f, 0.28f, 0.22f));  // aft gondola
-        AddPart(PrimitiveType.Cube, new Vector3(0f, 1.6f, 0.5f), new Vector3(0.05f, 0.7f, 0.5f));     // tail fin top
-        AddPart(PrimitiveType.Cube, new Vector3(0f, 1.6f, -0.5f), new Vector3(0.05f, 0.7f, 0.5f));    // tail fin bottom
-        AddPart(PrimitiveType.Cube, new Vector3(0.5f, 1.6f, 0f), new Vector3(0.5f, 0.7f, 0.05f));     // tail fin right
-        AddPart(PrimitiveType.Cube, new Vector3(-0.5f, 1.6f, 0f), new Vector3(0.5f, 0.7f, 0.05f));    // tail fin left
+        // --- 1) load the real airship FBX (CC-BY, "Дирижабль HD" by MMD_SonicNewYear), atlas its hull albedos, and
+        //        COMBINE every part into ONE mesh with remapped UVs. Then normalize: recenter, scale the long axis to
+        //        TargetLength, align the long axis to Y (the missile's long axis; forward = -Y downstream via bindpose). ---
+        var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(FbxPath);
+        if (fbx == null) { Debug.LogError("[Zeppelin] FBX not found at " + FbxPath + " — import it first."); return; }
+        var inst = (GameObject)UnityEngine.Object.Instantiate(fbx);
 
-        var mesh = new Mesh { name = "Zeppelin_ModelMesh" };
+        // atlas the two hull albedos (loaded readable straight from PNG bytes)
+        var tex0 = LoadPng(TexDir + "R00_Baloon_hull_0_albedo.png");
+        var tex1 = LoadPng(TexDir + "R00_Baloon_hull_1_albedo.png");
+        var atlas = new Texture2D(2048, 2048, TextureFormat.RGBA32, false) { name = "Zeppelin_Atlas" };
+        var rects = atlas.PackTextures(new[] { tex0, tex1 }, 2, 2048, false);
+        // force opaque (the "AlbedoTransparency" alpha can read as cutout) AND kill the big near-black UV dead-zone in
+        // the hull albedo -> the top of the hull maps onto it and renders black; replace it with hull grey.
+        var ap = atlas.GetPixels32();
+        for (int i = 0; i < ap.Length; i++)
+        {
+            ap[i].a = 255;
+            if (ap[i].r < 32 && ap[i].g < 32 && ap[i].b < 32) { ap[i].r = 160; ap[i].g = 160; ap[i].b = 168; }
+        }
+        atlas.SetPixels32(ap); atlas.Apply();
+
+        // gather every submesh, remap its UVs into the atlas rect for its material, assemble in model space
+        var parts = new List<CombineInstance>();
+        var rootInv = inst.transform.worldToLocalMatrix;
+        int subCount = 0;
+        foreach (var mf in inst.GetComponentsInChildren<MeshFilter>())
+        {
+            var m = mf.sharedMesh; if (m == null) continue;
+            var rend = mf.GetComponent<MeshRenderer>();
+            var mats = rend != null ? rend.sharedMaterials : null;
+            var local = rootInv * mf.transform.localToWorldMatrix;
+            var verts = m.vertices; var norms = m.normals; var uv = m.uv;
+            for (int s = 0; s < m.subMeshCount; s++)
+            {
+                string mn = (mats != null && s < mats.Length && mats[s] != null) ? mats[s].name.ToLower() : "";
+                var r = mn.Contains("hull_0") ? rects[0] : rects[1];   // hull_0 -> tex0 region; everything else -> hull_1
+                var sub = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32, vertices = verts };
+                if (norms != null && norms.Length == verts.Length) sub.normals = norms;
+                if (uv != null && uv.Length == verts.Length)
+                {
+                    var newUv = new Vector2[uv.Length];
+                    for (int i = 0; i < uv.Length; i++) newUv[i] = new Vector2(r.x + uv[i].x * r.width, r.y + uv[i].y * r.height);
+                    sub.uv = newUv;
+                }
+                sub.triangles = m.GetTriangles(s);
+                parts.Add(new CombineInstance { mesh = sub, transform = local });
+                subCount++;
+            }
+        }
+        UnityEngine.Object.DestroyImmediate(inst);
+
+        var mesh = new Mesh { name = "Zeppelin_ModelMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         mesh.CombineMeshes(parts.ToArray(), true, true);
-        foreach (var g in temps) UnityEngine.Object.DestroyImmediate(g);
+
+        // normalize: recenter, uniform-scale longest axis to TargetLength, align longest axis -> Y (+ OrientEuler tweak)
+        mesh.RecalculateBounds();
+        var bb = mesh.bounds; var size = bb.size;
+        float longest = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+        float scl = longest > 0f ? TargetLength / longest : 1f;
+        Quaternion align = (size.x >= size.y && size.x >= size.z) ? Quaternion.FromToRotation(Vector3.right, Vector3.up)
+                         : (size.z >= size.x && size.z >= size.y) ? Quaternion.FromToRotation(Vector3.forward, Vector3.up)
+                         : Quaternion.identity;
+        Quaternion rot = Quaternion.Euler(OrientEuler) * align;
+        var vv = mesh.vertices; var nn = mesh.normals;
+        for (int i = 0; i < vv.Length; i++) vv[i] = rot * ((vv[i] - bb.center) * scl);
+        if (nn != null && nn.Length == vv.Length) for (int i = 0; i < nn.Length; i++) nn[i] = rot * nn[i];
+        mesh.vertices = vv; if (nn != null && nn.Length == vv.Length) mesh.normals = nn;
+
+        // the model's winding AND its authored normals are inconsistent (faces wound inside-out -> culled/dark top).
+        // The hull is convex, so "outward" = the direction from the centred origin to each triangle's centroid. Wind
+        // every face that way (geometry-based, no reliance on the model's bad normals); RecalculateNormals (below)
+        // then yields clean outward normals from the now-consistent winding.
+        {
+            var v = mesh.vertices; var t = mesh.triangles; int flipped = 0;
+            for (int i = 0; i < t.Length; i += 3)
+            {
+                int a = t[i], b = t[i + 1], c = t[i + 2];
+                Vector3 geo = Vector3.Cross(v[b] - v[a], v[c] - v[a]);
+                Vector3 outward = v[a] + v[b] + v[c];   // centroid from the centred origin ~ outward for a convex hull
+                if (Vector3.Dot(geo, outward) < 0f) { t[i + 1] = c; t[i + 2] = b; flipped++; }
+            }
+            mesh.triangles = t;
+            Debug.Log($"[Zeppelin] winding-fixed {flipped}/{t.Length / 3} tris (radial-outward)");
+        }
+        Debug.Log($"[Zeppelin] FBX baked: submeshes={subCount}, verts={mesh.vertexCount}, atlas={atlas.width}x{atlas.height}, rawBounds={size}");
 
         // --- 2) rig: root -> Dummy_Root -> Base  (same shape as the cruise-missile rig) ---
         var root  = new GameObject("Zeppelin_Model");
@@ -69,7 +139,8 @@ public static class ZeppelinModel
         mesh.RecalculateTangents();   // the game's VertexEncodingFormat 6 needs tangents — missing => GPU hang
         AssetDatabase.CreateAsset(mesh, "Assets/Resources/Zeppelin_ModelMesh.asset");
 
-        var mat = new Material(Shader.Find("Standard")) { name = "Zeppelin_ModelMat", color = new Color(0.75f, 0.75f, 0.8f) };
+        AssetDatabase.CreateAsset(atlas, AtlasPath);   // ship the atlas; the plugin loads it as the unit's _MainTex
+        var mat = new Material(Shader.Find("Standard")) { name = "Zeppelin_ModelMat", mainTexture = atlas };
         AssetDatabase.CreateAsset(mat, "Assets/Resources/Zeppelin_ModelMat.mat");
 
         var meshGO = new GameObject("Unit_Era6_CruiseMissile_01"); meshGO.transform.SetParent(root.transform);
@@ -114,19 +185,21 @@ public static class ZeppelinModel
         if (adbType != null)
         {
             var getGuid = adbType.GetMethod("GetAssetGUID", new[] { typeof(UnityEngine.Object) });
-            object sg = null, pg = null;
-            try { sg = getGuid?.Invoke(null, new object[] { skel }); pg = getGuid?.Invoke(null, new object[] { prefab }); } catch (Exception e) { ampInfo = "GetAssetGUID failed: " + e.Message; }
+            object sg = null, pg = null, ag = null;
+            var atlasAsset = AssetDatabase.LoadAssetAtPath<Texture2D>(AtlasPath);
+            try { sg = getGuid?.Invoke(null, new object[] { skel }); pg = getGuid?.Invoke(null, new object[] { prefab }); ag = getGuid?.Invoke(null, new object[] { atlasAsset }); } catch (Exception e) { ampInfo = "GetAssetGUID failed: " + e.Message; }
             if (sg != null)
             {
                 string Fields(object g)
                 {
+                    if (g == null) return "(null)";
                     var sb = new System.Text.StringBuilder();
                     foreach (var f in g.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                         sb.Append($"{f.Name}({f.FieldType.Name})={f.GetValue(g)} ");
                     return sb.ToString();
                 }
-                ampInfo = $"Amplitude skeleton GUID = {sg}\nAmplitude prefab GUID   = {pg}\nAmplitude Guid type     = {sg.GetType().FullName}\n" +
-                          $"skeleton Guid fields: {Fields(sg)}\nprefab Guid fields:   {Fields(pg)}";
+                ampInfo = $"Amplitude skeleton GUID = {sg}\nAmplitude prefab GUID   = {pg}\nAmplitude atlas GUID    = {ag}\nAmplitude Guid type     = {sg.GetType().FullName}\n" +
+                          $"skeleton Guid fields: {Fields(sg)}\nprefab Guid fields:   {Fields(pg)}\natlas Guid fields:    {Fields(ag)}";
             }
         }
 
@@ -134,6 +207,15 @@ public static class ZeppelinModel
                      "Now: BUILD the mod, then give Cloud both GUIDs.";
         File.WriteAllText(Path.Combine(Directory.GetParent(Application.dataPath).FullName, "ZeppelinModelGuids.txt"), report);
         Debug.Log(report);
+    }
+
+    // load a PNG straight from disk into a readable Texture2D (bypasses import settings, so PackTextures works)
+    static Texture2D LoadPng(string assetPath)
+    {
+        string full = Path.Combine(Directory.GetParent(Application.dataPath).FullName, assetPath);
+        var t = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = Path.GetFileNameWithoutExtension(assetPath) };
+        t.LoadImage(File.ReadAllBytes(full));
+        return t;
     }
 
     static Type[] SafeTypes(Assembly a)

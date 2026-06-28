@@ -15,6 +15,8 @@ namespace ENCAccessProof
     {
         // Amplitude.Framework.Guid fields for our baked Zeppelin_Skeleton.asset (from the editor dump).
         const int SkelA = 781638270, SkelB = 1224895347, SkelC = -2137756227, SkelD = -1885149832;
+        // ...and for the baked Zeppelin_Atlas.asset (the model's real hull textures, atlased).
+        const int TexA = 1762477492, TexB = 1213769387, TexC = -475189569, TexD = 500770371;
 
         // The pawn's fragment looks up its mesh BY NAME (FragmentEntry.Load -> GetFxMeshIndex(SkinnedMeshPath)),
         // and SkinnedMeshPath is the missile's mesh name. Our entry must carry that name to be found.
@@ -89,7 +91,7 @@ namespace ENCAccessProof
                 var content = GetMember(mgr, "Content");
                 var entries = content != null ? GetMember(content, "OutputLayerEntries") as Array : null;
                 if (entries == null) return;
-                if (ourTex == null) ourTex = BuildZeppelinTexture();
+                if (ourTex == null) ourTex = LoadAtlasTexture() ?? BuildZeppelinTexture();   // real model atlas, else procedural
 
                 foreach (var e in entries)
                 {
@@ -122,19 +124,46 @@ namespace ENCAccessProof
             catch { }
         }
 
-        // A procedural, obviously-custom airship skin: cream hull with crimson circumferential bands.
+        // Load the baked airship atlas (the model's real hull textures) from the shipped bundle, by GUID — same
+        // pattern as loading the skeleton. Returns null if it's not in the bundle yet (then we fall back to procedural).
+        private static UnityEngine.Texture2D LoadAtlasTexture()
+        {
+            try
+            {
+                var guid = MakeGuid(TexA, TexB, TexC, TexD);
+                var adb = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
+                if (guid == null || adb == null) return null;
+                var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition);
+                if (load == null) return null;
+                var g = load.MakeGenericMethod(typeof(UnityEngine.Texture2D));
+                var ps = g.GetParameters();
+                var tex = g.Invoke(null, ps.Length == 1 ? new[] { guid } : new[] { guid, null }) as UnityEngine.Texture2D;
+                Plugin.Log.LogInfo("[ENCProof] airship atlas texture: " + (tex != null ? tex.name : "NOT FOUND (using procedural)"));
+                return tex;
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("[ENCProof] atlas load failed: " + e.Message); return null; }
+        }
+
+        // A procedural real-zeppelin skin (ref: the "L 2"): warm tan canvas with faint structural panels and a gentle
+        // around-the-hull shade. UVs: y ~ along the length (rings), x ~ around the circumference (longitudinal seams).
         private static UnityEngine.Texture2D BuildZeppelinTexture()
         {
             const int S = 256;
             var tex = new UnityEngine.Texture2D(S, S, UnityEngine.TextureFormat.RGBA32, false) { name = "Zeppelin_CustomTex" };
-            var cream = new UnityEngine.Color(0.88f, 0.83f, 0.70f);
-            var band = new UnityEngine.Color(0.60f, 0.16f, 0.14f);
+            var baseCol = new UnityEngine.Color(0.84f, 0.77f, 0.62f);   // warm tan/cream canvas
             var px = new UnityEngine.Color[S * S];
             for (int y = 0; y < S; y++)
-            {
-                bool stripe = (y % 64) < 10;     // a crimson band every quarter of the texture
-                for (int x = 0; x < S; x++) px[y * S + x] = stripe ? band : cream;
-            }
+                for (int x = 0; x < S; x++)
+                {
+                    // gentle light/dark around the hull (top-lit feel): 0.82 .. 1.0
+                    float shade = 0.91f + 0.09f * UnityEngine.Mathf.Cos((x / (float)S) * 6.2831853f);
+                    // faint structural lines: circumferential rings (along length) + longitudinal seams (around)
+                    float panel = ((y % 26) < 2) ? 0.90f : 1f;   // ring frames
+                    if ((x % 32) < 1) panel *= 0.93f;            // longitudinal seam
+                    float m = shade * panel;
+                    px[y * S + x] = new UnityEngine.Color(baseCol.r * m, baseCol.g * m, baseCol.b * m, 1f);
+                }
             tex.SetPixels(px);
             tex.Apply();
             return tex;

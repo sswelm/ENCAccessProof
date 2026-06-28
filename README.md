@@ -44,6 +44,9 @@ Auto-created at `<Humankind>\BepInEx\config\community.humankind.encaccessproof.c
 Press **F8** in-game → a draggable window shows the live scan results (registry counts + matching assets) with
 **Re-scan** / **Clear** buttons. Auto-scans once when a game loads.
 
+## Real model integration
+The plugin renders a real third-party airship — **"Дирижабль HD" by MMD_SonicNewYear** ([Sketchfab](https://sketchfab.com/3d-models/hd-92734a2c283e4d889fecbb010aaf7822), **CC-BY**) — not just the procedural one. `baker/ZeppelinModel.cs` makes an arbitrary FBX engine-ready: combine all parts into one mesh, atlas the hull albedos + remap UVs, force the atlas opaque and paint over its near-black UV dead-zone, normalize scale/orientation, and fix the model's inconsistent winding (radial-outward) so it renders correctly single-sided. The plugin then loads the baked skeleton + atlas by GUID (`MeshIndex` swap for geometry, `_MainTex` for the skin). Model files aren't committed (download them per the CC-BY license into `Assets/Resources/Airship/`).
+
 ## Documentation
 Full write-ups in [`docs/`](docs/):
 - [**Custom3DInjection-Spec.md**](docs/Custom3DInjection-Spec.md) — the complete working recipe + the decompiled

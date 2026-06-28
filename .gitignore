@@ -10,3 +10,9 @@ References/
 .vs/
 .idea/
 *.suo
+
+# third-party model binaries (download per CC-BY)
+*.fbx
+*.glb
+*.gltf
+*.usdz
