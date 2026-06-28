@@ -41,6 +41,15 @@ Auto-created at `<Humankind>\BepInEx\config\community.humankind.encaccessproof.c
 Press **F8** in-game → a draggable window shows the live scan results (registry counts + matching assets) with
 **Re-scan** / **Clear** buttons. Auto-scans once when a game loads.
 
+## Documentation
+Full write-ups in [`docs/`](docs/):
+- [**Custom3DInjection-Spec.md**](docs/Custom3DInjection-Spec.md) — the complete working recipe + the decompiled
+  pipeline (AnimationManager / MeshCollection / Skeleton / PawnManager / AddOn / FragmentEntry) and how each blocker
+  fell. Start here.
+- [**Custom3DModels-Findings-Shareable.md**](docs/Custom3DModels-Findings-Shareable.md) — shareable findings & plan.
+- [**UnitPreview-Findings.md**](docs/UnitPreview-Findings.md) — the full investigation log (data-mod limits, the
+  skeleton-registry wall, the BepInEx route).
+
 ## Build
 Needs only the .NET SDK. All DLLs are local (BepInEx isn't on nuget.org — same setup as GUI-Tools/shakee).
 
