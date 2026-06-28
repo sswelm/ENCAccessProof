@@ -60,6 +60,7 @@ namespace ENCAccessProof
         private void Update()
         {
             if (Input.GetKeyDown(ToggleKey.Value)) show = !show;
+            if (RepointOnLoad.Value) ZeppelinInject.TickTexture();   // keep our texture applied past the async proxy load
         }
 
         private void OnGUI()

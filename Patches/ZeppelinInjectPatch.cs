@@ -22,8 +22,10 @@ namespace ENCAccessProof
 
         private static object ourSkeleton;
         private static object boundFxMgr;   // the FX mesh-content manager our mesh is currently uploaded against
+        private static object missileOutputLayer;   // the FxOutputLayer whose render material we re-texture each frame
+        private static UnityEngine.Texture2D ourTex;
         private static int ourMeshIndex;
-        private static bool tried, loaded, uploaded, dumped;
+        private static bool tried, loaded, uploaded, dumped, texturedLogged;
 
         private static MethodBase TargetMethod()
         {
@@ -53,6 +55,7 @@ namespace ENCAccessProof
                 // uploaded mesh. Re-apply EVERY call: the engine re-LoadIFNs the missile skeleton on re-present/reload,
                 // which resets MeshIndex back to the missile's mesh -> a one-time swap reverts. Idempotent.
                 SwapMeshIndexInto(__result, ourMeshIndex);
+                ApplyCustomTexture(__instance);   // put OUR texture on the zeppelin's albedo slot (_MainTex)
                 // __result stays the missile skeleton (now drawing our mesh)
             }
         }
@@ -75,6 +78,66 @@ namespace ENCAccessProof
                 Plugin.Log.LogInfo($"[ENCProof] repointed missile mesh index {old} -> {idx} (reapplied after an engine/load reset)");
             }
             catch (Exception e) { Plugin.Log.LogError("[ENCProof] swap error: " + e); }
+        }
+
+        // Put OUR texture on the zeppelin's albedo slot (_MainTex) of the missile output layer's render material.
+        // Re-applied each call (the engine may rebuild the proxy material). Affects the shared missile material.
+        private static void ApplyCustomTexture(object mgr)
+        {
+            try
+            {
+                var content = GetMember(mgr, "Content");
+                var entries = content != null ? GetMember(content, "OutputLayerEntries") as Array : null;
+                if (entries == null) return;
+                if (ourTex == null) ourTex = BuildZeppelinTexture();
+
+                foreach (var e in entries)
+                {
+                    var ol = GetMember(e, "OutputLayerInstance");
+                    if (ol == null || ((ol as UnityEngine.Object)?.name ?? "").IndexOf("CruiseMissile", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    missileOutputLayer = ol;   // remember it so Update() can re-texture every frame (beats the async proxy rebind)
+                    TickTexture();
+                    break;
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[ENCProof] texture inject error: " + ex); }
+        }
+
+        // Re-apply our texture to the live render material(s) — called every frame from Plugin.Update so it wins
+        // after the proxy textures finish loading async (which would otherwise rebind _MainTex over ours).
+        internal static void TickTexture()
+        {
+            if (missileOutputLayer == null || ourTex == null) return;
+            try
+            {
+                if (GetMember(missileOutputLayer, "RenderOutputs") is Array ros)
+                    foreach (var ro in ros)
+                        foreach (var fld in new[] { "currentRenderMaterial", "runTimeRenderMaterial" })
+                            if (GetMember(ro, fld) is UnityEngine.Material mat)
+                            {
+                                mat.SetTexture("_MainTex", ourTex);
+                                if (!texturedLogged) { Plugin.Log.LogInfo("[ENCProof] applied custom texture to " + mat.name + "._MainTex"); texturedLogged = true; }
+                            }
+            }
+            catch { }
+        }
+
+        // A procedural, obviously-custom airship skin: cream hull with crimson circumferential bands.
+        private static UnityEngine.Texture2D BuildZeppelinTexture()
+        {
+            const int S = 256;
+            var tex = new UnityEngine.Texture2D(S, S, UnityEngine.TextureFormat.RGBA32, false) { name = "Zeppelin_CustomTex" };
+            var cream = new UnityEngine.Color(0.88f, 0.83f, 0.70f);
+            var band = new UnityEngine.Color(0.60f, 0.16f, 0.14f);
+            var px = new UnityEngine.Color[S * S];
+            for (int y = 0; y < S; y++)
+            {
+                bool stripe = (y % 64) < 10;     // a crimson band every quarter of the texture
+                for (int x = 0; x < S; x++) px[y * S + x] = stripe ? band : cream;
+            }
+            tex.SetPixels(px);
+            tex.Apply();
+            return tex;
         }
 
         // shakee's request: dump the unit's animation + skeleton + the full material-ref -> shader-layer catalog to a
@@ -136,12 +199,65 @@ namespace ENCAccessProof
                     sb.AppendLine();
                 }
 
+                // --- FULL FxOutputLayer STRUCTURE (real values) for the missile's layer: the authoring template ---
+                foreach (var e in entries)
+                {
+                    var ol = GetMember(e, "OutputLayerInstance");
+                    var nm = (ol as UnityEngine.Object)?.name ?? "";
+                    if (ol == null || nm.IndexOf("CruiseMissile", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    sb.AppendLine("\n[FXOUTPUTLAYER DETAIL]  " + nm + "  (every field, real values -> authoring template)");
+                    DumpFields(sb, "  ", ol);
+                    if (GetMember(ol, "RenderOutputs") is Array ros)
+                        for (int i = 0; i < ros.Length; i++)
+                        {
+                            var ro = ros.GetValue(i);
+                            sb.AppendLine("  RenderOutput[" + i + "]:");
+                            DumpFields(sb, "    ", ro);
+                            var liveMat = GetMember(ro, "currentRenderMaterial") ?? GetMember(ro, "runTimeRenderMaterial") ?? GetMember(ro, "renderMaterial");
+                            DumpMaterialTextures(sb, "    tex ", liveMat);
+                        }
+                    break;
+                }
+
                 var path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "ENC_RenderDump.txt");
                 System.IO.File.WriteAllText(path, sb.ToString());
                 Plugin.Log.LogInfo("[ENCProof] render dump (" + entries.Length + " output layers) written to " + path);
                 dumped = true;
             }
             catch (Exception ex) { Plugin.Log.LogError("[ENCProof] dump error: " + ex); }
+        }
+
+        // List a material's texture slots + the texture bound to each (so we know where to inject a custom texture).
+        private static void DumpMaterialTextures(System.Text.StringBuilder sb, string prefix, object matObj)
+        {
+            var mat = matObj as UnityEngine.Object;
+            if (mat == null) { sb.AppendLine(prefix + "(no render material loaded)"); return; }
+            try
+            {
+                var getNames = AccessTools.Method(mat.GetType(), "GetTexturePropertyNames", Type.EmptyTypes);
+                var getTex = AccessTools.Method(mat.GetType(), "GetTexture", new[] { typeof(string) });
+                if (getNames?.Invoke(mat, null) is string[] names)
+                    foreach (var n in names)
+                    {
+                        var tex = getTex?.Invoke(mat, new object[] { n }) as UnityEngine.Object;
+                        sb.AppendLine(prefix + n + " = " + (tex?.name ?? "null"));
+                    }
+            }
+            catch (Exception e) { sb.AppendLine(prefix + "err: " + e.Message); }
+        }
+
+        // Dump every instance field (public + private) of an object with its real value — for the FxOutputLayer
+        // authoring template.
+        private static void DumpFields(System.Text.StringBuilder sb, string indent, object o)
+        {
+            if (o == null) { sb.AppendLine(indent + "null"); return; }
+            const BindingFlags BF = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            foreach (var f in o.GetType().GetFields(BF))
+            {
+                object v; try { v = f.GetValue(o); } catch { v = "<err>"; }
+                string disp = v is Array a ? "[" + a.Length + "]" : (v as UnityEngine.Object)?.name ?? v?.ToString() ?? "null";
+                sb.AppendLine(indent + f.Name + " (" + f.FieldType.Name + ") = " + disp);
+            }
         }
 
         // (Re)upload our mesh into the GPU mesh-content manager. Re-runs when the manager instance changes (a save
