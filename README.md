@@ -49,6 +49,9 @@ The plugin renders a real third-party airship — **"Дирижабль HD" by M
 
 ## Documentation
 Full write-ups in [`docs/`](docs/):
+- [**FBX-to-Humankind-Pipeline.md**](docs/FBX-to-Humankind-Pipeline.md) — *why it works*, end to end: the render
+  pipeline, the runtime injection contract, the FBX→asset baking steps (with the *why* for each), and a **blueprint
+  for a Unity package** that generates a Humankind asset from an FBX. **Start here for building tooling.**
 - [**Custom3DInjection-Spec.md**](docs/Custom3DInjection-Spec.md) — the complete working recipe + the decompiled
   pipeline (AnimationManager / MeshCollection / Skeleton / PawnManager / AddOn / FragmentEntry) and how each blocker
   fell. Start here.
