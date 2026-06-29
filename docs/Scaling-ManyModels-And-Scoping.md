@@ -206,9 +206,38 @@ a raw CAD GLB with **no textures** (vertex-colors only).
 
 ## 7. Current state
 
-- **Deployed:** the robust **global swap** (both Era-6 transports → LCAC). Renders correctly; not scoped. Good
-  fallback / quick-and-dirty option for skeletons used by exactly one unit.
-- **Recipe known (§4).** Next: implement the editor-baker that clones the LandingCrafts skeleton asset + wires the
-  `AnimationManagerContent` entries + repoints only the hovercraft's Description. First milestone = the hovercraft
-  rendering natively from its own cloned skeleton (scoped, no plugin swap). Then generalize into the import package
-  (one FBX/OBJ → the full GUID-keyed asset set, automated).
+- **✅ WORKING (2026-06-29): native, scoped custom model.** The Hovercraft renders our LCAC from our own registered
+  skeleton; the barge transport (same vanilla skeleton) is untouched. Proven in-game.
+
+### The working runtime recipe (`HovercraftInjectPatch.cs`)
+Hard-won; the order and the struct write-back matter. Two Harmony hooks:
+
+**A. Hook `AnimationManager.AnimationLoad` (POSTFIX)** — register our skeleton + rebuild GPU buffers:
+1. `AssetDatabase.LoadAsset<MeshCollection>(ourAssetGuid)` our baked skeleton.
+2. Reset its `loadingStatus`→NotLoaded, `SkeletonId`→-1; rename `skinnedMeshInfos[0].MeshName` to the host body-mesh
+   name (`Unit_Era6_Common_LandingCrafts_01` — the name the Description's body fragment looks up).
+3. `AnimationManager.RegisterMeshCollection(ourSkeleton)`. **Must be POSTFIX** (the FX manager doesn't exist in the
+   prefix → NullRef). Then **invoke `Apply()` via reflection** — it's the only thing that builds
+   `gpuSkeletonBoneEntiesBuffer` from `skeletons[]`, and it normally runs once; re-invoking it builds OUR bones
+   (SkeletonId 70) into the buffer (skip this → mesh collapses to a line).
+
+**B. Hook `PresentationPawnDefinitionAddOn.Load` (POSTFIX)** — repoint ONLY the Hovercraft:
+4. If `Definition.name` contains "Hovercraft":
+5. **Explicitly `LoadIFN`** our mesh (RegisterMeshCollection doesn't upload at AnimationLoad time → `MeshIndex` stays
+   0; upload here, when the unit presents and FX is loaded → `MeshIndex`=115).
+6. `addOn.Skeleton = addOn.MeshCollection = ourSkeleton` (so pawns use our SkeletonId/bones).
+7. **Re-resolve the body fragment.** `FragmentEntry` is a **struct** with its OWN `private MeshCollection
+   meshCollection`; `FragmentEntry.Load` resolves the mesh via *that* field, not its `skeleton` arg. So per fragment:
+   box it, set its `meshCollection` field = ourSkeleton, invoke `Load`, **write the struct back to the array**
+   (a `foreach` mutates a copy → no-op; that bug cost hours). The body fragment's `EncodedMeshAndVisualParticleCount`
+   then flips to our mesh; fragments whose mesh we lack (the barge floor) resolve to 0 → not drawn.
+8. Texture via `_MainTex` on the shared LandingCrafts output layer (per-frame from `Plugin.Update`).
+
+Scoping is automatic: only the Hovercraft AddOn is repointed; the barge AddOn keeps the vanilla skeleton.
+
+### Remaining / next
+- **Texture polish** — the skin currently shares the LandingCrafts output layer (also touches the barge's material).
+- **Move the repoint to data** — per §3-4, a mod `PresentationPawnDescription` with `Template`→our SourcePrefab would
+  drop the runtime repoint (registration still needs the plugin, as `AnimationManagerContent` is vanilla-locked).
+- **Generalize** into the import package: one FBX/OBJ → baked skeleton + this register/repoint, parameterized per
+  unit. The mechanism above is the template for every ship/plane/siege model.
