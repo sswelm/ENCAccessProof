@@ -241,3 +241,46 @@ Scoping is automatic: only the Hovercraft AddOn is repointed; the barge AddOn ke
   drop the runtime repoint (registration still needs the plugin, as `AnimationManagerContent` is vanilla-locked).
 - **Generalize** into the import package: one FBX/OBJ → baked skeleton + this register/repoint, parameterized per
   unit. The mechanism above is the template for every ship/plane/siege model.
+
+---
+
+## Potential plan (candidate, NOT decided): data-driven `AnimationManagerContent` merge
+
+*Proposed by shakee (Discord, 2026-06-30). Recorded as a possible direction — not committed; needs validation, and
+we're not yet sure it beats a thin per-model plugin config.*
+
+**Idea.** Instead of per-model runtime surgery, let mods **ship their own `AnimationManagerContent` asset** (listing
+their skeletons / output-layers / clip-collections) and have a **single generic plugin merge** them into the game's
+loaded singleton at load. A modder then just uploads an FBX in modtools, which emits the baked skeleton + a
+material/`FxOutputLayer` + an `AnimationManagerContent` + a `Description` repoint — **zero per-model plugin code**.
+
+**Why it's attractive.** It would dissolve the fragile parts of the working runtime recipe (§7):
+- No manual `Apply()` re-invoke, no `LoadIFN` timing, no `addOn.Skeleton` repoint, and — crucially — **no body
+  `FragmentEntry` struct surgery**, because the unit points at the mod skeleton via pure data
+  (`Description.Template` → mod `SourcePrefab`), so fragments resolve against it **from the start**.
+- **Solves per-unit textures**: merging `OutputLayerEntries` (`{Material, OutputLayer}`) lets a mod ship its own
+  `FxOutputLayer` → `OutputLayerFromMaterialGuid` finds it → scoped custom skin (the one thing the runtime path
+  can't scope cleanly).
+- One generic plugin serves every mod.
+
+**Mechanism (sketch).**
+- The singleton is `AnimationManager.InstanceGUID = f81c148cff973af4ca02dcc2f617f781` → its `content`
+  (`AnimationManagerContent`, with `Guid[] MeshCollections / AnimationClipCollections / AnimatorOverrideControllers /
+  OutputLayerEntries`). `AnimationResolveDependencies` loads it into `loadedContent` and walks `MeshCollections[]` →
+  `loadedMeshCollections[]`; `AnimationLoad` registers those + `Apply()` builds GPU buffers.
+- Mods **can't override** that asset (`AssetDuplicateSolvingPolicy.Error` → vanilla wins), so **merge, don't
+  override**: postfix `AnimationResolveDependencies`, enumerate mod `AnimationManagerContent` assets in mounted
+  bundles (`FindAssetPathsOfType<AnimationManagerContent>` minus vanilla), append their entries into the loaded
+  arrays / `loadedMeshCollections`. `AnimationLoad`/`Apply` then handle them natively.
+- Unit repoint stays pure mod data (name-keyed `PresentationPawnDefinition` → new `Description.Template`).
+
+**Open questions / why it's not a settled choice.**
+- Exact merge seam + timing (prefix can't touch `loadedContent` before it loads; postfix must append to BOTH
+  `loadedContent.*` and the already-built `loadedMeshCollections` — verify `AnimationLoad` reads the latter).
+- Re-merge robustness on save load / content invalidation (`ContentRevision`).
+- Whether modtools can author/emit a valid `AnimationManagerContent` + `FxOutputLayer` easily (the "easy workflow"
+  shakee rightly insists on) — authoring `FxOutputLayer` shaders may be the real friction.
+- Static models (districts, idle bodies) reportedly already work as **plain data mods** and need none of this — so
+  this plan is only for the **animated** case.
+- Alternative still on the table: keep the proven runtime register/repoint but drive it from a small JSON/asset
+  manifest (per-model config), avoiding a deeper engine-content merge.
