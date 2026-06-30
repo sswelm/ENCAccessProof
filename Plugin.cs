@@ -65,6 +65,7 @@ namespace ENCAccessProof
         {
             if (Input.GetKeyDown(ToggleKey.Value)) show = !show;
             if (RepointOnLoad.Value) { ZeppelinInject.TickTexture(); HovercraftInject.TickTexture(); }   // keep our textures past the async proxy load
+            if (MergeModContent.Value) ShakeeZeppelinCombo.TickTexture();   // combo: keep the zeppelin atlas applied
         }
 
         private void OnGUI()

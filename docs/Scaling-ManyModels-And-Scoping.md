@@ -385,3 +385,27 @@ re-resolve the body fragment — reusing the vanilla Description, so **no Descri
 - **Failure (still informative):** if it needs `Apply()`/`LoadIFN` back, or slabs/half-renders, that tells us the
   merge's native registration isn't sufficient for an animated unit and the combo's robustness claim is weaker than
   hoped — documented as the honest finding.
+
+### ✅ RESULT (2026-06-30): combo proven for the MESH; texture via re-applied atlas
+First run *looked* fine but was **contaminated** — the global swap was still on (`RepointOnLoad=true`) and had
+clobbered our skeleton's `SkeletonId` to `48` (the cruise-missile slot), so the swap was doing the work. Smoking gun:
+the merge logged `SkeletonId=70` but the combo logged `SkeletonId=48`. Lesson: a render that "looks good" proves
+nothing while another path is live.
+
+**Clean run (global swap OFF, `redirect count: 0`):**
+- `before: Skeleton='…CruiseMissile…' SkeletonId=48` → `repointed → MERGED skeleton (SkeletonId=70, MeshIndex=115)`
+  → `after: Skeleton='Zeppelin_Skeleton' SkeletonId=70`, and the body fragment's
+  `EncodedMeshAndVisualParticleCount` changed `134683904 → 3842569472` (re-resolved to OUR mesh).
+- **No `Apply()`/`LoadIFN`/register in the runtime path.** The merge did registration + GPU upload natively; the
+  runtime shrank to the deterministic repoint + fragment re-resolve. **The combo's robustness claim holds for the
+  mesh — proven on screen.** The `Apply()`/`LoadIFN` hacks (the slab and `MeshIndex=0` sources from the hovercraft)
+  are gone.
+
+**Texture:** with no skin applied, the mesh sampled the **cruise-missile material** → a red **stain** on the top.
+Fixed by re-applying our zeppelin atlas `_MainTex` on the (shared) cruise-missile output layer per-frame — the same
+trick the old swap used (`ShakeeZeppelinCombo.ApplyTexture`/`TickTexture`, hooked from `Plugin.Update`). Texture is
+**not yet scoped** (shared output layer); the pure-data `OutputLayerEntry` merge is the eventual scoped path.
+
+**Net:** combination = shakee's merge (robust native registration + upload) + a thin runtime repoint (reuse the
+vanilla Description, no Description authoring). Genuinely more robust than runtime-only; remaining runtime bits are the
+repoint, the fragment re-resolve, and (until `OutputLayerEntry` scoping) the per-frame texture.
