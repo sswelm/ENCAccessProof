@@ -52,17 +52,22 @@ namespace ENCAccessProof
             catch (Exception e) { Plugin.Log.LogError("[ShakeeMerge] merge error: " + e); }
         }
 
-        internal static void ProveRegistered(object animMgr)
+        // Check both SkeletonId (registered?) and skinnedMeshInfos[0].MeshIndex (mesh actually uploaded to GPU?).
+        // MeshIndex != 0 is the real test — registration alone (SkeletonId) does not draw anything.
+        internal static void CheckZeppelin(string when)
         {
             try
             {
                 var mcType = AccessTools.TypeByName("Amplitude.Mercury.Animation.MeshCollection");
                 var zep = LoadAsset(mcType, MakeGuid(ZepA, ZepB, ZepC, ZepD));
-                if (zep == null) { Plugin.Log.LogInfo("[ShakeeMerge] proof: zeppelin skeleton not loadable"); return; }
+                if (zep == null) { Plugin.Log.LogInfo("[ShakeeMerge] " + when + ": zeppelin skeleton not loadable"); return; }
                 var sid = GetMember(zep, "SkeletonId");
-                Plugin.Log.LogInfo($"[ShakeeMerge] PROOF: zeppelin skeleton SkeletonId={sid}  (>=0 = registered natively via the merge — no manual Apply/LoadIFN)");
+                object meshIdx = null; object meshName = null;
+                var smi = AccessTools.Field(zep.GetType(), "skinnedMeshInfos")?.GetValue(zep) as Array;
+                if (smi != null && smi.Length > 0) { meshIdx = GetMember(smi.GetValue(0), "MeshIndex"); meshName = GetMember(smi.GetValue(0), "MeshName"); }
+                Plugin.Log.LogInfo($"[ShakeeMerge] {when}: SkeletonId={sid}  MeshIndex={meshIdx} (MeshName='{meshName}')  <- MeshIndex!=0 means the mesh is on the GPU; 0 means it CANNOT draw");
             }
-            catch (Exception e) { Plugin.Log.LogError("[ShakeeMerge] proof error: " + e); }
+            catch (Exception e) { Plugin.Log.LogError("[ShakeeMerge] check error: " + e); }
         }
 
         static object LoadAsset(Type T, object guid)
@@ -91,9 +96,16 @@ namespace ENCAccessProof
     }
 
     [HarmonyPatch]
-    internal static class ShakeeProofHook
+    internal static class ShakeeProofHook   // right after registration — MeshIndex likely still 0 here
     {
         static MethodBase TargetMethod() { var t = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager"); return t != null ? AccessTools.Method(t, "AnimationLoad") : null; }
-        static void Postfix(object __instance) { if (Plugin.MergeModContent.Value) ShakeeMerge.ProveRegistered(__instance); }
+        static void Postfix(object __instance) { if (Plugin.MergeModContent.Value) ShakeeMerge.CheckZeppelin("after AnimationLoad"); }
+    }
+
+    [HarmonyPatch]
+    internal static class ShakeeFxHook      // after FX load — where vanilla skeletons get their meshes uploaded
+    {
+        static MethodBase TargetMethod() { var t = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager"); return t != null ? AccessTools.Method(t, "FxLoadIFN") : null; }
+        static void Postfix(object __instance) { if (Plugin.MergeModContent.Value) ShakeeMerge.CheckZeppelin("after FxLoadIFN"); }
     }
 }
