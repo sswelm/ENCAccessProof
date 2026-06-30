@@ -321,3 +321,24 @@ were enough this would have been solved long ago. The real friction (which shake
 **Next, to actually prove or disprove it:** verify `MeshIndex` on the merged skeleton (if 0, it cannot draw — case
 closed for now), then do the `Description.Template` repoint and *look at the screen*. Only a unit visibly rendering
 the model counts. Expect to hit at least one of rows 2/5/6; if so, that obstacle is the honest finding.
+
+### Update — MeshIndex passes, but the Description wall is real (2026-06-30)
+- **Row 2 (mesh upload): PASSES natively.** Checking the merged zeppelin skeleton across `FxLoadIFN` passes, its
+  `skinnedMeshInfos[0].MeshIndex` went `0 → 115` — the mesh uploaded to the GPU through the engine's *normal* FX
+  load, **no explicit `LoadIFN`** like the runtime hovercraft needed. So registration **and** GPU upload (rows 1-2)
+  are genuinely clean via data + the generic hook. That part of shakee's idea holds.
+- **Rows 4-6 (display): blocked by a vanilla-locked Description.** The unit's `PresentationPawnDescription`
+  (`PresentationAirUnit_Era5_Common_Zeppelins_Default`) — which carries the skeleton `Template`, the body fragment
+  (`SkinnedMeshPath`), AND the body material — is **vanilla**; the mod only references it by name. There is no
+  `Template`/`SkinnedMeshPath`/`GameObjectReference` anywhere in the mod data. So you **cannot** repoint by editing it.
+- **Honest conclusion:** the merge cleanly solves the *registration half* (skeleton + GPU mesh). The *display half*
+  still requires the unit's Description, and because it's vanilla you must **author a NEW mod
+  `PresentationPawnDescription`** (Template → your SourcePrefab `{a:-1151233186,b:1095993008,c:-1749390190,
+  d:-1274340553}`, a body fragment with `SkinnedMeshPath = 'Zeppelin_ModelMesh'` and a `MaterialRef`) and repoint the
+  (mod-owned, name-keyed) pawn-def's `Description.guid` at it. For a custom texture the `MaterialRef`→`OutputLayer`
+  must also be authored (reuse a vanilla one, or merge an `OutputLayerEntry` via the same AMC).
+- **So "it doesn't add up as easy" is correct:** a `SkeletonId`/`MeshIndex` is not a rendered unit. shakee's merge
+  shifts the work, it doesn't remove it — the unsolved "easy workflow" is authoring the **Description + material**,
+  which is exactly the friction shakee himself named. The runtime hovercraft path sidesteps Description authoring by
+  reusing the vanilla Description's fragment and repointing it live (the fragment-struct surgery) — that's the
+  trade-off: shakee's path is cleaner-but-more-to-author; the runtime path is hackier-but-reuses-vanilla.
