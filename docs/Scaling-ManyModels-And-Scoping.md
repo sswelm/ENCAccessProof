@@ -342,3 +342,46 @@ the model counts. Expect to hit at least one of rows 2/5/6; if so, that obstacle
   which is exactly the friction shakee himself named. The runtime hovercraft path sidesteps Description authoring by
   reusing the vanilla Description's fragment and repointing it live (the fragment-struct surgery) — that's the
   trade-off: shakee's path is cleaner-but-more-to-author; the runtime path is hackier-but-reuses-vanilla.
+
+---
+
+## PLAN (2026-06-30): combine merge + thin runtime repoint — target the Zeppelin Bomber
+
+**Goal:** render the Zeppelin Bomber with our custom zeppelin model on screen, via the *combination* — shakee's merge
+does the registration + GPU upload natively, a *thin* runtime repoint does the display by reusing the vanilla
+Description. Success = the model on screen with the fragile `Apply()`/`LoadIFN` hacks **removed** from the runtime code.
+
+**Why this combo (recap):** the merge provably removes the two flakiest runtime hacks — the manual `Apply()` re-invoke
+(it registers *before* `Apply`, so bones build natively → no slab) and the explicit `LoadIFN` (FX upload happens
+natively → `MeshIndex=115`). The runtime half shrinks to: point the unit at the already-registered skeleton +
+re-resolve the body fragment — reusing the vanilla Description, so **no Description to author**.
+
+### Steps
+1. **Data / merge (mostly done):** `ENC_ModAnimationContent.asset` already lists the zeppelin skeleton; the
+   `AnimationResolveDependencies` postfix merges it → registered (`SkeletonId=70`) + uploaded (`MeshIndex=115`).
+   Keep `Shakee/MergeModContent` on.
+2. **Discover the zeppelin's body-mesh name** (the name the vanilla Description's body fragment looks up) — via a
+   fragment dump on the zeppelin AddOn (like the hovercraft's `Unit_Era6_Common_LandingCrafts_01`). Needed so we can
+   rename our skeleton's `skinnedMeshInfos[0].MeshName` to match → `GetFxMeshIndex` resolves to our mesh.
+3. **Thin runtime repoint** — new hook (or reuse `HovercraftInject` generalized): postfix
+   `PresentationPawnDefinitionAddOn.Load`, match the zeppelin pawn-def (`Era5_Common_Zeppelins_01`), then:
+   `addOn.Skeleton = addOn.MeshCollection = <merged skeleton>` and re-resolve the body fragment (box struct, set its
+   `meshCollection` field to ours, `Load`, write back). **Omit** `EnsureRegistered` / `Apply()` / `LoadIFN` — the merge
+   already did those (this is the robustness win to verify).
+4. **Disable the old global swap** for the zeppelin (`ZeppelinInject` / its config) so it doesn't fight the new path.
+5. **Texture:** start by reusing the vanilla zeppelin material (the body fragment's existing `MaterialRef` → its
+   output layer). A scoped custom skin via a merged `OutputLayerEntry` is a follow-up, not part of this proof.
+
+### Unknowns / risks to watch
+- The zeppelin's body-mesh name (step 2) — discover before renaming.
+- The zeppelin is currently entangled with the global-swap setup (it borrows the cruise-missile skeleton); make sure
+  the old path is fully off so we're testing the new one.
+- Whether the thin repoint renders **without** the `Apply()`/`LoadIFN` calls — that's the exact thing being proven.
+- Mesh orientation/scale of the existing zeppelin bake may need the same `OrientEuler`-style tuning as before.
+
+### Success / failure criteria
+- **Success:** Zeppelin Bomber visibly shows our zeppelin model in-game, and the runtime code path contains **no**
+  `Apply()`/`LoadIFN`/`EnsureRegistered` (only the repoint + fragment re-resolve).
+- **Failure (still informative):** if it needs `Apply()`/`LoadIFN` back, or slabs/half-renders, that tells us the
+  merge's native registration isn't sufficient for an animated unit and the combo's robustness claim is weaker than
+  hoped — documented as the honest finding.
