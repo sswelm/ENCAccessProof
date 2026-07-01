@@ -21,6 +21,7 @@ namespace ENCAccessProof
         public object hostOutputLayer;
         public UnityEngine.Texture2D tex;
         public string layerHint = "";
+        public object isolatedLayer;     // our private clone of the host output layer (texture isolation)
         public bool repointed;
     }
 
@@ -137,7 +138,7 @@ namespace ENCAccessProof
                 EnsureUploaded(e, animMgr);
                 SetMember(addon, "Skeleton", e.skeleton);
                 SetMember(addon, "MeshCollection", e.skeleton);
-                ReloadFragments(addon, animMgr, e.skeleton);
+                ReloadFragments(addon, animMgr, e.skeleton, e);
                 ApplyTexture(e, animMgr);
                 if (!e.repointed) { e.repointed = true; Plugin.Log.LogInfo($"[Uni] repointed '{name}' -> {e.resourceName} (mesh '{bodyName}', layer '{e.layerHint}')"); }
             }
@@ -235,7 +236,7 @@ namespace ENCAccessProof
             catch (Exception e) { Plugin.Log.LogError("[Uni] rename: " + e); }
         }
 
-        static void ReloadFragments(object addon, object animMgr, object skel)
+        static void ReloadFragments(object addon, object animMgr, object skel, ModelEntry e)
         {
             try
             {
@@ -247,28 +248,48 @@ namespace ENCAccessProof
                 int layer = layerObj is int li ? li : Convert.ToInt32(layerObj ?? 0);
                 var fragType = frags.GetType().GetElementType();
                 var mcField = AccessTools.Field(fragType, "meshCollection");
+                var mnField = AccessTools.Field(fragType, "meshName");
+                var folField = AccessTools.Field(fragType, "fxOutputLayer");
                 var load = AccessTools.Method(fragType, "Load");
                 for (int i = 0; i < frags.Length; i++)
                 {
                     var item = frags.GetValue(i);
                     if (item == null) continue;
                     mcField?.SetValue(item, skel);
+                    // TEXTURE ISOLATION: give OUR body fragment a private CLONE of the output layer. Load() then calls
+                    // GetLayerIndexAddItIFN(clone), allocating it a fresh GPU slot -> our skin (painted on the clone)
+                    // no longer bleeds onto other units that share the host layer (e.g. the real Visby Corvette).
+                    var mn = mnField?.GetValue(item) as string;
+                    if (e != null && folField != null && !string.IsNullOrEmpty(e.layerHint) && mn == e.layerHint)
+                    {
+                        if (e.isolatedLayer == null && folField.GetValue(item) is UnityEngine.Object host && host != null)
+                        {
+                            var clone = UnityEngine.Object.Instantiate(host);
+                            clone.name = e.resourceName + "_OutputLayer";
+                            e.isolatedLayer = clone;
+                            Plugin.Log.LogInfo($"[Uni] cloned output layer for {e.resourceName} -> '{clone.name}'");
+                        }
+                        if (e.isolatedLayer != null) folField.SetValue(item, e.isolatedLayer);
+                    }
                     try { load?.Invoke(item, new object[] { skel, renderer, mcm, layer }); }
-                    catch (Exception e) { Plugin.Log.LogWarning("[Uni] frag reload: " + (e.InnerException ?? e).Message); }
+                    catch (Exception ex) { Plugin.Log.LogWarning("[Uni] frag reload: " + (ex.InnerException ?? ex).Message); }
                     frags.SetValue(item, i);
                 }
             }
-            catch (Exception e) { Plugin.Log.LogError("[Uni] ReloadFragments: " + e); }
+            catch (Exception ex) { Plugin.Log.LogError("[Uni] ReloadFragments: " + ex); }
         }
 
         static void ApplyTexture(ModelEntry e, object mgr)
         {
             try
             {
+                if (e.tex == null) e.tex = LoadAtlas(e.ta, e.tb, e.tc, e.td, e.resourceName);
+                // isolated path: paint ONLY our private clone (the host layer + real units keep their own skin)
+                if (e.isolatedLayer != null) { e.hostOutputLayer = e.isolatedLayer; TickOne(e); return; }
+                // fallback (no clone): the shared host layer
                 var content = GetMember(mgr, "Content");
                 var list = content != null ? GetMember(content, "OutputLayerEntries") as Array : null;
                 if (list == null || string.IsNullOrEmpty(e.layerHint)) return;
-                if (e.tex == null) e.tex = LoadAtlas(e.ta, e.tb, e.tc, e.td, e.resourceName);
                 foreach (var entry in list)
                 {
                     var ol = GetMember(entry, "OutputLayerInstance");

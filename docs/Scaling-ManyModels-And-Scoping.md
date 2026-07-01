@@ -512,41 +512,35 @@ entry in document order). Lesson: don't trust `JsonUtility` for non-trivial stru
 (Diagnosed by instrumenting every checkpoint: hook fired → `EnsureRegistered` fired → `read N chars; parsed
 models=NULL` was the smoking gun.)
 
-### ⚠️ Texture is NOT scoped (mesh IS) — IN PROGRESS: clone the output layer
-The mesh swap is correctly scoped (only the target pawn-def gets our skeleton). But the **skin is applied to the host's
-*shared* output layer** (`<bodyMesh>_OutputLayer`) via per-frame `_MainTex`, so it paints **every** unit on that layer.
-The Zumwalt and the vanilla **Visby Corvette are both Era 6** and can be fielded together — the real Visby then wears
-the Zumwalt skin. Genuine in-play bug.
+### ✅ Texture IS scoped now — a private FxOutputLayer clone per model (2026-07-01)
+The mesh swap was always scoped, but the skin was painted on the host's *shared* output layer, so the vanilla unit on
+that layer wore our skin (Zumwalt + Visby Corvette are both Era 6, fielded together). **Solved** by giving each model
+its own output layer.
 
-**Runtime wiring (from the `[Uni][scope]` dump):**
-- A `FragmentEntry.fxOutputLayer` is **the actual `FxOutputLayer` object** (not a swappable index). It carries
-  `layerIndex` (e.g. 353), `renderOutputs[]`, `firstRenderOutputIndex` (e.g. 704) — pointers into **global GPU render
-  arrays**.
-- Its `OutputLayerEntry` (in `AnimationManagerContent.OutputLayerEntries`) holds **one `Material`**
-  (`Material`/`OutputLayer`/`loadedOutputLayer`/`errorLogged`). The pipeline batches *every mesh on the layer through
-  that one material* → there is **no per-mesh material** to override. Isolation requires our mesh to own a separate
-  layer.
+**The mechanism (decompiled `AnimationManagerContent` / `FragmentEntry` / `OutputLayerEntry` with ilspycmd):**
+- The output layer is resolved from the **fragment asset's `MaterialRef`**:
+  `Content.OutputLayerFromMaterialGuid(materialRef)` → the `OutputLayerEntry` whose `Material == materialRef` → its
+  `OutputLayerInstance`. We don't own that fragment asset (it's the borrowed unit's), so we can't change the resolution.
+- BUT the runtime `FragmentEntry` holds a **settable `fxOutputLayer` field**, and its `Load()` just calls
+  **`fxComponentRenderer.GetLayerIndexAddItIFN(fxOutputLayer)`** — which allocates a **fresh GPU layer index for
+  whatever `FxOutputLayer` instance you hand it**. And `FxOutputLayer` is a plain `ScriptableObject`.
 
-**Why the skeleton deep-clone didn't cover it:** that clone gave us our own *mesh* (MeshCollection). The *texture*
-lives on the output layer's material, a different system the skeleton clone never duplicated.
+**The fix (runtime, in `UniversalInject.ReloadFragments`):** for OUR body fragment (the one whose `meshName` == the
+discovered hull name), `UnityEngine.Object.Instantiate` the host's `FxOutputLayer` → a fresh clone (its `Loaded`/GPU
+state is `[NonSerialized]`, so it initialises clean). Set the fragment's `fxOutputLayer` to the clone, then call
+`Load()` — `GetLayerIndexAddItIFN(clone)` gives it its **own slot + render outputs/materials**. Paint our atlas on the
+**clone only** (per-frame `_MainTex`, cached per entry as `isolatedLayer`). The host layer — and every real unit still
+on it — keeps its own skin.
 
-**Plan (deep-clone the output layer, mirror of the skeleton recipe):**
-1. Find the host `OutputLayerEntry` whose `loadedOutputLayer` == our fragment's `fxOutputLayer`.
-2. Clone it: new entry + **`Material.Instantiate`** (our own material instance) + a cloned `FxOutputLayer`.
-3. **Append** it to `Content.OutputLayerEntries` and **re-run `Apply()`** so the new layer gets its OWN
-   `layerIndex`/`firstRenderOutputIndex` (its own GPU render outputs) — exactly how registering a skeleton then
-   re-`Apply`-ing built its bone buffers.
-4. Repoint our body fragment's `fxOutputLayer` to the new layer; re-resolve fragments.
-5. Apply our atlas to **only the new layer's** material. The host layer (and real Visbys) keep their own texture.
+**Proven:** log shows cloned `StealthCruiser_OutputLayer` / `Hovercraft_OutputLayer` / `Zeppelin_OutputLayer`, no
+errors; in-game the Visby reverted to its Swedish splinter camo while the Zumwalt kept grey/red. No editor changes, no
+`AnimationManagerContent` merge, no resizing shared arrays — a self-contained runtime clone, mirroring the skeleton
+deep-clone but at the output-layer level. (The earlier "resize OutputLayerEntries + re-Apply" plan was unnecessary.)
 
-Risk: the global-array indices make a naive clone share the original's GPU slot (→ no isolation); the `Apply()`
-re-allocation is the load-bearing step and is unproven for output layers.
-
-**Future (modder request): culture-specific texture overrides.** Once a model owns its material, a unit could show a
-different skin per empire/culture. The per-unit output-layer isolation here is the *foundation*; per-culture variants
-are the extension (select the atlas by the rendering unit's culture — likely a small set of per-culture layers/
-materials, since the same batching constraint applies per variant). Design the registry/atlas handling to allow
-multiple atlases keyed by culture later.
+**Future (modder request): culture-specific texture overrides.** Now that each model owns its own layer/material
+(above), a unit can show a different skin per empire/culture — that foundation is in place. Per-culture variants are
+the extension: keep a small set of cloned layers (one per culture atlas) and pick which the fragment points at by the
+rendering unit's culture. Design the registry/atlas handling to allow multiple atlases keyed by culture.
 
 ### Toward a Unity package (gaps)
 Decouple hardcoded paths (`ModelRegistry.ConfigDir`, the `dotnet`/converter path) into settings; neutral naming (drop
