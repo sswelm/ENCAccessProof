@@ -317,7 +317,9 @@ namespace ENCAccessProof
             var t = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
             return t != null ? AccessTools.Method(t, "AnimationLoad") : null;
         }
-        static void Postfix(object __instance) { StealthCruiserInject.EnsureRegistered(__instance); }
+        // Stand down when the registry-driven UniversalInject owns injection — otherwise BOTH inject the Stealth
+        // Cruiser (old Apply()+host-layer path vs new clone path), fighting over the GPU mesh buffers and scrambling it.
+        static void Postfix(object __instance) { if (!Plugin.UniversalInjectOn.Value) StealthCruiserInject.EnsureRegistered(__instance); }
     }
 
     // Hook B: repoint only the StealthCruisers pawn-def at our registered skeleton.
@@ -330,6 +332,6 @@ namespace ENCAccessProof
             var animMgr = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
             return (addon != null && animMgr != null) ? AccessTools.Method(addon, "Load", new[] { animMgr }) : null;
         }
-        static void Postfix(object __instance, object __0) { StealthCruiserInject.RepointCruiser(__instance, __0); }
+        static void Postfix(object __instance, object __0) { if (!Plugin.UniversalInjectOn.Value) StealthCruiserInject.RepointCruiser(__instance, __0); }
     }
 }
