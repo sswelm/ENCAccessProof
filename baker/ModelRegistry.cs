@@ -21,6 +21,7 @@ public class ModelDef
     public int normalsMode = 1;         // 0 KeepModel, 1 Recalculate, 2 Faceted
     public float smoothingAngle = 20f;
     public int convertGrid = 0;         // GLB->OBJ: 0 = faithful (preserve UV seams), >0 = decimate
+    public bool reuseExtracted = false; // reuse existing OBJ/albedo on re-bake (skip re-import), preserving hand-edited textures
     public int[] skel = new int[4];     // baked skeleton Amplitude guid {a,b,c,d}
     public int[] atlas = new int[4];    // baked atlas Amplitude guid {a,b,c,d}
 }

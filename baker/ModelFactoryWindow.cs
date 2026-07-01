@@ -94,13 +94,26 @@ public class ModelFactoryWindow : EditorWindow
         cur.convertGrid = EditorGUILayout.IntField("Convert grid (0 = faithful UVs)", cur.convertGrid);
 
         EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Texture / import", EditorStyles.miniBoldLabel);
+        cur.reuseExtracted = EditorGUILayout.Toggle(new GUIContent("Reuse extracted files", "Skip re-importing the model file and reuse the OBJ/albedo already in the resource folder. Tick this after hand-editing the extracted texture (e.g. in paint.net) so your fix survives the bake."), cur.reuseExtracted);
+
+        EditorGUILayout.Space();
+        // A brand-new resource (<New>) has nothing to re-bake, so it also needs a model file; an existing one may leave
+        // Model file empty to re-bake with new settings. Missing either target field greys Bake out with a reason.
+        bool isNew = selected <= 0;
+        bool canBake = !string.IsNullOrWhiteSpace(cur.resourceName)
+                    && !string.IsNullOrWhiteSpace(cur.pawnDescription)
+                    && (!isNew || !string.IsNullOrWhiteSpace(cur.modelFile));
         using (new EditorGUILayout.HorizontalScope())
         {
-            GUI.enabled = !string.IsNullOrWhiteSpace(cur.resourceName) && !string.IsNullOrWhiteSpace(cur.pawnDescription);
-            if (GUILayout.Button("Bake", GUILayout.Height(34))) DoBake();
-            GUI.enabled = true;
+            using (new EditorGUI.DisabledScope(!canBake))
+                if (GUILayout.Button("Bake", GUILayout.Height(34))) DoBake();
             if (GUILayout.Button("Reset", GUILayout.Height(34), GUILayout.Width(72))) { cur = new ModelDef(); selected = 0; status = ""; GUI.FocusControl(null); }
         }
+        if (!canBake)
+            EditorGUILayout.HelpBox(
+                isNew ? "New resource: set Resource name, Pawn description and a Model file to bake."
+                      : "Set Resource name and Pawn description to bake.", MessageType.Warning);
 
         if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
         EditorGUILayout.HelpBox(
@@ -154,7 +167,8 @@ public class ModelFactoryWindow : EditorWindow
         {
             resourceName = cur.resourceName.Trim(), modelFile = (cur.modelFile ?? "").Trim(), pawnDescription = cur.pawnDescription.Trim(),
             rotationEuler = cur.rotation, positionOffset = cur.position, size = cur.size,
-            normals = (NormalsMode)cur.normalsMode, smoothingAngle = cur.smoothingAngle, convertGrid = cur.convertGrid
+            normals = (NormalsMode)cur.normalsMode, smoothingAngle = cur.smoothingAngle, convertGrid = cur.convertGrid,
+            reuseExtracted = cur.reuseExtracted
         };
         var r = UniversalBaker.Build(cfg);
         if (!r.ok) { status = "Bake FAILED: " + r.error; return; }

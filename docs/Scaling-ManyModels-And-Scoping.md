@@ -542,6 +542,27 @@ deep-clone but at the output-layer level. (The earlier "resize OutputLayerEntrie
 the extension: keep a small set of cloned layers (one per culture atlas) and pick which the fragment points at by the
 rendering unit's culture. Design the registry/atlas handling to allow multiple atlases keyed by culture.
 
+### ✅ Neutralise the host's overlay maps (2026-07-01)
+Isolating the layer stops our skin leaking onto the vanilla unit, but the *reverse* still bit us: the cloned material
+kept the **host's** overlay maps (`_NormalMap`, `_AmbiantOcclusionMap`, `_ColorMask`, `_RoughnessMap`, `_MetallicMap`),
+and those are sampled through **our** UVs. Result: the host's panel detail and team/camo mask smeared across our model
+— worst at the stern ("front fits, back drifts"). **Fix (runtime, `TickOne`):** alongside setting `_MainTex` to our
+atlas, point every overlay map at a flat 1×1 texture — normal = `(0.5,0.5,1)`, AO = white, ColorMask = black,
+Roughness = grey, Metallic = black (`Solid(r,g,b)` helper). Only our albedo shows; no borrowed detail, no camo bleed.
+
+### ✅ Fixing a bad extracted texture — hand-edit + "Reuse extracted files" (2026-07-01)
+The Zumwalt GLB shipped with a stray yellow fill baked into its albedo. **Chosen model: the modder fixes the extracted
+texture in whatever image editor they like, then re-bakes without re-importing over the fix.** The Factory has one
+checkbox for this — **Reuse extracted files**: when on, `UniversalBaker` skips the model-import/convert step if the
+OBJ/albedo already exist (`haveObj`), so a hand-edited `*_albedo.png` survives the bake; `BuildAtlas` reads the raw
+`.png` bytes off disk, so the edit flows straight into the atlas. Workflow: bake once (extracts the albedo) → edit
+`Assets/Resources/<name>/<name>_..._albedo.png` in e.g. paint.net → tick **Reuse extracted files** → bake again.
+Caveat: baking with Reuse **off** re-extracts the GLB and clobbers the edit.
+
+> We briefly built a generic in-Factory "Replace a colour" tool (eyedrop → replace, per-pixel in `BuildAtlas`) and
+> **removed it** — hand-editing + Reuse is simpler, fully universal, and puts no image-editing logic in the tool. The
+> baker keeps only `reuseExtracted`; no colour-match code.
+
 ### Toward a Unity package (gaps)
 Decouple hardcoded paths (`ModelRegistry.ConfigDir`, the `dotnet`/converter path) into settings; neutral naming (drop
 "ENC", namespace `ENCAccessProof`); ship the editor package + the companion BepInEx plugin together with docs; consider

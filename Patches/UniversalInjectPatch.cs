@@ -43,6 +43,7 @@ namespace ENCAccessProof
         const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         static List<ModelEntry> entries;
         static bool loaded, registered, repointActiveLogged;
+        static UnityEngine.Texture2D _flatN, _white, _black, _grey;   // neutral overlay maps (kill the host's detail/camo)
 
         static void LoadRegistry()
         {
@@ -309,10 +310,24 @@ namespace ENCAccessProof
                 if (GetMember(e.hostOutputLayer, "RenderOutputs") is Array ros)
                     foreach (var ro in ros)
                         foreach (var fld in new[] { "currentRenderMaterial", "runTimeRenderMaterial" })
-                            if (GetMember(ro, fld) is UnityEngine.Material mat) mat.SetTexture("_MainTex", e.tex);
+                            if (GetMember(ro, fld) is UnityEngine.Material mat)
+                            {
+                                if (_flatN == null) { _flatN = Solid(0.5f, 0.5f, 1f); _white = Solid(1f, 1f, 1f); _black = Solid(0f, 0f, 0f); _grey = Solid(0.5f, 0.5f, 0.5f); }
+                                mat.SetTexture("_MainTex", e.tex);
+                                // neutralise the host's overlay maps so only OUR albedo shows (they're sampled with our
+                                // UVs -> they'd smear the host's detail/camo across the model, worst at the stern).
+                                mat.SetTexture("_NormalMap", _flatN);
+                                mat.SetTexture("_AmbiantOcclusionMap", _white);
+                                mat.SetTexture("_ColorMask", _black);
+                                mat.SetTexture("_RoughnessMap", _grey);
+                                mat.SetTexture("_MetallicMap", _black);
+                            }
             }
             catch { }
         }
+
+        static UnityEngine.Texture2D Solid(float r, float g, float b)
+        { var t = new UnityEngine.Texture2D(1, 1); t.SetPixel(0, 0, new UnityEngine.Color(r, g, b, 1f)); t.Apply(); return t; }
 
         static UnityEngine.Texture2D LoadAtlas(int a, int b, int c, int d, string tag)
         {

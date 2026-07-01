@@ -25,6 +25,7 @@ public struct BakeConfig
     public NormalsMode normals;     // KeepModel | Recalculate(smoothing) | Faceted
     public float   smoothingAngle;  // hard-edge threshold for Recalculate
     public int     convertGrid;     // GLB->OBJ: 0 = faithful (preserve UV seams), >0 = vertex-cluster decimate
+    public bool    reuseExtracted;  // true = reuse the existing OBJ/albedo (skip re-import) — lets the modder hand-edit the extracted texture and keep it
 }
 
 public struct BakeResult
@@ -51,9 +52,12 @@ public static class UniversalBaker
         string resDir = "Assets/Resources/" + name;
         if (!AssetDatabase.IsValidFolder(resDir)) AssetDatabase.CreateFolder("Assets/Resources", name);
         string objPath = resDir + "/" + name + ".obj";
+        string projRoot = Directory.GetParent(Application.dataPath).FullName;
+        bool haveObj = File.Exists(Path.Combine(projRoot, objPath)) || File.Exists(Path.Combine(projRoot, resDir + "/" + name + ".fbx"));
 
-        // --- 0) get a Unity-importable model into the resource dir ---
-        if (!string.IsNullOrEmpty(cfg.modelFile))
+        // --- 0) (re)import the model. Skipped when "Reuse extracted files" is on AND files already exist, so manual
+        //        OBJ/albedo edits survive a re-bake. Still imports on the first bake, or whenever reuse is off. ---
+        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !haveObj))
         {
             string ext = Path.GetExtension(cfg.modelFile).ToLowerInvariant();
             if (ext == ".glb" || ext == ".gltf")
@@ -65,7 +69,7 @@ public static class UniversalBaker
             else if (ext == ".obj" || ext == ".fbx")
             {
                 objPath = resDir + "/" + name + ext;
-                File.Copy(cfg.modelFile, Path.Combine(Directory.GetParent(Application.dataPath).FullName, objPath), true);
+                File.Copy(cfg.modelFile, Path.Combine(projRoot, objPath), true);
             }
             else return Fail("unsupported model format: " + ext);
             AssetDatabase.Refresh();
@@ -193,15 +197,21 @@ public static class UniversalBaker
 
     static Texture2D BuildAtlas(string resDir, string name)
     {
+        // Read the extracted albedo straight off disk. With "Reuse extracted files" on, this is the modder's hand-edited
+        // copy (e.g. a texture fix done in paint.net), so their edits flow into the atlas untouched.
         string fsDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir);
-        string albedo = Directory.Exists(fsDir) ? Directory.GetFiles(fsDir).FirstOrDefault(p => p.ToLowerInvariant().Contains("albedo")) : null;
+        string albedo = Directory.Exists(fsDir)
+            ? Directory.GetFiles(fsDir, "*.png").FirstOrDefault(p => p.ToLowerInvariant().Contains("albedo"))
+            : null;
         Texture2D atlas;
         if (albedo != null && File.Exists(albedo))
         {
             atlas = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = name + "_Atlas" };
             atlas.LoadImage(File.ReadAllBytes(albedo));
-            var px = atlas.GetPixels(); for (int i = 0; i < px.Length; i++) px[i].a = 1f; atlas.SetPixels(px); atlas.Apply();
-            Debug.Log($"[Factory] {name} albedo: {atlas.width}x{atlas.height}");
+            var px = atlas.GetPixels();
+            for (int i = 0; i < px.Length; i++) px[i].a = 1f;
+            atlas.SetPixels(px); atlas.Apply();
+            Debug.Log($"[Factory] {name} albedo: {atlas.width}x{atlas.height} ({Path.GetFileName(albedo)})");
         }
         else
         {
