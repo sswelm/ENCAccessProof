@@ -17,6 +17,7 @@ public class ModelFactoryWindow : EditorWindow
     string[] existing = { "<New>" };
     string status = "";
     Vector2 scroll;
+    bool showSettings;
 
     [MenuItem("Tools/Universal Model Factory")]
     static void Open()
@@ -41,6 +42,9 @@ public class ModelFactoryWindow : EditorWindow
         scroll = EditorGUILayout.BeginScrollView(scroll);
         GUILayout.Space(10f);
         EditorGUILayout.LabelField("Universal Model Factory", EditorStyles.boldLabel);
+        EditorGUILayout.Space();
+
+        DrawSettings();
         EditorGUILayout.Space();
 
         using (new EditorGUILayout.HorizontalScope())
@@ -126,6 +130,35 @@ public class ModelFactoryWindow : EditorWindow
             "• Convert grid: 0 keeps UV seams (textured models); >0 decimates (heavy untextured meshes).\n" +
             "Registry: " + ModelRegistry.RegistryPath, MessageType.None);
         EditorGUILayout.EndScrollView();
+    }
+
+    // Game-path settings: auto-detected Humankind BepInEx/config, with a manual override for odd install layouts.
+    void DrawSettings()
+    {
+        string resolved = ModelRegistry.ConfigDir;
+        bool exists = System.IO.Directory.Exists(resolved);
+        showSettings = EditorGUILayout.Foldout(showSettings, "Settings — game path" + (exists ? "" : "  ⚠ not found"), true);
+        if (!showSettings) return;
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            string auto = ModelRegistry.AutoDetectConfigDir();
+            EditorGUILayout.LabelField("Auto-detected", string.IsNullOrEmpty(auto) ? "(Humankind not found via Steam)" : auto, EditorStyles.wordWrappedMiniLabel);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                string ov = EditorGUILayout.TextField(new GUIContent("Override", "Leave empty to use auto-detect. Point at <Humankind>/BepInEx/config if detection misses your install."), ModelRegistry.ConfigDirOverride);
+                if (ov != ModelRegistry.ConfigDirOverride) ModelRegistry.ConfigDirOverride = ov;
+                if (GUILayout.Button("Browse", GUILayout.Width(70)))
+                {
+                    string p = EditorUtility.OpenFolderPanel("Select Humankind BepInEx/config", resolved, "");
+                    if (!string.IsNullOrEmpty(p)) { ModelRegistry.ConfigDirOverride = p; GUI.FocusControl(null); }
+                }
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(ModelRegistry.ConfigDirOverride)))
+                    if (GUILayout.Button("Clear", GUILayout.Width(56))) { ModelRegistry.ConfigDirOverride = ""; GUI.FocusControl(null); }
+            }
+            EditorGUILayout.HelpBox("Registry target:\n" + ModelRegistry.RegistryPath +
+                (exists ? "" : "\n(folder doesn't exist yet — created on Bake; check the path if this looks wrong)"),
+                exists ? MessageType.None : MessageType.Warning);
+        }
     }
 
     void OnSelectResource()

@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEngine;
 
@@ -31,9 +32,78 @@ class ModelDefList { public List<ModelDef> models = new List<ModelDef>(); }
 
 public static class ModelRegistry
 {
-    const string DefaultConfigDir = @"C:\Program Files (x86)\Steam\steamapps\common\Humankind\BepInEx\config";
-    public static string ConfigDir => EditorPrefs.GetString("ENC.bepinexConfig", DefaultConfigDir);
+    // Last-resort fallback if Steam auto-detection finds nothing (e.g. non-default install Steam can't report).
+    const string FallbackConfigDir = @"C:\Program Files (x86)\Steam\steamapps\common\Humankind\BepInEx\config";
+
+    // Where the plugin reads the registry from: an explicit user override wins; otherwise auto-detect the Humankind
+    // install via Steam's library config; otherwise the fallback. The manual override is the escape hatch — the
+    // Factory window exposes it so an adopter with a weird layout can point it by hand.
+    public static string ConfigDir
+    {
+        get
+        {
+            var over = EditorPrefs.GetString("ENC.bepinexConfig", "");
+            if (!string.IsNullOrWhiteSpace(over)) return over;
+            return AutoDetectConfigDir() ?? FallbackConfigDir;
+        }
+    }
+    public static string ConfigDirOverride
+    {
+        get => EditorPrefs.GetString("ENC.bepinexConfig", "");
+        set => EditorPrefs.SetString("ENC.bepinexConfig", value ?? "");
+    }
     public static string RegistryPath => Path.Combine(ConfigDir, "enc_models.json");
+
+    // ---- zero-config game-path discovery (mirrors the Blender/glbconv self-location) ----
+
+    // First Humankind install found across all Steam libraries -> its BepInEx/config. Returns null if not found.
+    public static string AutoDetectConfigDir()
+    {
+        try
+        {
+            foreach (var hk in HumankindInstallDirs())
+                return Path.Combine(hk, "BepInEx", "config");   // config may not exist until BepInEx runs once
+        }
+        catch { }
+        return null;
+    }
+
+    static IEnumerable<string> HumankindInstallDirs()
+    {
+        foreach (var lib in SteamLibraries())
+        {
+            string hk = Path.Combine(lib, "steamapps", "common", "Humankind");
+            if (Directory.Exists(hk)) yield return hk;
+        }
+    }
+
+    static IEnumerable<string> SteamLibraries()
+    {
+        string steam = SteamPath();
+        if (string.IsNullOrEmpty(steam)) yield break;
+        yield return steam;   // the base Steam dir is itself a library
+        string vdf = Path.Combine(steam, "steamapps", "libraryfolders.vdf");
+        if (File.Exists(vdf))
+            foreach (Match m in Regex.Matches(File.ReadAllText(vdf), "\"path\"\\s*\"([^\"]+)\""))
+                yield return m.Groups[1].Value.Replace(@"\\", @"\");
+    }
+
+    static string SteamPath()
+    {
+        // Probe the standard Steam install locations. Games on OTHER drives are still found — libraryfolders.vdf
+        // (inside this base install) lists every library. Steam installed to a truly custom folder is the one case
+        // this misses; that's what the Factory window's manual Override is for. (Deliberately no registry lookup:
+        // Microsoft.Win32.Registry isn't referenced under Unity's default .NET Standard API level.)
+        foreach (var c in new[]
+        {
+            @"C:\Program Files (x86)\Steam",
+            @"C:\Program Files\Steam",
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam"),
+        })
+            if (!string.IsNullOrEmpty(c) && Directory.Exists(c)) return c;
+        return null;
+    }
 
     public static List<ModelDef> Load()
     {
