@@ -81,15 +81,31 @@ public static class UniversalBaker
             {
                 objPath = resDir + "/" + name + ext;
                 File.Copy(cfg.modelFile, Path.Combine(projRoot, objPath), true);
+                // Bring the model's sibling assets along: textures (so multi-material albedos resolve on import) and,
+                // for OBJ, its .mtl. Copied under their ORIGINAL names so the material->texture references still match.
+                string srcDir = Path.GetDirectoryName(cfg.modelFile);
+                if (!string.IsNullOrEmpty(srcDir) && Directory.Exists(srcDir))
+                    foreach (var sib in Directory.GetFiles(srcDir))
+                    {
+                        string se = Path.GetExtension(sib).ToLowerInvariant();
+                        if (se == ".png" || se == ".jpg" || se == ".jpeg" || se == ".tga" || se == ".bmp" || se == ".mtl")
+                            File.Copy(sib, Path.Combine(projRoot, resDir, Path.GetFileName(sib)), true);
+                    }
             }
             else return Fail("unsupported model format: " + ext);
             AssetDatabase.Refresh();
         }
+        // Force a SYNCHRONOUS import of the freshly-copied model before loading it. AssetDatabase.Refresh() can defer the
+        // import to a later editor tick, so LoadAssetAtPath returns null on a first bake — the "no importable model"
+        // failure seen on FBX. ForceSynchronousImport guarantees the imported GameObject exists right now.
+        if (File.Exists(Path.Combine(projRoot, objPath)))
+            AssetDatabase.ImportAsset(objPath, ImportAssetOptions.ForceSynchronousImport);
         if (AssetDatabase.LoadAssetAtPath<GameObject>(objPath) == null)
         {
             var found = Directory.GetFiles(Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir))
                 .Select(p => p.Replace('\\', '/')).FirstOrDefault(p => p.EndsWith(name + ".obj") || p.EndsWith(name + ".fbx"));
             objPath = found != null ? "Assets" + found.Substring(found.IndexOf("/Resources/")) : objPath;
+            if (found != null) AssetDatabase.ImportAsset(objPath, ImportAssetOptions.ForceSynchronousImport);
             if (AssetDatabase.LoadAssetAtPath<GameObject>(objPath) == null) return Fail("no importable model at " + resDir);
         }
 
@@ -108,6 +124,35 @@ public static class UniversalBaker
         }
 
         var src = AssetDatabase.LoadAssetAtPath<GameObject>(objPath);
+        string fsResDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir);
+
+        // --- MULTI-MATERIAL detection: gather the model's materials in submesh order. The game draws one atlas per
+        // skeleton (a single _MainTex), so a model with >1 material must be packed into ONE atlas and its UVs remapped
+        // into each material's sub-rect. A single-material model keeps the proven path below unchanged. ---
+        var matList = new List<Material>();
+        foreach (var mf in src.GetComponentsInChildren<MeshFilter>())
+        {
+            var mm = mf.sharedMesh; if (mm == null) continue;
+            var mr0 = mf.GetComponent<MeshRenderer>(); var mats0 = mr0 != null ? mr0.sharedMaterials : null;
+            int sc = Mathf.Max(1, mm.subMeshCount);
+            for (int s = 0; s < sc; s++)
+            {
+                var smat = (mats0 != null && mats0.Length > 0) ? mats0[Mathf.Min(s, mats0.Length - 1)] : null;
+                if (smat != null && !matList.Contains(smat)) matList.Add(smat);
+            }
+        }
+        bool multiMat = matList.Count > 1;
+        Texture2D packedAtlas = null; Rect[] atlasRects = null;
+        if (multiMat)
+        {
+            var albs = matList.Select(mm => LoadReadableAlbedo(fsResDir, mm)).ToArray();
+            packedAtlas = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = name + "_Atlas" };
+            atlasRects = packedAtlas.PackTextures(albs, 2, 4096);
+            var apx = packedAtlas.GetPixels(); for (int i = 0; i < apx.Length; i++) apx[i].a = 1f;
+            packedAtlas.SetPixels(apx); packedAtlas.Apply();
+            Debug.Log($"[Factory] {name} MULTI-MATERIAL: {matList.Count} materials [{string.Join(", ", matList.Select(mm => mm.name))}] -> packed atlas {packedAtlas.width}x{packedAtlas.height}");
+        }
+
         // Read meshes STRAIGHT FROM THE IMPORTED ASSET — not an Instantiate'd copy. Unity has a known bug where a
         // DUPLICATED imported model returns scrambled UVs (Unity issuetracker: "broken UV mapping when the imported
         // model is duplicated"). Proven here: MeshDumper reads the asset directly and is UV-clean, while the bake's
@@ -122,16 +167,47 @@ public static class UniversalBaker
             var local = rootInv * mf.transform.localToWorldMatrix;
             var v = m.vertices; var uv = m.uv; var nr = m.normals;
             bool mUV = uv != null && uv.Length == v.Length, mNorm = nr != null && nr.Length == v.Length;
-            int baseIdx = cVerts.Count;
-            for (int i = 0; i < v.Length; i++)
+            if (!multiMat)
             {
-                cVerts.Add(local.MultiplyPoint3x4(v[i]));
-                cUV.Add(mUV ? uv[i] : Vector2.zero);
-                cNorm.Add(mNorm ? local.MultiplyVector(nr[i]).normalized : Vector3.up);
+                int baseIdx = cVerts.Count;
+                for (int i = 0; i < v.Length; i++)
+                {
+                    cVerts.Add(local.MultiplyPoint3x4(v[i]));
+                    cUV.Add(mUV ? uv[i] : Vector2.zero);
+                    cNorm.Add(mNorm ? local.MultiplyVector(nr[i]).normalized : Vector3.up);
+                }
+                haveUV |= mUV; haveNorm |= mNorm;
+                var tris = m.triangles;
+                for (int i = 0; i < tris.Length; i++) cTris.Add(baseIdx + tris[i]);
             }
-            haveUV |= mUV; haveNorm |= mNorm;
-            var tris = m.triangles;
-            for (int i = 0; i < tris.Length; i++) cTris.Add(baseIdx + tris[i]);
+            else
+            {
+                // Per submesh, remap each vertex UV into its material's atlas rect: uv' = rect.xy + uv * rect.wh.
+                // Verts are split per submesh (a vertex shared by two materials needs two different atlas UVs).
+                var mr = mf.GetComponent<MeshRenderer>(); var mats = mr != null ? mr.sharedMaterials : null;
+                int sc = Mathf.Max(1, m.subMeshCount);
+                for (int s = 0; s < sc; s++)
+                {
+                    var smat = (mats != null && mats.Length > 0) ? mats[Mathf.Min(s, mats.Length - 1)] : null;
+                    int mi = smat != null ? matList.IndexOf(smat) : -1;
+                    Rect r = (mi >= 0 && atlasRects != null && mi < atlasRects.Length) ? atlasRects[mi] : new Rect(0, 0, 1, 1);
+                    var tris = m.GetTriangles(s);
+                    var remap = new Dictionary<int, int>();
+                    foreach (int oldI in tris)
+                    {
+                        if (!remap.TryGetValue(oldI, out int ni))
+                        {
+                            ni = cVerts.Count; remap[oldI] = ni;
+                            cVerts.Add(local.MultiplyPoint3x4(v[oldI]));
+                            Vector2 u = mUV ? uv[oldI] : Vector2.zero;
+                            cUV.Add(new Vector2(r.x + u.x * r.width, r.y + u.y * r.height));
+                            cNorm.Add(mNorm ? local.MultiplyVector(nr[oldI]).normalized : Vector3.up);
+                        }
+                        cTris.Add(ni);
+                    }
+                    haveUV |= mUV; haveNorm = true;
+                }
+            }
         }
         var mesh = new Mesh { name = name + "_ModelMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         mesh.SetVertices(cVerts);
@@ -162,8 +238,8 @@ public static class UniversalBaker
         mesh.vertices = vr;
         Debug.Log($"[Factory] {name}: verts={mesh.vertexCount}, rawBox={dims}, size={size}, offset={cfg.positionOffset}, normals={cfg.normals}");
 
-        // --- 4) atlas ---
-        var atlas = BuildAtlas(resDir, name);
+        // --- 4) atlas (multi-material: the packed atlas built above; single: pick the one extracted albedo) ---
+        var atlas = multiMat ? packedAtlas : BuildAtlas(resDir, name);
         AssetDatabase.CreateAsset(atlas, "Assets/Resources/" + name + "_Atlas.asset");
 
         // --- 5) Faceted shading: unweld so each triangle gets its own face normal ---
@@ -223,6 +299,47 @@ public static class UniversalBaker
         string skelGuid = AmplitudeGuid(skel), atlasGuid = AmplitudeGuid(atlas);
         Debug.Log($"[Factory] {name} DONE. skeleton={skelGuid} atlas={atlasGuid}");
         return new BakeResult { ok = true, skeletonGuid = skelGuid, atlasGuid = atlasGuid, bbox = dims };
+    }
+
+    // A readable albedo for one material, for multi-material atlas packing. Prefer the extracted png on disk whose name
+    // matches the material's texture (so hand-edits still flow in); else copy the imported texture; else a grey tile.
+    static Texture2D LoadReadableAlbedo(string fsDir, Material mat)
+    {
+        string texName = mat != null && mat.mainTexture != null ? mat.mainTexture.name : (mat != null ? mat.name : null);
+        string png = null;
+        if (Directory.Exists(fsDir) && !string.IsNullOrEmpty(texName))
+        {
+            var pngs = Directory.GetFiles(fsDir, "*.png")
+                .Where(p => { var f = Path.GetFileNameWithoutExtension(p).ToLowerInvariant(); return !f.Contains("backup") && !f.Contains("orig"); }).ToArray();
+            png = pngs.FirstOrDefault(p => Path.GetFileNameWithoutExtension(p).Equals(texName, StringComparison.OrdinalIgnoreCase))
+               ?? pngs.FirstOrDefault(p => Path.GetFileNameWithoutExtension(p).IndexOf(texName, StringComparison.OrdinalIgnoreCase) >= 0)
+               ?? pngs.FirstOrDefault(p => texName.IndexOf(Path.GetFileNameWithoutExtension(p), StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+        if (png != null && File.Exists(png))
+        {
+            var t = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = texName ?? Path.GetFileNameWithoutExtension(png) };
+            t.LoadImage(File.ReadAllBytes(png));
+            Debug.Log($"[Factory]   material '{(mat != null ? mat.name : "?")}' -> albedo {Path.GetFileName(png)}");
+            return t;
+        }
+        if (mat != null && mat.mainTexture is Texture2D mt) { Debug.Log($"[Factory]   material '{mat.name}' -> imported texture '{mt.name}'"); return ReadableCopy(mt); }
+        Debug.LogWarning($"[Factory]   material '{(mat != null ? mat.name : "?")}' has no albedo -> grey tile");
+        var g = new Texture2D(64, 64, TextureFormat.RGBA32, false) { name = texName ?? "grey" };
+        var gpx = new Color[64 * 64]; for (int i = 0; i < gpx.Length; i++) gpx[i] = new Color(0.62f, 0.64f, 0.67f, 1f);
+        g.SetPixels(gpx); g.Apply();
+        return g;
+    }
+
+    // Imported textures are usually not CPU-readable (needed by PackTextures); blit through a RenderTexture to copy.
+    static Texture2D ReadableCopy(Texture2D srcTex)
+    {
+        var rt = RenderTexture.GetTemporary(srcTex.width, srcTex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+        Graphics.Blit(srcTex, rt);
+        var prev = RenderTexture.active; RenderTexture.active = rt;
+        var t = new Texture2D(srcTex.width, srcTex.height, TextureFormat.RGBA32, false) { name = srcTex.name };
+        t.ReadPixels(new Rect(0, 0, srcTex.width, srcTex.height), 0, 0); t.Apply();
+        RenderTexture.active = prev; RenderTexture.ReleaseTemporary(rt);
+        return t;
     }
 
     static Texture2D BuildAtlas(string resDir, string name)
