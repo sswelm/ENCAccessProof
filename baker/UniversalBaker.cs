@@ -94,10 +94,18 @@ public static class UniversalBaker
         }
 
         // --- 1) import normals per mode (Recalculate => Calculate + smoothing; else Import the model's own) ---
+        //     CRITICAL: weldVertices = false. Unity's model importer defaults to welding coincident verts, which merges
+        //     the UV-seam vertices our converter deliberately split — re-scrambling the skin (the whole "wrong texture"
+        //     bug). The converter keeps seams (grid 0); this stops Unity from undoing that on re-import.
         var wantImport = cfg.normals == NormalsMode.Recalculate ? ModelImporterNormals.Calculate : ModelImporterNormals.Import;
         if (AssetImporter.GetAtPath(objPath) is ModelImporter imp &&
-            (imp.importNormals != wantImport || Mathf.Abs(imp.normalSmoothingAngle - smoothing) > 0.5f))
-        { imp.importNormals = wantImport; imp.normalSmoothingAngle = smoothing; imp.SaveAndReimport(); }
+            (imp.importNormals != wantImport || Mathf.Abs(imp.normalSmoothingAngle - smoothing) > 0.5f
+             || imp.weldVertices))
+        {
+            imp.importNormals = wantImport; imp.normalSmoothingAngle = smoothing;
+            imp.weldVertices = false;
+            imp.SaveAndReimport();
+        }
 
         var src = AssetDatabase.LoadAssetAtPath<GameObject>(objPath);
         var inst = (GameObject)UnityEngine.Object.Instantiate(src);

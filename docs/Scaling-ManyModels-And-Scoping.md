@@ -605,6 +605,42 @@ export **untextured** because the glTF exporter can't read its node setup — su
 resource folder, bake with Reuse) or fix the material. Modern blends embed fine. Like the `dotnet` GLB converter, this
 adds a **Blender dependency** — fine for a modding tool, and to be surfaced as an install note when packaged.
 
+### ⚠️ UNRESOLVED: detailed atlas maps scrambled in-game — full diagnosis (2026-07-01)
+The Stealth Cruiser's detailed atlas renders **scrambled in-game** (helipad marking lands on the superstructure, deck
+numbers on the hull, etc.), while the **Zeppelin (simpler texture) maps correctly**. A long, methodical hunt narrowed
+it down by *proving each stage clean* rather than guessing:
+
+**Ruled OUT, each with a rendered proof:**
+- **Source model UVs** — the artist's `.blend` renders perfectly in Blender (clean grey hull, helipad aft, red+black
+  waterline). The UVs are a normal single [0,1] map. Not the source. *(The Sketchfab GLB, by contrast, arrives with
+  UVs already scrambled by Sketchfab's auto-conversion — always re-export from the `.blend`/original, not the GLB.)*
+- **Our GLB→OBJ converter (`glbconv`, grid 0)** — ran it on the clean GLB, rendered the resulting OBJ + extracted
+  albedo in Blender: **clean**. It reports `verts=1270 (UVs preserved)`, unified `v/vt/vn` indices. Converter is fine.
+- **Unity's OBJ import welding** — Unity re-splits the mesh (1270→1439 verts) on import. Set `weldVertices = false` in
+  the baker's `ModelImporter` so it stops merging seams; the re-split preserves UVs regardless.
+- **The baked mesh itself** — added `MeshDumper` (menu *Tools/Dump StealthCruiser Meshes*) to export the Unity-imported
+  mesh AND the final `_ModelMesh` back to OBJ. Rendered both with the atlas: **clean**. The baked mesh UVs are correct.
+- **The atlas** — 0 yellow, correct layout, `StealthCruiser_Atlas 2048x1024` loads fine (runtime log).
+- **Host material `_MainTex` crop** — runtime logs `host _MainTex_ST scale=(1,1) offset=(0,0)`. Identity; not a crop.
+  (Added a reset anyway — harmless, correct.)
+- **Texture V-flip** — rendered the mesh with a vertically-flipped atlas; the resulting scramble does **not** match the
+  in-game one. And logically **no texture transform (flip/crop/rotate) can move a flat-deck marking onto the raised
+  superstructure** — that needs genuinely wrong UV *coordinates*, not a shifted texture.
+
+**Conclusion:** correct mesh UVs + correct atlas + identity transform go in, yet the game samples *wrong* UVs at render.
+The scramble is introduced **inside Amplitude's mesh upload / GPU-skinning path**, downstream of everything the bake and
+the atlas control. The hopeful sign: the **Zeppelin renders textured correctly**, so the mesh-swap *can* carry UVs —
+something about how this particular mesh uploads differs (candidate leads: the 1270→1439 re-split, or `skinnedMeshInfo`
+carrying UV/attribute data separate from the swapped `MeshIndex`).
+
+**Next step (open):** decompile Amplitude's `skinnedMeshInfo` + mesh-upload (`LoadIFN`/`GetFxMeshIndex`) path and add a
+runtime probe that reads back the uploaded mesh's UVs at skin time, to see where our UVs get replaced. This is the last
+mile for detailed position-specific textures; simpler/uniform textures already work.
+
+**Tooling from this session (kept):** `baker/MeshDumper.cs` (mesh→OBJ dump); headless **Blender** render/export scripts
+(blend→GLB with material repair + texture recovery, OBJ+atlas render) — Blender is installed and drives cleanly from the
+command line. See also the `.blend` import path above.
+
 ### Toward a Unity package (gaps)
 Decouple hardcoded paths (`ModelRegistry.ConfigDir`, the `dotnet`/converter path) into settings; neutral naming (drop
 "ENC", namespace `ENCAccessProof`); ship the editor package + the companion BepInEx plugin together with docs; consider

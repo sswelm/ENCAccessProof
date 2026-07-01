@@ -42,7 +42,7 @@ namespace ENCAccessProof
     {
         const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         static List<ModelEntry> entries;
-        static bool loaded, registered, repointActiveLogged;
+        static bool loaded, registered, repointActiveLogged, stLogged;
         static UnityEngine.Texture2D _flatN, _white, _black, _grey;   // neutral overlay maps (kill the host's detail/camo)
 
         static void LoadRegistry()
@@ -313,7 +313,13 @@ namespace ENCAccessProof
                             if (GetMember(ro, fld) is UnityEngine.Material mat)
                             {
                                 if (_flatN == null) { _flatN = Solid(0.5f, 0.5f, 1f); _white = Solid(1f, 1f, 1f); _black = Solid(0f, 0f, 0f); _grey = Solid(0.5f, 0.5f, 0.5f); }
+                                if (!stLogged) { stLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} host _MainTex_ST scale={mat.GetTextureScale("_MainTex")} offset={mat.GetTextureOffset("_MainTex")}"); }
                                 mat.SetTexture("_MainTex", e.tex);
+                                // Reset the atlas UV transform. The host's material crops _MainTex to its slice of a SHARED
+                                // atlas (scale/offset != 1,0); left in place, our full atlas is sampled through that crop and
+                                // the skin looks scrambled. Map our atlas 1:1 to the mesh UVs.
+                                mat.SetTextureScale("_MainTex", UnityEngine.Vector2.one);
+                                mat.SetTextureOffset("_MainTex", UnityEngine.Vector2.zero);
                                 // neutralise the host's overlay maps so only OUR albedo shows (they're sampled with our
                                 // UVs -> they'd smear the host's detail/camo across the model, worst at the stern).
                                 mat.SetTexture("_NormalMap", _flatN);
