@@ -749,3 +749,9 @@ Honest caveat: this is a **color gradient, not a real skin** — no panel lines,
   the ~250k number as the decompiled buffer size, not a confirmed in-practice limit. Practical takeaway regardless: when
   fine detail goes see-through, try reducing the target *further* before reaching for a bigger budget — empirically it
   helps, even if we can't yet say exactly why.
+- **This is truncation, not decimation quality — proven by geometry *appearing*.** Dropping the LCAC to 12000
+  double-sided made the **interior well-deck walls suddenly render** (they were absent at 15000/20000). If lowering the
+  target were merely coarsening the mesh, those walls would get *simpler or vanish*, not appear. Geometry appearing when
+  you *reduce* the budget can only mean it was being **silently dropped** at the higher total — strong corroboration that
+  the cause is the shared buffer ceiling (later-written geometry truncated), not the reducer's quality. Rule of thumb:
+  if parts *appear* as you lower the target, you were over the ceiling; keep going until nothing new shows up.
