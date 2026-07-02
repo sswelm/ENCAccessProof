@@ -111,8 +111,9 @@ public class ModelFactoryWindow : EditorWindow
             "Doubles the triangle count."), cur.doubleSided);
         cur.targetTris = EditorGUILayout.IntField(new GUIContent("Reduce to ~tris (0 = off)",
             "Quadric-decimate a heavy model to about this many triangles (via Blender) before baking, to fit the engine's " +
-            "SHARED buffer (one budget across ALL injected models + the game's own fx meshes). Default 25000 ≈ the observed " +
-            "per-model ceiling. It's a CEILING, not a quota: a model already under it passes through untouched (never " +
+            "SHARED buffer (one budget across ALL injected models + the game's own fx meshes). Default 24000 (halves to " +
+            "12000 under double-sided — the confirmed best LCAC bake, just under the ~25k per-model ceiling). It's a " +
+            "CEILING, not a quota: a model already under it passes through untouched (never " +
             "upscaled). Toggling Double-sided automatically HALVES the effective target (it doubles the baked geometry), so " +
             "you set this once and just flip Double-sided on/off. Preserves thin parts (per-object). 0 = no reduction. " +
             "Needs Blender (auto-detected)."), cur.targetTris);

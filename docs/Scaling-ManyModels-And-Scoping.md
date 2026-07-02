@@ -682,11 +682,12 @@ private Vector3 encodingBBoxPosMin = (-8,-16,-8);  encodingBBoxPosMax = (8,16,8)
   - **It's a CEILING, not a quota.** A model already under the target passes through **untouched** — the decimate ratio
     clamps to 1.0 and collapse never *adds* geometry, so light models are never upscaled or altered. Only heavy models
     get trimmed. That's why a non-zero default is safe for everyone.
-  - **Default `25000`, and double-sided auto-halves it.** The Factory now defaults `targetTris` to **25000** (~the
-    observed per-model vertex ceiling) instead of off. Because double-sided doubles the baked geometry, the baker
-    **halves the effective target when double-sided is on** (25000 → 12500) and logs it. So the field is a single
-    "budget" you set once — flip Double-sided on/off and the baked result stays under it automatically. `0` still fully
-    disables the reducer.
+  - **Default `24000`, and double-sided auto-halves it.** The Factory now defaults `targetTris` to **24000** instead of
+    off — chosen so that under double-sided it halves to **12000**, the confirmed best-looking LCAC bake (just under the
+    ~25k per-model vertex ceiling; 12500 from a 25000 default was a hair worse in fine detail on close inspection).
+    Because double-sided doubles the baked geometry, the baker **halves the effective target when it's on** (24000 →
+    12000) and logs it. So the field is a single "budget" you set once — flip Double-sided on/off and the baked result
+    stays under it automatically. `0` still fully disables the reducer.
 - **Winding fix** (`windingFix`): the documented CAD fix from §5 — `Dot(geoNormal, a+b+c) < 0 ⇒ flip`, run **after the
   raise** so the origin sits *below* the model (→ "outward" is horizontal for a low skirt, not downward). Rewinds faces
   outward so a single-sided/CAD mesh renders **single-sided** (no culling holes) with **no extra geometry**. This is the

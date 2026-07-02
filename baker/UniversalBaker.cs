@@ -68,8 +68,9 @@ public static class UniversalBaker
             // down to ~targetTris, producing a reduced GLB the normal path then bakes — no offline tooling needed.
             // targetTris is a CEILING, not a quota: a model already under it passes through unchanged (decimate ratio
             // clamps to 1.0 — never adds geometry). Double-sided doubles the baked geometry, so we HALVE the reduce
-            // target when it's on — that way the field is a single "budget" the user sets once (default 25000, ~the
-            // observed per-model vertex ceiling) and toggling double-sided keeps the baked result under that budget.
+            // target when it's on — that way the field is a single "budget" the user sets once (default 24000, which
+            // halves to 12000 under double-sided: the confirmed best-looking LCAC bake, just under the ~25k per-model
+            // vertex ceiling) and toggling double-sided keeps the baked result under that budget.
             if (cfg.targetTris > 0)
             {
                 if (!BlenderAvailable()) return Fail("'Reduce to tris' needs Blender installed (auto-detected, or set EditorPrefs 'ENC.blenderPath').");

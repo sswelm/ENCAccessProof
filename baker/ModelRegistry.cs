@@ -26,7 +26,7 @@ public class ModelDef
     public bool doubleSided = false;    // add a reversed back face to every triangle — fixes single-sided/CAD meshes (e.g. a hovercraft skirt) that render invisible in-game because the engine culls backfaces
     public bool windingFix = false;     // rewind every face OUTWARD (documented CAD winding fix) so single-sided/CAD meshes render single-sided without doubling geometry — preferred over doubleSided for convex hulls (hovercraft, ships)
     public bool heightUV = false;       // override UVs with U=length, V=normalized height, so a vertical-gradient albedo maps by height (e.g. black skirt low, grey hull high) regardless of the source/CAD UVs
-    public int targetTris = 25000;      // >0 = quadric-decimate the source to ~this many triangles (via Blender) before baking, to fit the engine's shared buffer. Default 25000 = ~the observed per-model vertex ceiling; it's a CEILING (models already under it pass through untouched, never upscaled). 0 = off. Double-sided halves the effective target at bake time (it doubles the baked geometry).
+    public int targetTris = 24000;      // >0 = quadric-decimate the source to ~this many triangles (via Blender) before baking, to fit the engine's shared buffer. Default 24000 (halves to 12000 under double-sided — the confirmed best-looking LCAC bake, just under the ~25k per-model vertex ceiling); it's a CEILING (models already under it pass through untouched, never upscaled). 0 = off. Double-sided halves the effective target at bake time (it doubles the baked geometry).
     public int[] skel = new int[4];     // baked skeleton Amplitude guid {a,b,c,d}
     public int[] atlas = new int[4];    // baked atlas Amplitude guid {a,b,c,d}
 }
