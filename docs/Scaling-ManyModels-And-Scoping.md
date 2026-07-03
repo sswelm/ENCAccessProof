@@ -842,3 +842,66 @@ animation for a stationary air unit.
 **Donor-picking checklist:** (1) does my model have a moving part? → pick a donor that animates the same part and borrow
 it. (2) otherwise → pick a donor with **no** animated sub-parts **and** a full idle/move animation set; check the sub-mesh
 log shows `1 skinned sub-mesh`.
+
+## 12. Animated custom models — proven feasible; the editor pipeline works (2026-07-03)
+
+**The big one: a custom model's own skeletal animation CAN be baked into Amplitude's format and bound to an injected
+model.** Prompted by the ReconDrone — the Sketchfab drone GLB ships a real **`hover`** skeletal animation (spinning
+props). Static injection can't spin props (see §11's articulation ceiling), but the animation *exists in the file*, so
+the question became: can we feed it through Amplitude's own tooling? **Answer: yes** — Phases 1–2 below are proven; Phase
+3 (runtime playback) is planned but not yet built.
+
+### What the model must have
+Inspect the source with Blender: it needs an **armature + a skeletal AnimationClip** (bone animation, not object/turntable).
+The drone had `armature 'skeletal.1'` (87 bones incl. `motor_1..4_jnt` prop spinners) + 3 actions (`hover`, `exploded_view`,
+`step_by_step`). Sketchfab auto-plays the embedded clip — that's the tell that a real animation is in there.
+
+### Phase 1 — bake a bone-preserving Amplitude `Skeleton` ✅ PROVEN
+The Factory's normal bake **destroys** rigs (GLB→OBJ strips armature; it rebuilds a rigid 2-bone rig). So the animated
+path bypasses the Factory and uses the **SDK's own editor tooling**, which is all reflectable:
+1. **Produce a rigged FBX** from the GLB via Blender: strip junk (the material-less Icosphere), keep only the wanted
+   action (`hover`), export FBX with `bake_anim=True`, `add_leaf_bones=False`, `object_types={ARMATURE,MESH}`.
+2. **Import into Unity** (`Rig → Generic`, `Import Animation ✓`).
+3. Select it → **`Assets ▸ Create ▸ Amplitude ▸ Animation ▸ AnimationSkeleton`** (menu runs `Skeleton.SetPrefab` +
+   `Reimport`). *Gotcha:* the menu can grab the wrong prefab from selection context — open the new `*_Skeleton` asset and
+   set its **`Prefab`** field to the rigged FBX, then click **`Reimport`**.
+4. **Result:** `BoneInfos` filled with the real rig — **88 bones** (root + all 87 joints, prop bones present),
+   `SkinnedMeshInfos` = 77, non-zero `CheckSum`. A bone-preserving Amplitude skeleton. *(That the SDK ships this tooling
+   at all is why "inject a custom animated skeleton" — long feared to hang the GPU skinning — is actually supported.)*
+
+### Phase 2 — bake the clip into an Amplitude `ClipCollection` ✅ PROVEN
+A `ClipCollection` is a **pre-baked** format (`skeleton` GUID + `poseDataAsset` bytes + `ClipEntry`/`ClipCurveEntry` tables
++ checksums), *not* a Unity AnimationClip. Build it with the SDK:
+1. Select the **folder** containing the rigged FBX → **`Assets ▸ Create ▸ Amplitude ▸ Animation ▸ AnimationCollection`**.
+2. On the new ClipCollection: set **`Skeleton`** = our `*_Skeleton`; **drop the folder** into "Fill from directory content"
+   (it scans `*.fbx`, pulls their AnimationClips) → `Animation Clip Entries` becomes 1.
+3. Click **`Reimport`** → samples the clip against the skeleton and writes the pose data.
+4. **Result:** `Pose Data Asset` set, Statistics `1 clip / 21,912 poses / 130 kb / Duration 10.4 s / 249 frames / 88
+   bones`, curves **98.9% rotation-only** (= spinning props). Done.
+
+*(Harmless SDK noise: pressing Reimport with the mod-build `ModuleEditor` window open throws an IMGUI
+"control 2's position…" `ArgumentException` + a null-ref in `ModuleEditor.OnModuleBuildGUI` — a repaint-vs-layout glitch
+in the build window, NOT a bake failure. Close/reopen the window to clear it.)*
+
+### Phase 3 — runtime playback ⏳ PLANNED (not yet built)
+The remaining integration, with one real unknown:
+1. **Register the ClipCollection** so the engine assigns `hover` an `animationId`. Clip collections load from an
+   **`AnimationManagerContent`** asset — the mod already has one (`ENC_ModAnimationContent`, currently empty
+   `MeshCollections`/`AnimationClipCollections`). Two routes: add the skeleton+clip to that asset (data, loads at startup),
+   or inject into the live `loadedAnimationClipCollections` + rebuild the GPU animation buffer at runtime (like we already
+   do for skeletons via `RegisterMeshCollection` + `Apply`).
+2. **Repoint the pawn to the animated skeleton** — existing mechanism (`UniversalInject`), just a different GUID.
+3. **⚠️ Force the pawn to PLAY `hover`.** The one frontier: a pawn's current animation is set in the
+   **Presentation/PawnManager layer (a different DLL)** from unit state → OverrideController → clip. We'd make it always
+   resolve to our clip — a per-frame animation-state override, or a custom `OverrideController` (also bakeable via
+   `ReimportAnimatorOverrideControllers`). Expect a few build→test cycles here.
+
+### Facts banked (Amplitude animation format)
+- **`Skeleton : MeshCollection`** — `BoneInfo[] { Name, TRS BindPose, TRS Local, ParentIndex, Depth }`; built from a Unity
+  rigged prefab via editor `SetPrefab`/`Reimport`. `SkeletonInstance => this` (a Skeleton's own `Skeleton` field is unused).
+- **`ClipCollection`** — `skeleton` GUID + `poseDataAsset` (TextAsset bytes) + `animationClipEntries`/`animationClipCurveEntries`
+  + `sourceDirectory`. `SetFromDirectory()` pulls clips from `*.fbx`; `Reimport()` bakes poses.
+- **`AnimationManagerContent`** — lists `MeshCollections` + `AnimationClipCollections` the manager loads/registers.
+- Editor tooling is all reflectable (menus + `Reimport` methods), same trick the Factory uses for `Skeleton`.
+- Cost note: 88 bones + 77 skinned sub-meshes + 83k tris is **heavy** — a shipping version should slim to prop-bones-only
+  and decimate the *skinned* mesh (weight-preserving) to fit the shared buffer (§10).
