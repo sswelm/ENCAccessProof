@@ -23,6 +23,10 @@ namespace ENCAccessProof
         public string layerHint = "";
         public object isolatedLayer;     // our private clone of the host output layer (texture isolation)
         public string hideMeshes = "";   // comma-separated donor-FRAGMENT name substrings to hide (works for fragment-based extras; a donor's animated skinned sub-parts, e.g. a helicopter rotor, are encoded at pawn-spawn and cannot be hidden this late — pick a rotor-free donor instead)
+        public int ca, cb, cc, cd;       // ANIMATED models: our baked ClipCollection Amplitude guid (its own clip, e.g. a drone's spinning-prop 'hover'). 0,0,0,0 = static model (no pose override).
+        public object clipColl;          // loaded ClipCollection asset
+        public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
+        public int skeletonId = -1;      // runtime AnimationManager skeleton index of our registered skeleton (to match PawnManager.PawnEntry.SkeletonId)
         public bool fragsLogged;         // one-shot: dump the donor's fragment mesh names once, so the modder can find hide targets
         public bool repointed;
     }
@@ -65,6 +69,7 @@ namespace ENCAccessProof
                 var hm = Regex.Matches(text, "\"hideMeshes\"\\s*:\\s*\"([^\"]*)\"");
                 var sk = Regex.Matches(text, "\"skel\"\\s*:\\s*" + i4);
                 var at = Regex.Matches(text, "\"atlas\"\\s*:\\s*" + i4);
+                var cl = Regex.Matches(text, "\"clip\"\\s*:\\s*" + i4);   // ClipCollection guid (animated models); absent on static models
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
                 for (int i = 0; i < n; i++)
@@ -76,6 +81,7 @@ namespace ENCAccessProof
                         hideMeshes = i < hm.Count ? hm[i].Groups[1].Value : "",   // hideMeshes appears once per model in doc order, same as the others
                         sa = G(sk[i], 1), sb = G(sk[i], 2), sc = G(sk[i], 3), sd = G(sk[i], 4),
                         ta = G(at[i], 1), tb = G(at[i], 2), tc = G(at[i], 3), td = G(at[i], 4),
+                        ca = i < cl.Count ? G(cl[i], 1) : 0, cb = i < cl.Count ? G(cl[i], 2) : 0, cc = i < cl.Count ? G(cl[i], 3) : 0, cd = i < cl.Count ? G(cl[i], 4) : 0,
                     });
                 }
                 Plugin.Log.LogInfo($"[Uni] read {text.Length} chars; parsed {entries.Count} entr(ies) [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -106,14 +112,24 @@ namespace ENCAccessProof
                     reg.Invoke(animMgr, new[] { e.skeleton });
                     n++;
                 }
-                if (n > 0)
+                // inject our ClipCollections (animated models) into loadedAnimationClipCollections BEFORE Apply, so
+                // Apply's builder bakes their pose data + assigns each clip an animation id.
+                InjectClipCollections(animMgr);
+                if (n > 0 || entries.Any(x => x.clipColl != null))
                 {
                     var apply = AccessTools.Method(animMgr.GetType(), "Apply", Type.EmptyTypes)
                         ?? animMgr.GetType().GetMethods(BF).FirstOrDefault(m => m.Name == "Apply" && m.GetParameters().Length == 0);
                     apply?.Invoke(animMgr, null);
                 }
+                // capture each skeleton's runtime SkeletonId (assigned during Apply's GPU build) so the pawn-pose hook
+                // can match PawnManager.PawnEntry.SkeletonId; and resolve our clip's animation id for the pose override.
+                foreach (var e in entries)
+                {
+                    if (e.skeleton != null) { try { e.skeletonId = Convert.ToInt32(GetMember(e.skeleton, "SkeletonId")); } catch { } }
+                    if (e.clipColl != null) e.animId = ResolveAnimId(animMgr, e);
+                }
                 registered = true;
-                Plugin.Log.LogInfo($"[Uni] registered {n} skeleton(s) + re-Apply'd");
+                Plugin.Log.LogInfo($"[Uni] registered {n} skeleton(s) + re-Apply'd; " + string.Join(", ", entries.Select(x => $"{x.resourceName}(skel {x.skeletonId}, anim {x.animId})")));
             }
             catch (Exception e) { Plugin.Log.LogError("[Uni] register: " + e); }
         }
@@ -398,6 +414,118 @@ namespace ENCAccessProof
             catch (Exception ex) { Plugin.Log.LogError("[Uni] texture: " + ex); }
         }
 
+        // ---- animated models: register our ClipCollection + override the pawn's pose to play it ----
+
+        static object LoadClipCollection(int a, int b, int c, int d, string tag)
+        {
+            try
+            {
+                var guid = MakeGuid(a, b, c, d);
+                var ccType = AccessTools.TypeByName("Amplitude.Mercury.Animation.ClipCollection");
+                var adb = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
+                if (guid == null || ccType == null || adb == null) return null;
+                var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length >= 1);
+                var g = load?.MakeGenericMethod(ccType);
+                var args = g.GetParameters().Length == 1 ? new[] { guid } : new[] { guid, null };
+                var cc = g.Invoke(null, args);
+                Plugin.Log.LogInfo($"[Uni] loaded clipCollection '{tag}': " + ((cc as UnityEngine.Object)?.name ?? "NULL (rebuild mod?)"));
+                return cc;
+            }
+            catch (Exception e) { Plugin.Log.LogError("[Uni] loadClip: " + e); return null; }
+        }
+
+        // Append each animated model's ClipCollection to AnimationManager.loadedAnimationClipCollections so Apply's
+        // builder bakes its pose data + assigns it an animation id. Idempotent.
+        static void InjectClipCollections(object animMgr)
+        {
+            try
+            {
+                var field = AccessTools.Field(animMgr.GetType(), "loadedAnimationClipCollections");
+                var ccType = AccessTools.TypeByName("Amplitude.Mercury.Animation.ClipCollection");
+                if (field == null || ccType == null) { Plugin.Log.LogWarning("[Uni] clipCollection field/type not found"); return; }
+                foreach (var e in entries)
+                {
+                    if (e.ca == 0 && e.cb == 0 && e.cc == 0 && e.cd == 0) continue;
+                    if (e.clipColl == null) e.clipColl = LoadClipCollection(e.ca, e.cb, e.cc, e.cd, e.resourceName);
+                    if (e.clipColl == null) continue;
+                    try { AccessTools.Method(e.clipColl.GetType(), "Load", Type.EmptyTypes)?.Invoke(e.clipColl, null); } catch { }
+                    var arr = field.GetValue(animMgr) as Array;
+                    bool present = false;
+                    if (arr != null) foreach (var c in arr) if (ReferenceEquals(c, e.clipColl)) { present = true; break; }
+                    if (present) continue;
+                    int len = arr?.Length ?? 0;
+                    var narr = Array.CreateInstance(ccType, len + 1);
+                    if (arr != null) Array.Copy(arr, narr, len);
+                    narr.SetValue(e.clipColl, len);
+                    field.SetValue(animMgr, narr);
+                    Plugin.Log.LogInfo($"[Uni] injected clipCollection '{e.resourceName}' at [{len}]");
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[Uni] InjectClipCollections: " + ex); }
+        }
+
+        // After Apply built the animation buffer, resolve our clip's animation id via GetAnimationId(clip guid).
+        static int ResolveAnimId(object animMgr, ModelEntry e)
+        {
+            try
+            {
+                var clips = AccessTools.Field(e.clipColl.GetType(), "animationClipEntries")?.GetValue(e.clipColl) as Array;
+                if (clips == null || clips.Length == 0) return -1;
+                var clipGuid = GetMember(clips.GetValue(0), "UnityAnimationClip");
+                if (clipGuid == null) return -1;
+                var getId = AccessTools.Method(animMgr.GetType(), "GetAnimationId", new[] { clipGuid.GetType() });
+                return getId != null ? Convert.ToInt32(getId.Invoke(animMgr, new[] { clipGuid })) : -1;
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning("[Uni] ResolveAnimId: " + ex.Message); return -1; }
+        }
+
+        static bool? anyAnimated;        // cached early-out: skip the per-pawn hook if no model is animated
+        static bool poseHookLogged;
+
+        static ModelEntry AnimEntryFor(int skeletonId)
+        {
+            if (entries == null || skeletonId < 0) return null;
+            foreach (var e in entries) if (e.animId >= 0 && e.skeletonId == skeletonId) return e;
+            return null;
+        }
+
+        // The game just wrote pawnEntries[pawnCount-1]. If it's one of our animated models, force Pose0 to OUR clip
+        // (weight 1, advancing time) and zero the other poses — so it plays our animation instead of the donor's.
+        // sumWeight stays 1 (never zero all — that divides by zero => NaN => invisible).
+        internal static void OnPawnAdded(object pawnManager)
+        {
+            try
+            {
+                if (anyAnimated == null) anyAnimated = entries != null && entries.Any(x => x.ca != 0 || x.cb != 0 || x.cc != 0 || x.cd != 0);
+                if (anyAnimated != true || !Plugin.UniversalInjectOn.Value) return;
+                var pawnEntries = GetMember(pawnManager, "pawnEntries") as Array;
+                if (pawnEntries == null) return;
+                int pawnCount = Convert.ToInt32(GetMember(pawnManager, "pawnCount"));
+                if (pawnCount <= 0 || pawnCount > pawnEntries.Length) return;
+                int idx = pawnCount - 1;
+                var entry = pawnEntries.GetValue(idx);                 // boxed PawnEntry (struct)
+                int skelId = Convert.ToInt32(GetMember(entry, "SkeletonId"));
+                var e = AnimEntryFor(skelId);
+                if (e == null) return;
+                var pose0 = GetMember(entry, "Pose0");                  // boxed PawnEntryPose (struct)
+                SetMember(pose0, "AnimationId", (uint)e.animId);
+                SetMember(pose0, "Weight", 1f);
+                SetMember(pose0, "Time", UnityEngine.Time.time);        // advancing => the clip plays (props spin)
+                SetMember(entry, "Pose0", pose0);
+                for (int i = 1; i < 9; i++)
+                {
+                    var pose = GetMember(entry, "Pose" + i);
+                    if (pose == null) continue;
+                    SetMember(pose, "Weight", 0f);
+                    SetMember(entry, "Pose" + i, pose);
+                }
+                pawnEntries.SetValue(entry, idx);
+                if (!poseHookLogged) { poseHookLogged = true; Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId})"); }
+            }
+            catch { }
+        }
+
         static void TickOne(ModelEntry e)
         {
             if (e.hostOutputLayer == null || e.tex == null) return;
@@ -480,5 +608,17 @@ namespace ENCAccessProof
             return (addon != null && animMgr != null) ? AccessTools.Method(addon, "Load", new[] { animMgr }) : null;
         }
         static void Postfix(object __instance, object __0) { UniversalInject.RepointMatch(__instance, __0); }
+    }
+
+    // Per-pawn-per-frame: after the game writes a PawnEntry, let us override its pose for our animated models.
+    [HarmonyPatch]
+    internal static class UniPawnPoseHook
+    {
+        static MethodBase TargetMethod()
+        {
+            var t = AccessTools.TypeByName("Amplitude.Mercury.Animation.PawnManager");
+            return t != null ? AccessTools.Method(t, "AddPawnEntry") : null;
+        }
+        static void Postfix(object __instance) => UniversalInject.OnPawnAdded(__instance);
     }
 }

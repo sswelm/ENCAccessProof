@@ -946,3 +946,37 @@ so `GetAnimationId(hoverGuid)` resolves. That's the scoped finish line.
 
 **Net:** the first **animated injected model in Humankind renders, textures, scales, and drives its skeleton in-game**.
 Only the last step — pointing the pawn's pose at our own clip — remains, and its mechanism is now fully mapped.
+
+### Phase 3 COMPLETE — the props spin in-game ✅ (2026-07-03)
+
+**Done. The first animated custom model in Humankind plays its own baked animation in-game** — the ReconDrone's
+propellers spin. The runtime chain (all in `UniversalInject`):
+
+1. **Register the clip.** The clip-collection builder lives inside `AnimationManager.Apply()` (it reads
+   `loadedAnimationClipCollections`, copies each `PoseDataBytes` into the GPU buffer, and fills `animationIds`). So we
+   **load our ClipCollection by Amplitude guid, append it to `loadedAnimationClipCollections`, then let the existing
+   `Apply()` (already called to register skeletons) bake it in.** Its animation id is then resolved via
+   `GetAnimationId(clipEntry.UnityAnimationClip)`. Registry field: `"clip": [a,b,c,d]` (the ClipCollection guid; static
+   models leave it `[0,0,0,0]`).
+2. **Play it per pawn.** Harmony **postfix on `PawnManager.AddPawnEntry(ref PawnEntry)`** — the game writes
+   `pawnEntries[pawnCount-1]` once per pawn per frame. If that entry's `SkeletonId` matches our animated skeleton, we set
+   **`Pose0.AnimationId` = our clip id, `Pose0.Weight` = 1, `Pose0.Time` = `Time.time`** (advancing ⇒ it plays), and
+   **zero `Pose1..8`**. This overrides the donor's animation with ours.
+
+**The one non-obvious trap (cost an invisible drone):** `GetLocalBoneTRS` divides the blended pose by `sumWeight`
+(line ~1148). **Zeroing *all* pose weights ⇒ divide-by-zero ⇒ NaN ⇒ the whole mesh vanishes.** There is no "rest pose by
+zeroing weights" — you must keep at least one pose (`Pose0`) at weight 1 pointing to a *valid registered* clip.
+
+**Log of a clean run:** `loaded clipCollection` → `injected clipCollection at [106]` →
+`ReconDrone(skel 73, anim 256959)` → `pose hook: 'ReconDrone' -> Pose0 anim 256959`.
+
+**Recap of the full recipe for an animated custom model:**
+1. Model with an armature + skeletal clip → **slim FBX** (join to 1 mesh, 1 material, decimate, keep armature+clip).
+2. SDK editor: **AnimationSkeleton** (SetPrefab the FBX → Reimport) + **AnimationCollection** (set Skeleton, fill from
+   folder → Reimport). Scale via the FBX **Model→Scale Factor**.
+3. Registry: point `skel` at the skeleton guid + add `"clip"` = the ClipCollection guid (both via `AmplitudeGuidLogger`).
+4. Plugin: registers the skeleton (existing), **injects the clip + resolves its id (Apply)**, and **forces `Pose0` via
+   the `AddPawnEntry` hook**. No GPU-skinning hang; props spin.
+
+**Known minor artifact:** the drone's camera-gimbal pan is baked into the `hover` clip (strip those keyframes + re-bake
+to remove). Cosmetic.
