@@ -27,6 +27,7 @@ namespace ENCAccessProof
         public object clipColl;          // loaded ClipCollection asset
         public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
         public int skeletonId = -1;      // runtime AnimationManager skeleton index of our registered skeleton (to match PawnManager.PawnEntry.SkeletonId)
+        public int descId = -1;          // runtime PawnDescriptorId of our unit (learned from the correctly-skinned pawn), to spot the wrong-skeleton twin the game spawns for the same unit
         public bool fragsLogged;         // one-shot: dump the donor's fragment mesh names once, so the modder can find hide targets
         public bool repointed;
     }
@@ -481,7 +482,7 @@ namespace ENCAccessProof
         }
 
         static bool? anyAnimated;        // cached early-out: skip the per-pawn hook if no model is animated
-        static bool poseHookLogged;
+        static bool poseHookLogged, rescueLogged;
 
         static ModelEntry AnimEntryFor(int skeletonId)
         {
@@ -506,12 +507,28 @@ namespace ENCAccessProof
                 int idx = pawnCount - 1;
                 var entry = pawnEntries.GetValue(idx);                 // boxed PawnEntry (struct)
                 int skelId = Convert.ToInt32(GetMember(entry, "SkeletonId"));
+                int descId = Convert.ToInt32(GetMember(entry, "PawnDescriptorId"));
+
+                // Match our animated unit by our skeleton id (the correct pawn) OR by our unit's DESCRIPTOR — the game
+                // can spawn a unit's pawn on a different vanilla skeleton, which then draws our mesh mis-skinned. Learn
+                // the descriptor from the first correct pawn, then rescue any wrong-skeleton pawn.
                 var e = AnimEntryFor(skelId);
+                if (e != null) e.descId = descId;                      // learn our unit's descriptor
+                else if (descId >= 0) e = entries.FirstOrDefault(x => x.animId >= 0 && x.descId >= 0 && x.descId == descId);
                 if (e == null) return;
-                var pose0 = GetMember(entry, "Pose0");                  // boxed PawnEntryPose (struct)
+
+                // FORCE our skeleton so this pawn skins by OUR rig (fixes a unit that spawned on a vanilla skeleton).
+                if (skelId != e.skeletonId)
+                {
+                    SetMember(entry, "SkeletonId", e.skeletonId);
+                    if (!rescueLogged) { rescueLogged = true; Plugin.Log.LogInfo($"[Uni] rescued wrong-skeleton pawn: skelId {skelId} -> {e.skeletonId} (descId {descId})"); }
+                }
+
+                // Play OUR clip on Pose0 (weight 1, advancing time); zero the others. Never all-zero (=> NaN => invisible).
+                var pose0 = GetMember(entry, "Pose0");                 // boxed PawnEntryPose (struct)
                 SetMember(pose0, "AnimationId", (uint)e.animId);
                 SetMember(pose0, "Weight", 1f);
-                SetMember(pose0, "Time", UnityEngine.Time.time);        // advancing => the clip plays (props spin)
+                SetMember(pose0, "Time", UnityEngine.Time.time);       // advancing => the clip plays (props spin)
                 SetMember(entry, "Pose0", pose0);
                 for (int i = 1; i < 9; i++)
                 {
@@ -521,7 +538,7 @@ namespace ENCAccessProof
                     SetMember(entry, "Pose" + i, pose);
                 }
                 pawnEntries.SetValue(entry, idx);
-                if (!poseHookLogged) { poseHookLogged = true; Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId})"); }
+                if (!poseHookLogged) { poseHookLogged = true; Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId} -> {e.skeletonId}, desc {descId})"); }
             }
             catch { }
         }

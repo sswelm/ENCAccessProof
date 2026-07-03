@@ -987,3 +987,21 @@ bone, and re-bake the ClipCollection. Confirmation in the ClipCollection stats: 
 **`100% R`** — pure rotation, i.e. the translation bob is gone. Result: only the propellers spin, body dead-steady.
 *(Blender 5.1 note: `Action.fcurves` is gone — f-curves live in `action.layers[].strips[].channelbags[].fcurves`, and to
 detect spinners, sample `pose_bone.matrix_basis` across frames rather than reading curves.)*
+
+### Multi-instance fix — every unit spins, not just the first (2026-07-03)
+
+Spawning a *second* animated unit exposed a real bug: only the first drone spun; later ones drew our mesh but flew apart /
+jiggled. Diagnosis (per-pawn logging of `PawnManager.PawnEntry`): the game gives different **units of the same
+descriptor** different **`SkeletonId`s** — the first ReconDrone landed on our registered skeleton (id 73), but the second
+came up on a **vanilla skeleton (id 33)**, so our mesh got skinned by the wrong rig (garbage). Both had the same
+`PawnDescriptorId` (69).
+
+- **A red herring:** an early theory was "the unit spawns a twin pawn," and a `Scale=0` collapse to hide it — wrong on
+  both counts (they're separate *units*, not twins, and the collapse didn't even hide it).
+- **The fix:** in the `AddPawnEntry` hook, match our unit by **`PawnDescriptorId`** (learned from the first correctly-
+  skinned pawn), and for any pawn that has our descriptor but the *wrong* `SkeletonId`, **force `entry.SkeletonId` to our
+  registered id** before setting `Pose0`. Now the pawn skins with our rig, plays our clip, and spins — for **any** number
+  of instances. Log: `rescued wrong-skeleton pawn: skelId 33 -> 73 (descId 69)`.
+
+Takeaway for animated injection: don't key the pawn-pose hook on `SkeletonId` alone (the game may put your unit on a
+different skeleton per instance) — key on the **descriptor**, and normalize the skeleton id yourself.
