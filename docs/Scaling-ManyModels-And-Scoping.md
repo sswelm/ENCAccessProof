@@ -978,5 +978,12 @@ zeroing weights" — you must keep at least one pose (`Pose0`) at weight 1 point
 4. Plugin: registers the skeleton (existing), **injects the clip + resolves its id (Apply)**, and **forces `Pose0` via
    the `AddPawnEntry` hook**. No GPU-skinning hang; props spin.
 
-**Known minor artifact:** the drone's camera-gimbal pan is baked into the `hover` clip (strip those keyframes + re-bake
-to remove). Cosmetic.
+**Polish — isolate the moving parts (fixed).** The source `hover` clip animates *all* 88 bones, so besides the props it
+also panned the camera gimbal (`CameraHandle_jnt`/`camera_jnt`) and — the real eyesore — **translated the root `Center`
+bone**, bobbing the whole drone ("unbalanced flywheel" wobble). Fix: **keep animation only on the spinning bones and strip
+the rest.** Sample the clip to find the spinners (per-bone rotation travel — the props read ~123 rad vs ~1 rad for the
+camera and 7.8 units of *location* travel on `Center`), then in Blender remove every f-curve whose bone isn't a `prop_*`
+bone, and re-bake the ClipCollection. Confirmation in the ClipCollection stats: curves go from `98.9% R / 1.1% TR` to
+**`100% R`** — pure rotation, i.e. the translation bob is gone. Result: only the propellers spin, body dead-steady.
+*(Blender 5.1 note: `Action.fcurves` is gone — f-curves live in `action.layers[].strips[].channelbags[].fcurves`, and to
+detect spinners, sample `pose_bone.matrix_basis` across frames rather than reading curves.)*
