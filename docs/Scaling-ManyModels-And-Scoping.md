@@ -905,3 +905,44 @@ The remaining integration, with one real unknown:
 - Editor tooling is all reflectable (menus + `Reimport` methods), same trick the Factory uses for `Skeleton`.
 - Cost note: 88 bones + 77 skinned sub-meshes + 83k tris is **heavy** — a shipping version should slim to prop-bones-only
   and decimate the *skinned* mesh (weight-preserving) to fit the shared buffer (§10).
+
+### Phase 3 runtime — IN PROGRESS: renders + animates in-game; the final lever found (2026-07-03)
+
+Took the animated ReconDrone from assets to on-screen. Status: **it renders, it's full-size, it's textured, and the
+animation pipeline is provably live** — the only thing left is making it play *our* clip instead of the donor's.
+
+**Increment 1 — renders without the GPU-skinning hang ✅ (the fear is dead).** Pointed the ReconDrone registry entry's
+`skel` at the animated skeleton's Amplitude GUID (get it via a tiny reflection menu — `AmplitudeGuidLogger`, since
+`Amplitude.Framework.Asset.AssetDatabase.GetAssetGUID` only resolves in-editor). First try was **invisible**: the raw
+skeleton was **83,712 tris across 77 separate meshes** — it overflows the shared buffer (§10) *and* the 1-fragment
+injection only maps one mesh. **Fix: re-export a *slim* FBX** — in Blender, `join()` all 77 objects into one mesh, collapse
+to a single material (they shared one texture anyway), and decimate to ~12k tris, **keeping the armature + `hover`**. Then
+re-point the skeleton asset's `Prefab` at the slim FBX and `Reimport` (same asset file → **same GUID**, so the registry
+needs no edit). Result: a **1-mesh / 12k-tri / 88-bone** animated skeleton that renders (matches the static bake's shape
+that we know works).
+
+**Increment 2 — full-size + textured ✅.** The SDK-built skeleton uses the FBX's **native scale** (~0.1 u), *not* the
+Factory `size` field (that only applies to Factory bakes). So it came in as a 1-pixel speck. Fix: bump the FBX's
+**Model → Scale Factor** (~30) → Apply → Reimport skeleton + clip. Renders full-size and correctly textured (the
+registry atlas applies fine).
+
+**Increment 3 — the animation is LIVE, but plays the DONOR's clip ⏳ (the finish line).** The drone's bones visibly
+animate — but into a *contorted* pose, because the pawn is playing the **donor APC's** animation on our skeleton: the
+APC clip's curves (its ~16 turret/axle bones) get applied **by bone index** to our drone's first ~16 bones, so the
+underside/arms twitch while the props (higher indices, untouched by the APC clip) stay still. **This is the proof the
+pipeline works — it's just the wrong clip.**
+
+**The exact final lever (decompiled `AnimationManager.GetLocalBoneTRS(ref PawnManager.PawnEntry, boneIndex)`):** each pawn
+carries **`Pose0…Pose4`** — up to five blended animation poses, each with a `.Weight` and an animation id. Therefore:
+- **All pose weights 0 → the bone uses its rest `Local`** = drone sits in its correct **rest pose, no contortion** (a clean
+  *static* drone).
+- **`Pose0` = our `hover` animation-id, weight 1 → the props spin** (the goal).
+
+Both fixes are the same lever: **override the pawn's `Pose0…4`**. The remaining work: these live in
+**`PawnManager.PawnEntry`** (the *Presentation* DLL, not yet decompiled/hooked), and the game re-sets them each frame — so
+it needs a **PawnManager hook** that finds our pawn's entry and overrides its poses per frame, plus **registering our
+ClipCollection** (via the empty `ENC_ModAnimationContent`, or injecting into `loadedAnimationClipCollections` + `Apply`)
+so `GetAnimationId(hoverGuid)` resolves. That's the scoped finish line.
+
+**Net:** the first **animated injected model in Humankind renders, textures, scales, and drives its skeleton in-game**.
+Only the last step — pointing the pawn's pose at our own clip — remains, and its mechanism is now fully mapped.
