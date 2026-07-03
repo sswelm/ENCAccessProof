@@ -26,6 +26,7 @@ namespace ENCAccessProof
         public int ca, cb, cc, cd;       // ANIMATED models: our baked ClipCollection Amplitude guid (its own clip, e.g. a drone's spinning-prop 'hover'). 0,0,0,0 = static model (no pose override).
         public object clipColl;          // loaded ClipCollection asset
         public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
+        public float animDuration = 1f;  // clip duration (s); PawnEntryPose.Time is NORMALIZED (Mathf.Repeat(Time,1) = one loop), so Time = seconds/duration plays it at real speed with every frame
         public int skeletonId = -1;      // runtime AnimationManager skeleton index of our registered skeleton (to match PawnManager.PawnEntry.SkeletonId)
         public int descId = -1;          // runtime PawnDescriptorId of our unit (learned from the correctly-skinned pawn), to spot the wrong-skeleton twin the game spawns for the same unit
         public bool fragsLogged;         // one-shot: dump the donor's fragment mesh names once, so the modder can find hide targets
@@ -476,7 +477,17 @@ namespace ENCAccessProof
                 var clipGuid = GetMember(clips.GetValue(0), "UnityAnimationClip");
                 if (clipGuid == null) return -1;
                 var getId = AccessTools.Method(animMgr.GetType(), "GetAnimationId", new[] { clipGuid.GetType() });
-                return getId != null ? Convert.ToInt32(getId.Invoke(animMgr, new[] { clipGuid })) : -1;
+                int id = getId != null ? Convert.ToInt32(getId.Invoke(animMgr, new[] { clipGuid })) : -1;
+                if (id >= 0)   // capture the clip's real duration so the pose hook can normalize Time (play at real speed)
+                {
+                    var getDur = AccessTools.Method(animMgr.GetType(), "GetAnimationDuration", new[] { typeof(int) });
+                    if (getDur != null)
+                    {
+                        float d = Convert.ToSingle(getDur.Invoke(animMgr, new object[] { id }));
+                        if (d > 0.001f) { e.animDuration = d; Plugin.Log.LogInfo($"[Uni] clip animId {id} duration {d:0.###}s"); }
+                    }
+                }
+                return id;
             }
             catch (Exception ex) { Plugin.Log.LogWarning("[Uni] ResolveAnimId: " + ex.Message); return -1; }
         }
@@ -528,7 +539,9 @@ namespace ENCAccessProof
                 var pose0 = GetMember(entry, "Pose0");                 // boxed PawnEntryPose (struct)
                 SetMember(pose0, "AnimationId", (uint)e.animId);
                 SetMember(pose0, "Weight", 1f);
-                SetMember(pose0, "Time", UnityEngine.Time.time);       // advancing => the clip plays (props spin)
+                // PawnEntryPose.Time is NORMALIZED (sampler does Mathf.Repeat(Time,1) = one loop). Divide by the clip
+                // duration so it plays at REAL speed and hits every frame; raw Time.time = duration× too fast + frame-skipping.
+                SetMember(pose0, "Time", UnityEngine.Time.time / (e.animDuration > 0.001f ? e.animDuration : 1f));
                 SetMember(entry, "Pose0", pose0);
                 for (int i = 1; i < 9; i++)
                 {
