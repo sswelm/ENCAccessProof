@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json.Linq;                 // SDK-provided (mod.io) — robust glTF parse for the Clip/Bone pickers
 using UnityEditor;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
@@ -369,10 +370,10 @@ public class ModelFactoryWindow : EditorWindow
     }
 
     // Read clip names + bone-name prefixes from the model, for the Pick dropdowns. glTF/GLB only (no Blender); returns
-    // empties for FBX/.blend (fields stay manual). Parsed by scoped bracket-matching, NOT JsonUtility — real glTF (all
-    // its accessors/bufferViews/extensions) makes JsonUtility.FromJson silently fail. Clips = the "name"s inside the
-    // top-level animations[]; bones = the "name"s inside the top-level nodes[] (its array-of-objects, not scenes' node
-    // index lists), grouped into prefixes (text before the first _ . - or space) with counts.
+    // empties for FBX/.blend (fields stay manual). Primary parse is Newtonsoft (SDK-provided; robust on any valid glTF,
+    // where JsonUtility silently fails) — it maps skin joints -> node names so bone COUNTS are accurate. A scoped
+    // bracket-matching fallback (NamesInArray) handles truncated/odd JSON with no dependency. Clips = animations[].name;
+    // bones grouped into prefixes (text before the first _ . - or space) with counts.
     static (List<string>, List<KeyValuePair<string, int>>) InspectModel(string file)
     {
         var clips = new List<string>();
@@ -383,8 +384,30 @@ public class ModelFactoryWindow : EditorWindow
             string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
             string json = ext == ".glb" ? ReadGlbJson(file) : (ext == ".gltf" ? System.IO.File.ReadAllText(file) : null);
             if (json == null) return (clips, prefixes);
-            clips = NamesInArray(json, "\"animations\"\\s*:\\s*\\[").Distinct().ToList();
-            var boneNames = NamesInArray(json, "\"nodes\"\\s*:\\s*\\[(?=\\s*\\{)");   // require array-of-objects (top-level nodes, not scenes' "nodes":[0,1])
+            List<string> boneNames;
+            try
+            {
+                // Robust parse: Newtonsoft handles any valid glTF, and maps skin joints -> node names by index so bone
+                // COUNTS are accurate (the real bones, not every node). (JsonUtility silently fails on real glTF.)
+                var root = JObject.Parse(json);
+                clips = (root["animations"] as JArray)?.Select(a => (string)a["name"])
+                    .Where(n => !string.IsNullOrEmpty(n)).Distinct().ToList() ?? new List<string>();
+                var nodes = root["nodes"] as JArray;
+                var joints = new HashSet<int>();
+                if (root["skins"] is JArray skins)
+                    foreach (var s in skins)
+                        if (s["joints"] is JArray js)
+                            foreach (var j in js) joints.Add((int)j);
+                IEnumerable<string> bn = (joints.Count > 0 && nodes != null)
+                    ? joints.Where(i => i >= 0 && i < nodes.Count).Select(i => (string)nodes[i]?["name"])
+                    : (nodes?.Select(n => (string)n?["name"]) ?? Enumerable.Empty<string>());
+                boneNames = bn.Where(n => !string.IsNullOrEmpty(n)).ToList();
+            }
+            catch   // truncated / odd JSON -> zero-dependency bracket-matching fallback (glTF-specific)
+            {
+                clips = NamesInArray(json, "\"animations\"\\s*:\\s*\\[").Distinct().ToList();
+                boneNames = NamesInArray(json, "\"nodes\"\\s*:\\s*\\[(?=\\s*\\{)");
+            }
             prefixes = boneNames.Where(n => !string.IsNullOrEmpty(n)).GroupBy(PrefixOf)
                 .Where(gr => !string.IsNullOrEmpty(gr.Key))
                 .Select(gr => new KeyValuePair<string, int>(gr.Key, gr.Count()))
@@ -431,18 +454,19 @@ public class ModelFactoryWindow : EditorWindow
             var rx = new System.Text.RegularExpressions.Regex(
                 @"\[Uni\] " + System.Text.RegularExpressions.Regex.Escape(resourceName) + @" (?:HID )?donor fragment\[\d+\] mesh='([^']*)'");
             var seen = new HashSet<string>();
+            // Scan the WHOLE log (shared-read, so it works while the game holds it open). The plugin logs each donor
+            // fragment ONCE per session, early (first unit load) — on a big verbose log (300 MB+) that's nowhere near the
+            // tail, so tailing missed it. A cheap substring pre-filter keeps the regex off the millions of non-fragment
+            // lines, so a full streaming scan stays quick (disk-bound, a couple of seconds even on a huge log).
             using (var fs = new System.IO.FileStream(log, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+            using (var sr = new System.IO.StreamReader(fs))
             {
-                const long tail = 16L * 1024 * 1024;
-                if (fs.Length > tail) fs.Seek(-tail, System.IO.SeekOrigin.End);
-                using (var sr = new System.IO.StreamReader(fs))
+                string line;
+                while ((line = sr.ReadLine()) != null)
                 {
-                    string line;
-                    while ((line = sr.ReadLine()) != null)
-                    {
-                        var m = rx.Match(line);
-                        if (m.Success) { var nm = m.Groups[1].Value; if (nm.Length > 0 && seen.Add(nm)) res.Add(nm); }
-                    }
+                    if (line.IndexOf("donor fragment[", System.StringComparison.Ordinal) < 0) continue;   // cheap pre-filter
+                    var m = rx.Match(line);
+                    if (m.Success) { var nm = m.Groups[1].Value; if (nm.Length > 0 && seen.Add(nm)) res.Add(nm); }
                 }
             }
         }
