@@ -30,11 +30,14 @@ public struct BakeConfig
     public bool    windingFix;      // true = rewind faces outward from the origin (documented CAD winding fix) so single-sided meshes render, no geometry doubling
     public bool    heightUV;        // true = override UVs with U=length, V=height so a vertical-gradient albedo maps by height (black skirt low, grey hull high)
     public int     targetTris;      // >0 = quadric-decimate the source to ~this many triangles (Blender) before baking, to fit the engine's shared vertex/index buffer
+    public bool    animated;        // true = ANIMATED path: bake from the model's OWN armature + clip (Skeleton + ClipCollection), not the procedural vehicle rig
+    public string  animClip;        // ANIMATED only: name of the clip to bake when the model has several (e.g. "hover"); empty = the assigned/first action
+    public string  animateBones;    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
 }
 
 public struct BakeResult
 {
-    public bool ok; public string error; public string skeletonGuid, atlasGuid; public Vector3 bbox;
+    public bool ok; public string error; public string skeletonGuid, atlasGuid, clipGuid; public Vector3 bbox;
 }
 
 public static class UniversalBaker
@@ -43,6 +46,157 @@ public static class UniversalBaker
     {
         try { return BuildInner(cfg); }
         catch (Exception e) { Debug.LogError("[Factory] " + e); return new BakeResult { ok = false, error = e.Message }; }
+    }
+
+    // ANIMATED bake — a parallel pipeline that keeps the model's OWN armature + clip instead of the procedural
+    // single-bone vehicle rig. Blender slims the rigged model (join+decimate, keep armature, clamp frame range, optional
+    // bone strip, export albedo), Unity imports the FBX, then we bake an Amplitude Skeleton (from the FBX) and a
+    // ClipCollection (from the folder) via the same reflected editor methods the SDK inspector uses. Returns skel + clip
+    // + atlas guids for the registry ("clip" makes the runtime drive the pawn's pose onto our animation).
+    public static BakeResult BuildAnimated(BakeConfig cfg)
+    {
+        try { return BuildAnimatedInner(cfg); }
+        catch (Exception e) { Debug.LogError("[Factory] " + e); return new BakeResult { ok = false, error = e.Message }; }
+    }
+
+    static BakeResult BuildAnimatedInner(BakeConfig cfg)
+    {
+        if (string.IsNullOrEmpty(cfg.resourceName)) return Fail("resourceName is required");
+        if (!BlenderAvailable()) return Fail("Animated import needs Blender installed (auto-detected, or set EditorPrefs 'ENC.blenderPath').");
+        string name = cfg.resourceName;
+        float size = cfg.size > 0f ? cfg.size : 5f;
+
+        if (!AssetDatabase.IsValidFolder("Assets/Resources")) AssetDatabase.CreateFolder("Assets", "Resources");
+        string resDir = "Assets/Resources/" + name;
+        if (!AssetDatabase.IsValidFolder(resDir)) AssetDatabase.CreateFolder("Assets/Resources", name);
+        // Bake the FBX into a DEDICATED subfolder that holds ONLY our clip. The ClipCollection's SetFromDirectory scans a
+        // whole folder for animation FBX, so if we dropped it in resDir it would also pick up any OTHER fbx there (e.g. a
+        // hand-made drone_rigged_slim.fbx) and bake a 2-clip collection — the runtime then resolves the wrong clip and the
+        // model tears apart. Isolating the fbx makes the bake correct regardless of what else is in the resource folder.
+        string animDir = resDir + "/anim";
+        if (!AssetDatabase.IsValidFolder(animDir)) AssetDatabase.CreateFolder(resDir, "anim");
+        string projRoot = Directory.GetParent(Application.dataPath).FullName;
+        string fsDir = Path.Combine(Application.dataPath, "Resources", name);
+        Directory.CreateDirectory(fsDir);
+
+        string fbxRel = animDir + "/" + name + "_anim.fbx";
+        string fbxFull = Path.Combine(projRoot, fbxRel);
+
+        // --- 1) Blender: slim the rigged model (keep armature + clip, clamp frame range, optional bone strip, albedo) ---
+        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !File.Exists(fbxFull)))
+        {
+            int target = cfg.targetTris > 0 ? cfg.targetTris : 12000;   // animated skins want to stay well under the shared buffer
+            string albedoOut = Path.Combine(fsDir, name + "_albedo.png");
+            if (!RigAnimViaBlender(cfg.modelFile, fbxFull, target, cfg.animateBones ?? "", cfg.animClip ?? "", albedoOut))
+                return Fail("Blender animated slim failed (see console). Is the model rigged with the named animation clip?");
+        }
+        if (!File.Exists(fbxFull)) return Fail("no slim FBX at " + fbxRel + " — bake with a Model file first (Reuse extracted needs an existing one).");
+        AssetDatabase.ImportAsset(fbxRel, ImportAssetOptions.ForceUpdate);
+
+        // --- 2) import the FBX: Generic rig, import animation, scale so the longest axis ~= size ---
+        var imp = AssetImporter.GetAtPath(fbxRel) as ModelImporter;
+        if (imp == null) return Fail("could not get ModelImporter for " + fbxRel);
+        imp.animationType = ModelImporterAnimationType.Generic;
+        imp.importAnimation = true;
+        imp.globalScale = 1f;
+        imp.SaveAndReimport();
+        var fbxGo = AssetDatabase.LoadAssetAtPath<GameObject>(fbxRel);
+        float longest = MeasureLongestAxis(fbxGo);
+        if (longest > 1e-4f)
+        {
+            imp.globalScale = size / longest;   // SDK skeleton uses the FBX native scale, so match `size` via Scale Factor
+            imp.SaveAndReimport();
+            fbxGo = AssetDatabase.LoadAssetAtPath<GameObject>(fbxRel);
+            Debug.Log($"[Factory] {name} FBX scale factor {imp.globalScale:0.###} (native longest {longest:0.###} -> {size} units)");
+        }
+        if (fbxGo == null) return Fail("imported FBX has no GameObject");
+
+        // --- 3) atlas from the exported albedo (same single-albedo path + Resources-root location as static) ---
+        var atlas = BuildAtlas(resDir, name);
+        string atlasPath = "Assets/Resources/" + name + "_Atlas.asset";
+        AssetDatabase.DeleteAsset(atlasPath);
+        AssetDatabase.CreateAsset(atlas, atlasPath);
+        AssetDatabase.SaveAssets();
+
+        // --- 4) bake Skeleton from the FBX's own armature + skinned mesh (SetPrefab + Reimport, as the SDK inspector does) ---
+        var skelType = FindAmpType("Amplitude.Mercury.Animation.Skeleton");
+        if (skelType == null) return Fail("Amplitude Skeleton type not found");
+        string skelPath = "Assets/Resources/" + name + "_Skeleton.asset";
+        AssetDatabase.DeleteAsset(skelPath);
+        var skel = ScriptableObject.CreateInstance(skelType);
+        AssetDatabase.CreateAsset(skel, skelPath);
+        skelType.GetMethod("SetPrefab", new[] { typeof(GameObject) })?.Invoke(skel, new object[] { fbxGo });
+        skelType.GetMethod("Reimport", Type.EmptyTypes)?.Invoke(skel, null);
+        EditorUtility.SetDirty(skel);
+        AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
+
+        // --- 5) bake ClipCollection: set its skeleton guid, SetFromDirectory (populate clips), Reimport (bake poseData) ---
+        var clipType = FindAmpType("Amplitude.Mercury.Animation.ClipCollection");
+        if (clipType == null) return Fail("Amplitude ClipCollection type not found");
+        string clipPath = "Assets/Resources/" + name + "_Clips.asset";
+        AssetDatabase.DeleteAsset(clipPath);
+        var clipColl = ScriptableObject.CreateInstance(clipType);
+        AssetDatabase.CreateAsset(clipColl, clipPath);
+        // the ClipCollection references its skeleton by Amplitude guid — set the private serialized field directly
+        var adbType = FindAmpType("Amplitude.Framework.Asset.AssetDatabase");
+        var skelGuidObj = adbType?.GetMethod("GetAssetGUID", new[] { typeof(UnityEngine.Object) })?.Invoke(null, new object[] { skel });
+        var skelField = clipType.GetField("skeleton", BindingFlags.NonPublic | BindingFlags.Instance);
+        if (skelField == null || skelGuidObj == null) return Fail("could not bind ClipCollection.skeleton (field/guid missing)");
+        skelField.SetValue(clipColl, skelGuidObj);
+        clipType.GetMethod("SetFromDirectory", new[] { typeof(string) })?.Invoke(clipColl, new object[] { animDir });   // isolated folder = only OUR fbx -> exactly one clip
+        clipType.GetMethod("Reimport", Type.EmptyTypes)?.Invoke(clipColl, null);                                       // bakes the pose data
+        EditorUtility.SetDirty(clipColl);
+        AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
+
+        string skelGuid = AmplitudeGuid(skel), atlasGuid = AmplitudeGuid(atlas), clipGuid = AmplitudeGuid(clipColl);
+        if (string.IsNullOrEmpty(clipGuid) || clipGuid == "0,0,0,0")
+            Debug.LogWarning($"[Factory] {name}: ClipCollection guid looks empty — check the model actually has a clip.");
+        Debug.Log($"[Factory] {name} ANIMATED DONE. skeleton={skelGuid} clip={clipGuid} atlas={atlasGuid}");
+        return new BakeResult { ok = true, skeletonGuid = skelGuid, atlasGuid = atlasGuid, clipGuid = clipGuid, bbox = Vector3.zero };
+    }
+
+    // Longest axis of the FBX's combined mesh bounds (native scale), so we can compute the Scale Factor that hits `size`.
+    static float MeasureLongestAxis(GameObject go)
+    {
+        if (go == null) return 0f;
+        Bounds? b = null;
+        foreach (var smr in go.GetComponentsInChildren<SkinnedMeshRenderer>())
+            if (smr.sharedMesh != null) b = b == null ? smr.sharedMesh.bounds : Encapsulate(b.Value, smr.sharedMesh.bounds);
+        foreach (var mf in go.GetComponentsInChildren<MeshFilter>())
+            if (mf.sharedMesh != null) b = b == null ? mf.sharedMesh.bounds : Encapsulate(b.Value, mf.sharedMesh.bounds);
+        if (b == null) return 0f;
+        var s = b.Value.size;
+        return Mathf.Max(s.x, Mathf.Max(s.y, s.z));
+    }
+    static Bounds Encapsulate(Bounds a, Bounds add) { a.Encapsulate(add); return a; }
+
+    static Type FindAmpType(string fullName) =>
+        AppDomain.CurrentDomain.GetAssemblies().SelectMany(SafeTypes).FirstOrDefault(t => t.FullName == fullName);
+
+    // Blender: slim a rigged/animated model into a decimated FBX that keeps its armature + one clip (Tools/rig_anim.py).
+    static bool RigAnimViaBlender(string src, string outFbx, int targetTris, string bonePrefixes, string clipName, string albedoOut)
+    {
+        string proj = Directory.GetParent(Application.dataPath).FullName;
+        string script = Path.Combine(proj, "Tools", "rig_anim.py");
+        if (!File.Exists(script)) { Debug.LogError("[Factory] bundled rig_anim.py missing: " + script); return false; }
+        string blender = FindBlender();
+        string args = $"--background --python \"{script}\" -- \"{src}\" \"{outFbx}\" {Mathf.Max(1, targetTris)} \"{bonePrefixes ?? ""}\" \"{clipName ?? ""}\" \"{albedoOut ?? ""}\"";
+        var psi = new System.Diagnostics.ProcessStartInfo(blender, args)
+        { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        try
+        {
+            if (File.Exists(outFbx)) File.Delete(outFbx);
+            using (var p = System.Diagnostics.Process.Start(psi))
+            {
+                string o = p.StandardOutput.ReadToEnd(), e = p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[rig_anim] " + o.Trim());
+                if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[rig_anim] " + e.Trim());
+                if (p.ExitCode != 0 || !File.Exists(outFbx)) { Debug.LogError("[Factory] rig_anim produced no FBX (exit " + p.ExitCode + ")."); return false; }
+                return true;
+            }
+        }
+        catch (Exception ex) { Debug.LogError("[Factory] could not run Blender rig_anim ('" + blender + "'): " + ex.Message); return false; }
     }
 
     static BakeResult BuildInner(BakeConfig cfg)

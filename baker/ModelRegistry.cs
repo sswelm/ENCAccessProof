@@ -30,6 +30,10 @@ public class ModelDef
     public string hideMeshes = "";      // RUNTIME (not baked): comma-separated donor-FRAGMENT name substrings the plugin hides on this unit — e.g. hide a fragment-based extra. NOTE: a donor's animated skinned sub-parts (a helicopter rotor, spinning wheels) are encoded at pawn-spawn and CANNOT be hidden this late — choose a donor without such parts. Find fragment names in the BepInEx log: "[Uni] <name> donor fragment[i] mesh='...'".
     public int[] skel = new int[4];     // baked skeleton Amplitude guid {a,b,c,d}
     public int[] atlas = new int[4];    // baked atlas Amplitude guid {a,b,c,d}
+    public int[] clip = new int[4];     // ANIMATED only: baked ClipCollection Amplitude guid {a,b,c,d}; static models leave it {0,0,0,0}
+    public bool animated = false;       // true = baked from the model's OWN armature + clip (animated path), not the procedural vehicle rig
+    public string animClip = "";        // ANIMATED only: name of the clip to bake when the model has several (e.g. "hover"); empty = the assigned/first action
+    public string animateBones = "";    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
 }
 
 [Serializable]

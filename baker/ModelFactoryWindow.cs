@@ -19,11 +19,19 @@ public class ModelFactoryWindow : EditorWindow
     Vector2 scroll;
     bool showSettings;
 
+    // Cheap animation probe (no Blender), cached per model-file path. State: 0 = unknown (allow), 1 = animation
+    // detected (allow + hint), 2 = definitely none (disable the Animated toggle). Keeps the checkbox from being ticked
+    // on a static model. Runs once when the path changes, not every OnGUI frame.
+    string animProbeFile = "";   // sentinel != any real path so the first real path always probes
+    int animProbeState;
+    List<string> animClips = new List<string>();                                   // clip names read from the model (Clip picker)
+    List<KeyValuePair<string, int>> animBonePrefixes = new List<KeyValuePair<string, int>>();  // bone-name prefix -> count (Bones picker)
+
     [MenuItem("Tools/Universal Model Factory")]
     static void Open()
     {
         var w = GetWindow<ModelFactoryWindow>(false, "Universal Model Factory");
-        w.minSize = new Vector2(480, 470);
+        w.minSize = new Vector2(500, 470);
         w.RefreshList();
     }
 
@@ -40,6 +48,9 @@ public class ModelFactoryWindow : EditorWindow
     void OnGUI()
     {
         scroll = EditorGUILayout.BeginScrollView(scroll);
+        // Widen the label column so the longer labels ("Position offset (Z = waterline)", "Double-sided (single-sided/CAD)",
+        // "Animated (own rig + clip)") aren't clipped. Scales with window width so fields still get room when widened.
+        EditorGUIUtility.labelWidth = Mathf.Clamp(position.width * 0.42f, 210f, 320f);
         GUILayout.Space(10f);
         EditorGUILayout.LabelField("Universal Model Factory", EditorStyles.boldLabel);
         EditorGUILayout.Space();
@@ -98,12 +109,79 @@ public class ModelFactoryWindow : EditorWindow
             EditorGUILayout.HelpBox(".blend import needs Blender installed (auto-detected). Install it, or set EditorPrefs 'ENC.blenderPath' to blender.exe.", MessageType.Warning);
 
         EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Animation", EditorStyles.miniBoldLabel);
+        EnsureAnimProbe(cur.modelFile);
+        bool noAnim = animProbeState == 2;
+        if (noAnim) cur.animated = false;   // a static model can't drive the animated path
+        using (new EditorGUI.DisabledScope(noAnim))
+            cur.animated = EditorGUILayout.Toggle(new GUIContent("Animated (own rig + clip)",
+            "Bake from the model's OWN armature + animation clip so it plays its own motion in-game (e.g. a drone's " +
+            "propellers spin) — instead of the static single-bone vehicle rig. The model MUST be rigged with a skeletal " +
+            "animation (glb/fbx/blend). Blender slims it (join + decimate, keep the armature + first clip), Unity bakes an " +
+            "Amplitude Skeleton + ClipCollection, and the plugin drives the pawn's pose onto it. Needs Blender (auto-detected)."), cur.animated);
+        // Clip name — free text + a Pick button that lists the clips read from the model (glb/gltf; no Blender).
+        using (new EditorGUI.DisabledScope(!cur.animated))
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            cur.animClip = EditorGUILayout.TextField(new GUIContent("Clip name",
+                "Which animation to bake when the model has several clips — e.g. 'hover'. Use Pick to choose from the clips " +
+                "found in the model. Leave EMPTY to use the model's assigned/first clip."), cur.animClip ?? "");
+            using (new EditorGUI.DisabledScope(animClips.Count == 0))
+                if (GUILayout.Button(new GUIContent("Pick", animClips.Count == 0 ? "No clips readable from this model (glb/gltf only) — type the name" : null), GUILayout.Width(70)))
+                {
+                    var r = GUILayoutUtility.GetLastRect();
+                    var arr = animClips.ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), arr, arr, "Clips", n => { cur.animClip = n; Repaint(); }).Show(r);
+                }
+        }
+        // Animate only bones — free text + a Pick that appends a bone-name prefix (grouped, with counts) from the model.
+        using (new EditorGUI.DisabledScope(!cur.animated))
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            cur.animateBones = EditorGUILayout.TextField(new GUIContent("Animate only bones",
+                "Optional. Comma-separated bone-name PREFIXES to keep animation on — e.g. 'prop' keeps the spinning parts " +
+                "and strips camera / body-bob curves that make the model wobble. Use Pick to add a prefix found in the model. " +
+                "Leave EMPTY to keep the whole clip. The frame range is always auto-clamped (kills the ~1s per-loop stall)."), cur.animateBones ?? "");
+            using (new EditorGUI.DisabledScope(animBonePrefixes.Count == 0))
+                if (GUILayout.Button(new GUIContent("Pick", animBonePrefixes.Count == 0 ? "No bones readable from this model (glb/gltf only) — type prefixes" : null), GUILayout.Width(70)))
+                {
+                    var r = GUILayoutUtility.GetLastRect();
+                    var labels = animBonePrefixes.Select(kv => $"{kv.Key}  ({kv.Value} part{(kv.Value == 1 ? "" : "s")})").ToArray();
+                    var values = animBonePrefixes.Select(kv => kv.Key).ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), labels, values, "Bone prefixes", p =>
+                    {
+                        var set = (cur.animateBones ?? "").Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                        if (!set.Contains(p)) set.Add(p);
+                        cur.animateBones = string.Join(",", set);
+                        Repaint();
+                    }).Show(r);
+                }
+        }
+        // Blender is a HARD dependency for the animated path (rig-slim + clip bake); glbconv can't emit a rigged FBX.
+        // Warn as soon as an animated model is detected — not only after ticking — so a Blender-less adopter knows upfront.
+        // (Detection itself needs no Blender, so the checkbox stays usable; only Bake will fail until Blender is present.)
+        if ((cur.animated || animProbeState == 1) && !UniversalBaker.BlenderAvailable())
+            EditorGUILayout.HelpBox("The Animated path needs Blender (to slim the rig + bake the clip) — it wasn't found. " +
+                "Install Blender (auto-detected under Program Files) or set EditorPrefs 'ENC.blenderPath' to blender.exe. " +
+                "Detection above works without Blender, but Bake will fail until it's installed.", MessageType.Warning);
+        if (cur.animated)
+            EditorGUILayout.HelpBox("Animated mode uses Size + Reduce-to-tris; the static Mesh/shading options below " +
+                "(normals, winding, double-sided, height UVs, convert grid) don't apply.", MessageType.None);
+        else if (noAnim)
+            EditorGUILayout.HelpBox("No animation found in this model — the Animated option is disabled. Pick a rigged " +
+                "glb / gltf / fbx (with a skeletal clip) to enable it, or use the static bake.", MessageType.None);
+        else if (animProbeState == 1)
+            EditorGUILayout.HelpBox("Animation detected in this model — tick 'Animated' to bake its own rig + clip.", MessageType.None);
+
+        EditorGUILayout.Space();
         EditorGUILayout.LabelField("Transform", EditorStyles.miniBoldLabel);
         cur.rotation = EditorGUILayout.Vector3Field("Rotation offset (XYZ)", cur.rotation);
         cur.position = EditorGUILayout.Vector3Field("Position offset (Z = waterline)", cur.position);
         using (new EditorGUILayout.HorizontalScope())
         {
-            cur.size = EditorGUILayout.FloatField(new GUIContent("Size (units)", "Length of the model's longest axis, in world units"), cur.size, GUILayout.Width(220));
+            // Keep the Size input compact (not full-width) but sized RELATIVE to the label column — a fixed 220 left the
+            // input a ~10px sliver once the label column widened to ~210. label + ~90px input keeps the box usable.
+            cur.size = EditorGUILayout.FloatField(new GUIContent("Size (units)", "Length of the model's longest axis, in world units"), cur.size, GUILayout.Width(EditorGUIUtility.labelWidth + 90f));
             GUILayout.FlexibleSpace();
         }
 
@@ -124,21 +202,55 @@ public class ModelFactoryWindow : EditorWindow
             "Add a back face to every surface so single-sided or CAD 'sketch' meshes don't render invisible in-game (the " +
             "engine culls backfaces). Enable for models with missing / see-through parts — e.g. a hovercraft skirt. " +
             "Doubles the triangle count."), cur.doubleSided);
-        cur.targetTris = EditorGUILayout.IntField(new GUIContent("Reduce to ~tris (0 = off)",
+        // IntSlider (not a bare field) for consistency with Smoothing angle + to show where you sit vs the ~25k per-model
+        // ceiling. Range 0..50000: 0 = off, default 24000 ≈ mid, and the max is generous headroom (values much above the
+        // ceiling overflow the shared buffer anyway). The slider keeps an editable number box, so exact values still work.
+        cur.targetTris = EditorGUILayout.IntSlider(new GUIContent("Reduce to ~tris (0 = off)",
             "Quadric-decimate a heavy model to about this many triangles (via Blender) before baking, to fit the engine's " +
             "SHARED buffer (one budget across ALL injected models + the game's own fx meshes). Default 24000 (halves to " +
             "12000 under double-sided — the confirmed best LCAC bake, just under the ~25k per-model ceiling). It's a " +
             "CEILING, not a quota: a model already under it passes through untouched (never " +
             "upscaled). Toggling Double-sided automatically HALVES the effective target (it doubles the baked geometry), so " +
             "you set this once and just flip Double-sided on/off. Preserves thin parts (per-object). 0 = no reduction. " +
-            "Needs Blender (auto-detected)."), cur.targetTris);
-        cur.hideMeshes = EditorGUILayout.TextField(new GUIContent("Hide donor meshes",
-            "RUNTIME, not baked. Comma-separated name substrings of the DONOR unit's extra parts to hide on this unit — " +
-            "e.g. 'Rotor' to remove the attack-helicopter rotor from a drone. Leave EMPTY to keep them (a custom " +
-            "helicopter can borrow the donor's spinning rotor by leaving this blank). Find the exact names in the " +
-            "BepInEx log after a launch: \"[Uni] <name> donor fragment[i] mesh='...'\". Takes effect on reload — no re-bake. " +
-            "NOTE: only hides FRAGMENT-based extras; a donor's animated skinned sub-parts (helicopter rotor, spinning " +
-            "wheels) are encoded at pawn-spawn and can't be hidden — pick a donor without them."), cur.hideMeshes ?? "");
+            "Needs Blender (auto-detected)."), cur.targetTris, 0, 50000);
+        if (cur.targetTris > 0 && !UniversalBaker.BlenderAvailable())
+            EditorGUILayout.HelpBox("Reduce-to-tris uses Blender (quadric decimation) — Blender wasn't found, so Bake will " +
+                "fail. Either set this to 0, use 'Convert grid' below (Blender-free GLB decimation), or install Blender / " +
+                "set its path in Settings above.", MessageType.Warning);
+        // Hide donor meshes — runtime field. The donor's fragment names only exist at runtime, so Pick reads them back
+        // from the BepInEx log (the plugin dumps "[Uni] <name> donor fragment[i] mesh='...'" once per launch).
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            cur.hideMeshes = EditorGUILayout.TextField(new GUIContent("Hide donor meshes",
+                "RUNTIME, not baked. Comma-separated name substrings of the DONOR unit's extra parts to hide on this unit — " +
+                "e.g. 'Rotor' to remove the attack-helicopter rotor from a drone. Leave EMPTY to keep them (a custom " +
+                "helicopter can borrow the donor's spinning rotor by leaving this blank). Use Pick to choose from the donor " +
+                "fragments the plugin logged (launch the game once first). Takes effect on reload — no re-bake. " +
+                "NOTE: only hides FRAGMENT-based extras; a donor's animated skinned sub-parts (helicopter rotor, spinning " +
+                "wheels) are encoded at pawn-spawn and can't be hidden — pick a donor without them."), cur.hideMeshes ?? "");
+            if (GUILayout.Button(new GUIContent("Pick", "List the donor's fragment meshes the plugin logged for this resource. Launch the game once with the model injected first."), GUILayout.Width(70)))
+            {
+                var r = GUILayoutUtility.GetLastRect();
+                var frags = ReadDonorFragments(cur.resourceName);
+                if (frags.Count == 0)
+                    EditorUtility.DisplayDialog("Hide donor meshes",
+                        $"No donor fragment meshes have been logged for '{cur.resourceName}' yet.\n\n" +
+                        "Launch the game once with this model injected — the plugin writes the donor's fragment mesh names " +
+                        "to BepInEx\\LogOutput.log — then click Pick again. (If the donor has no extra fragments, there's " +
+                        "nothing to hide and you can leave this empty.)", "OK");
+                else
+                {
+                    var arr = frags.ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), arr, arr, "Donor fragments", m =>
+                    {
+                        var set = (cur.hideMeshes ?? "").Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                        if (!set.Contains(m)) set.Add(m);
+                        cur.hideMeshes = string.Join(",", set);
+                        Repaint();
+                    }).Show(r);
+                }
+            }
+        }
         cur.convertGrid = EditorGUILayout.IntField(new GUIContent("Convert grid",
             "GLB / glTF / .blend only — controls how the source mesh is converted to OBJ.\n\n" +
             "0 = faithful: keep every vertex and UV exactly (preserves texture seams). Use this for " +
@@ -185,7 +297,10 @@ public class ModelFactoryWindow : EditorWindow
     {
         string resolved = ModelRegistry.ConfigDir;
         bool exists = System.IO.Directory.Exists(resolved);
-        showSettings = EditorGUILayout.Foldout(showSettings, "Settings — game path" + (exists ? "" : "  ⚠ not found"), true);
+        bool blenderOk = UniversalBaker.BlenderAvailable();
+        // Header shows a marker even when collapsed, so a missing game path OR missing Blender is always visible.
+        string mark = (!exists ? "  ⚠ game path" : "") + (!blenderOk ? (exists ? "  ⚠ Blender not detected" : " & Blender") : "");
+        showSettings = EditorGUILayout.Foldout(showSettings, "Settings — game & Blender path" + mark, true);
         if (!showSettings) return;
         using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
         {
@@ -207,6 +322,31 @@ public class ModelFactoryWindow : EditorWindow
                 (exists ? "" : "\n(folder doesn't exist yet — created on Bake; check the path if this looks wrong)"),
                 exists ? MessageType.None : MessageType.Warning);
         }
+
+        // --- Blender: needed for animated import, .blend import, and Reduce-to-tris. Show status + an in-UI override. ---
+        EditorGUILayout.Space();
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            string found = UniversalBaker.FindBlender();
+            EditorGUILayout.LabelField("Blender", blenderOk ? found : "⚠ not detected", EditorStyles.wordWrappedMiniLabel);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                string bov = EditorPrefs.GetString("ENC.blenderPath", "");
+                string nb = EditorGUILayout.TextField(new GUIContent("Override (blender.exe)", "Leave empty to auto-detect the newest install under Program Files. Set this if Blender is elsewhere or only on PATH."), bov);
+                if (nb != bov) EditorPrefs.SetString("ENC.blenderPath", nb ?? "");
+                if (GUILayout.Button("Browse", GUILayout.Width(70)))
+                {
+                    string p = EditorUtility.OpenFilePanel("Select blender.exe", "", "exe");
+                    if (!string.IsNullOrEmpty(p)) { EditorPrefs.SetString("ENC.blenderPath", p); GUI.FocusControl(null); }
+                }
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(EditorPrefs.GetString("ENC.blenderPath", ""))))
+                    if (GUILayout.Button("Clear", GUILayout.Width(56))) { EditorPrefs.SetString("ENC.blenderPath", ""); GUI.FocusControl(null); }
+            }
+            EditorGUILayout.HelpBox(blenderOk
+                ? "Used for animated import, .blend import, and Reduce-to-tris. GLB/OBJ/FBX static bakes work without it."
+                : "Not found — animated import, .blend import, and Reduce-to-tris will fail. Install Blender or point the override at blender.exe. Static GLB/OBJ/FBX bakes still work (glbconv), and 'Convert grid' decimates without Blender.",
+                blenderOk ? MessageType.None : MessageType.Warning);
+        }
     }
 
     void OnSelectResource()
@@ -216,6 +356,172 @@ public class ModelFactoryWindow : EditorWindow
         if (e == null) return;
         cur = JsonUtility.FromJson<ModelDef>(JsonUtility.ToJson(e));   // clone so edits don't mutate the stored copy
         status = "Loaded '" + e.resourceName + "'. Edit + Bake; leave Model file empty to re-bake with new settings.";
+    }
+
+    // Re-probe only when the model-file path changes (OnGUI runs every frame; file I/O must not).
+    void EnsureAnimProbe(string file)
+    {
+        file = file ?? "";
+        if (file == animProbeFile) return;
+        animProbeFile = file;
+        animProbeState = ProbeAnimation(file);
+        (animClips, animBonePrefixes) = InspectModel(file);   // populate the Clip / Bones pickers
+    }
+
+    // Read clip names + bone-name prefixes from the model, for the Pick dropdowns. glTF/GLB only (no Blender); returns
+    // empties for FBX/.blend (fields stay manual). Parsed by scoped bracket-matching, NOT JsonUtility — real glTF (all
+    // its accessors/bufferViews/extensions) makes JsonUtility.FromJson silently fail. Clips = the "name"s inside the
+    // top-level animations[]; bones = the "name"s inside the top-level nodes[] (its array-of-objects, not scenes' node
+    // index lists), grouped into prefixes (text before the first _ . - or space) with counts.
+    static (List<string>, List<KeyValuePair<string, int>>) InspectModel(string file)
+    {
+        var clips = new List<string>();
+        var prefixes = new List<KeyValuePair<string, int>>();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(file) || !System.IO.File.Exists(file)) return (clips, prefixes);
+            string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
+            string json = ext == ".glb" ? ReadGlbJson(file) : (ext == ".gltf" ? System.IO.File.ReadAllText(file) : null);
+            if (json == null) return (clips, prefixes);
+            clips = NamesInArray(json, "\"animations\"\\s*:\\s*\\[").Distinct().ToList();
+            var boneNames = NamesInArray(json, "\"nodes\"\\s*:\\s*\\[(?=\\s*\\{)");   // require array-of-objects (top-level nodes, not scenes' "nodes":[0,1])
+            prefixes = boneNames.Where(n => !string.IsNullOrEmpty(n)).GroupBy(PrefixOf)
+                .Where(gr => !string.IsNullOrEmpty(gr.Key))
+                .Select(gr => new KeyValuePair<string, int>(gr.Key, gr.Count()))
+                .OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).ToList();
+        }
+        catch { }
+        return (clips, prefixes);
+    }
+
+    // Collect every "name":"…" inside the JSON array opened by `openRegex` (matched through its '['), by tracking bracket
+    // depth (strings respected) to find the array's matching ']'. Within that array the only "name" fields are the
+    // entities' names (glTF animation channels/samplers and node transforms carry no "name").
+    static List<string> NamesInArray(string json, string openRegex)
+    {
+        var res = new List<string>();
+        var m = System.Text.RegularExpressions.Regex.Match(json, openRegex);
+        if (!m.Success) return res;
+        int i = m.Index + m.Length, start = i, depth = 1; bool inStr = false, esc = false;
+        for (; i < json.Length && depth > 0; i++)
+        {
+            char c = json[i];
+            if (inStr) { if (esc) esc = false; else if (c == '\\') esc = true; else if (c == '"') inStr = false; }
+            else if (c == '"') inStr = true;
+            else if (c == '[' || c == '{') depth++;
+            else if (c == ']' || c == '}') depth--;
+        }
+        string arr = json.Substring(start, System.Math.Max(0, i - 1 - start));
+        foreach (System.Text.RegularExpressions.Match nm in System.Text.RegularExpressions.Regex.Matches(arr, "\"name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""))
+            res.Add(nm.Groups[1].Value);
+        return res;
+    }
+
+    // Read the donor fragment mesh names the plugin logged for this resource, from BepInEx/LogOutput.log. The plugin
+    // emits "[Uni] <name> donor fragment[i] mesh='...'" (and "HID donor fragment") once per launch. We tail the last
+    // ~16 MB (the most recent session is at the end) with a shared read (the running game holds the log open), and dedupe.
+    static List<string> ReadDonorFragments(string resourceName)
+    {
+        var res = new List<string>();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(resourceName)) return res;
+            string log = System.IO.Path.GetFullPath(System.IO.Path.Combine(ModelRegistry.ConfigDir, "..", "LogOutput.log"));
+            if (!System.IO.File.Exists(log)) return res;
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"\[Uni\] " + System.Text.RegularExpressions.Regex.Escape(resourceName) + @" (?:HID )?donor fragment\[\d+\] mesh='([^']*)'");
+            var seen = new HashSet<string>();
+            using (var fs = new System.IO.FileStream(log, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+            {
+                const long tail = 16L * 1024 * 1024;
+                if (fs.Length > tail) fs.Seek(-tail, System.IO.SeekOrigin.End);
+                using (var sr = new System.IO.StreamReader(fs))
+                {
+                    string line;
+                    while ((line = sr.ReadLine()) != null)
+                    {
+                        var m = rx.Match(line);
+                        if (m.Success) { var nm = m.Groups[1].Value; if (nm.Length > 0 && seen.Add(nm)) res.Add(nm); }
+                    }
+                }
+            }
+        }
+        catch { }
+        return res;
+    }
+
+    // Prefix = the name up to the first separator (_ . - space); "prop_1_jnt" -> "prop", "Center" -> "Center".
+    static string PrefixOf(string bone)
+    {
+        if (string.IsNullOrEmpty(bone)) return "";
+        int i = bone.IndexOfAny(new[] { '_', '.', '-', ' ' });
+        return i > 0 ? bone.Substring(0, i) : bone;
+    }
+
+    // Does the model file contain a skeletal animation? 0 = unknown (can't tell cheaply → allow), 1 = yes, 2 = no.
+    // Deliberately conservative: only returns 2 ("none") when we're confident (OBJ, or a glTF with no animations), so we
+    // never wrongly BLOCK a rigged model; ambiguous formats (.blend) and a token-less FBX stay "unknown" (allowed).
+    static int ProbeAnimation(string file)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(file) || !System.IO.File.Exists(file)) return 0;
+            switch (System.IO.Path.GetExtension(file).ToLowerInvariant())
+            {
+                case ".obj": return 2;                                   // OBJ can't carry animation
+                case ".glb": return ProbeGlb(file);
+                case ".gltf": return HasGltfAnim(System.IO.File.ReadAllText(file)) ? 1 : 2;
+                case ".fbx": return ProbeFbx(file) ? 1 : 0;              // token found = yes; absent = unknown (don't block)
+                default: return 0;                                       // .blend etc — needs Blender to know
+            }
+        }
+        catch { return 0; }
+    }
+
+    // Check a GLB's JSON chunk for a non-empty "animations" array.
+    static int ProbeGlb(string file)
+    {
+        string json = ReadGlbJson(file);
+        return json == null ? 0 : (HasGltfAnim(json) ? 1 : 2);
+    }
+
+    // Extract the JSON (first) chunk of a binary glTF as a string, or null if it isn't a GLB.
+    static string ReadGlbJson(string file)
+    {
+        using (var fs = System.IO.File.OpenRead(file))
+        using (var br = new System.IO.BinaryReader(fs))
+        {
+            if (fs.Length < 20 || br.ReadUInt32() != 0x46546C67u) return null;   // "glTF" magic
+            br.ReadUInt32(); br.ReadUInt32();                                    // version, total length
+            uint clen = br.ReadUInt32(); uint ctype = br.ReadUInt32();           // first chunk = JSON
+            if (ctype != 0x4E4F534Au) return null;                              // "JSON"
+            var bytes = br.ReadBytes((int)System.Math.Min(clen, 16u * 1024 * 1024));
+            return System.Text.Encoding.UTF8.GetString(bytes);
+        }
+    }
+
+    // "animations":[ … ] present AND non-empty (next non-space char after '[' isn't ']').
+    static bool HasGltfAnim(string json)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(json ?? "", "\"animations\"\\s*:\\s*\\[");
+        if (!m.Success) return false;
+        int i = m.Index + m.Length;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        return i < json.Length && json[i] != ']';
+    }
+
+    // FBX (binary or ASCII) names its animation via AnimStack / AnimCurveNode object records. Scan up to a cap.
+    static bool ProbeFbx(string file)
+    {
+        try
+        {
+            var data = System.IO.File.ReadAllBytes(file);
+            int n = System.Math.Min(data.Length, 48 * 1024 * 1024);
+            string hay = System.Text.Encoding.ASCII.GetString(data, 0, n);
+            return hay.IndexOf("AnimStack", System.StringComparison.Ordinal) >= 0
+                || hay.IndexOf("AnimCurveNode", System.StringComparison.Ordinal) >= 0;
+        }
+        catch { return false; }
     }
 
     static string[] pawnCache;
@@ -252,16 +558,20 @@ public class ModelFactoryWindow : EditorWindow
             resourceName = cur.resourceName.Trim(), modelFile = (cur.modelFile ?? "").Trim(), pawnDescription = cur.pawnDescription.Trim(),
             rotationEuler = cur.rotation, positionOffset = cur.position, size = cur.size,
             normals = (NormalsMode)cur.normalsMode, smoothingAngle = cur.smoothingAngle, convertGrid = cur.convertGrid,
-            reuseExtracted = cur.reuseExtracted, doubleSided = cur.doubleSided, windingFix = cur.windingFix, heightUV = cur.heightUV, targetTris = cur.targetTris
+            reuseExtracted = cur.reuseExtracted, doubleSided = cur.doubleSided, windingFix = cur.windingFix, heightUV = cur.heightUV, targetTris = cur.targetTris,
+            animated = cur.animated, animClip = (cur.animClip ?? "").Trim(), animateBones = (cur.animateBones ?? "").Trim()
         };
-        var r = UniversalBaker.Build(cfg);
+        var r = cfg.animated ? UniversalBaker.BuildAnimated(cfg) : UniversalBaker.Build(cfg);
         if (!r.ok) { status = "Bake FAILED: " + r.error; return; }
         cur.skel = ModelRegistry.ParseGuid(r.skeletonGuid);
         cur.atlas = ModelRegistry.ParseGuid(r.atlasGuid);
+        cur.clip = cfg.animated ? ModelRegistry.ParseGuid(r.clipGuid) : new int[4];   // static models carry {0,0,0,0}
         ModelRegistry.Upsert(cur);
         RefreshList();
         selected = System.Array.IndexOf(existing, cur.resourceName); if (selected < 0) selected = 0;
-        status = $"Baked '{cur.resourceName}' -> '{cur.pawnDescription}'  (raw bbox {r.bbox})\nskeleton {r.skeletonGuid}\nNow rebuild the mod + relaunch.";
+        status = cfg.animated
+            ? $"Baked ANIMATED '{cur.resourceName}' -> '{cur.pawnDescription}'\nskeleton {r.skeletonGuid}\nclip {r.clipGuid}\nNow rebuild the mod + relaunch."
+            : $"Baked '{cur.resourceName}' -> '{cur.pawnDescription}'  (raw bbox {r.bbox})\nskeleton {r.skeletonGuid}\nNow rebuild the mod + relaunch.";
         Debug.Log("[Factory] " + status);
     }
 }
@@ -279,4 +589,20 @@ class PawnDropdown : AdvancedDropdown
         return root;
     }
     protected override void ItemSelected(AdvancedDropdownItem item) { if (map.TryGetValue(item.id, out var n)) onPick(n); }
+}
+
+// Searchable dropdown over parallel label/value arrays (label shown, value returned). Used for the Clip and Bone pickers.
+class StringDropdown : AdvancedDropdown
+{
+    readonly string[] labels, values; readonly string title; readonly Action<string> onPick;
+    readonly Dictionary<int, string> map = new Dictionary<int, string>();
+    public StringDropdown(AdvancedDropdownState s, string[] labels, string[] values, string title, Action<string> onPick) : base(s)
+    { this.labels = labels; this.values = values; this.title = title; this.onPick = onPick; minimumSize = new Vector2(260, 320); }
+    protected override AdvancedDropdownItem BuildRoot()
+    {
+        var root = new AdvancedDropdownItem(title + " (" + labels.Length + ")");
+        for (int i = 0; i < labels.Length; i++) { var it = new AdvancedDropdownItem(labels[i]); root.AddChild(it); map[it.id] = values[i]; }
+        return root;
+    }
+    protected override void ItemSelected(AdvancedDropdownItem item) { if (map.TryGetValue(item.id, out var v)) onPick(v); }
 }

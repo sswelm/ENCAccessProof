@@ -7,11 +7,14 @@ now the **Universal Model Factory** — and, as of the ReconDrone, the first **r
 Humankind.
 
 ## What works (proven in-game)
-- **Animated custom models — a first.** A **quadcopter drone** injected onto a land-vehicle unit renders full-size and
-  textured **and spins its own propellers from its own baked animation** — no engine mod, no GPU-skinning hang. The
-  model's armature + clip are baked into an Amplitude `Skeleton` + `ClipCollection` (via the SDK's own tooling), the clip
-  is registered at runtime, and a `PawnManager.AddPawnEntry` hook drives the pawn's pose onto it. Works for **any number
-  of instances**. Full recipe + the traps in [docs §12](docs/Scaling-ManyModels-And-Scoping.md).
+- **Animated custom models — a first, now one-click.** A **quadcopter drone** injected onto a land-vehicle unit renders
+  full-size and textured **and spins its own propellers from its own baked animation** — no engine mod, no GPU-skinning
+  hang. Tick **Animated** in the Factory and a single Bake does it all: Blender slims the rigged model (keep armature +
+  chosen clip, strip to the spinning bones, auto-clamp the frame range), then it bakes an Amplitude `Skeleton` +
+  `ClipCollection` + atlas and writes the registry; at runtime the clip is registered and a `PawnManager.AddPawnEntry` hook
+  drives the pawn's pose onto it — normalized by clip duration so it plays at real speed. Works for **any number of
+  instances**. Clip/bone/hide-donor fields are **Pick-driven** (read from the model's glTF + the plugin log). Full recipe +
+  the traps (incl. isolating the clip source so `SetFromDirectory` bakes exactly one clip) in [docs §12](docs/Scaling-ManyModels-And-Scoping.md).
 - **Multiple static models live**, each added with no new code: a **Zeppelin**, an **LCAC Hovercraft**, and a
   fully-textured **USS Zumwalt stealth cruiser** (first textured naval-combat unit) — correct orientation, correct skin,
   sitting at the waterline.
