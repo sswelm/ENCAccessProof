@@ -180,3 +180,31 @@ The README + `Capabilities.md` stated the GLB→OBJ converter "flips V". Investi
 and the baker's only "flips" are winding (face-order), not UV. Since custom skins render right-side-up in-game, the
 glTF-V-top ↔ OBJ/Unity-V-bottom convention is reconciled by **Unity's OBJ import**, not by our converter. The README and
 Capabilities.md have been corrected to say so.
+
+---
+
+## Testing strategy — why (almost) no unit tests, deliberately (2026-07-04)
+
+A .NET 8 SDK is now installed, so `dotnet build ENCAccessProof.csproj` compile-checks the plugin in ~3s (see the
+compile-check note in memory). Compile-checking is high value. **Classic unit tests, for this codebase as an internal
+tool, are not** — a deliberate decision, recorded here so it isn't re-litigated:
+
+Every real defect we've hit lived in the **Unity/Amplitude integration seam or the runtime environment** — exactly where
+a unit test can't reach:
+
+| Real bug | Where it lived | Unit-testable? |
+|---|---|---|
+| Stale skeleton on re-bake (ship 90° off) | Unity `AssetDatabase` in-place-overwrite caching | No — needs the editor |
+| `JsonUtility` returns empty in-game | Mono runtime quirk | **No — a Newtonsoft unit test would PASS while the game fails.** The bug was the environment, not the parse logic |
+| Registration NRE → aborts all models | Reflection into Amplitude types | No — needs the game |
+| Model orientation wrong | How Unity applies the baked transform | No — the euler math was already correct |
+
+The genuinely pure logic (registry JSON parse, GUID nibble-swap) is **stable and low-churn**, so a suite there would be
+green, reassuring, and would not have caught a single real defect. Robustness per hour comes instead from: the fast
+**compile-check**, **fail-soft resilience** (per-entry try/catch, null-guards on reflected methods), and the
+**rebuild → relaunch → verify-the-log** discipline (the skeleton is what ships, not the preview/parse).
+
+**When this flips to worth it:** the distributable-package goal. Once *third parties* write `enc_models.json`, the parser
+reads untrusted input, and "malformed/partial registry → degrades gracefully, never throws, defaults sanely" becomes a
+real contract. At that point add **one** focused xUnit suite over an extracted `ParseRegistry(string) → List<ModelEntry>`
+(feed it garbage, assert no-throw + sane defaults) — and nothing more. Until then, tests are ceremony, not safety.
