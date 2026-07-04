@@ -24,6 +24,8 @@ public class ModelFactoryWindow : EditorWindow
     // on a static model. Runs once when the path changes, not every OnGUI frame.
     string animProbeFile = "";   // sentinel != any real path so the first real path always probes
     int animProbeState;
+    List<string> animClips = new List<string>();                                   // clip names read from the model (Clip picker)
+    List<KeyValuePair<string, int>> animBonePrefixes = new List<KeyValuePair<string, int>>();  // bone-name prefix -> count (Bones picker)
 
     [MenuItem("Tools/Universal Model Factory")]
     static void Open()
@@ -117,17 +119,44 @@ public class ModelFactoryWindow : EditorWindow
             "propellers spin) — instead of the static single-bone vehicle rig. The model MUST be rigged with a skeletal " +
             "animation (glb/fbx/blend). Blender slims it (join + decimate, keep the armature + first clip), Unity bakes an " +
             "Amplitude Skeleton + ClipCollection, and the plugin drives the pawn's pose onto it. Needs Blender (auto-detected)."), cur.animated);
+        // Clip name — free text + a Pick button that lists the clips read from the model (glb/gltf; no Blender).
         using (new EditorGUI.DisabledScope(!cur.animated))
+        using (new EditorGUILayout.HorizontalScope())
+        {
             cur.animClip = EditorGUILayout.TextField(new GUIContent("Clip name",
-                "Which animation to bake when the model has several clips — e.g. 'hover' (the drone also ships " +
-                "'exploded_view' and 'step_by_step', which you do NOT want). Case-sensitive, must match the clip's name in " +
-                "the source model. Leave EMPTY to use the model's assigned/first clip."), cur.animClip ?? "");
+                "Which animation to bake when the model has several clips — e.g. 'hover'. Use Pick to choose from the clips " +
+                "found in the model. Leave EMPTY to use the model's assigned/first clip."), cur.animClip ?? "");
+            using (new EditorGUI.DisabledScope(animClips.Count == 0))
+                if (GUILayout.Button(new GUIContent("Pick", animClips.Count == 0 ? "No clips readable from this model (glb/gltf only) — type the name" : null), GUILayout.Width(70)))
+                {
+                    var r = GUILayoutUtility.GetLastRect();
+                    var arr = animClips.ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), arr, arr, "Clips", n => { cur.animClip = n; Repaint(); }).Show(r);
+                }
+        }
+        // Animate only bones — free text + a Pick that appends a bone-name prefix (grouped, with counts) from the model.
         using (new EditorGUI.DisabledScope(!cur.animated))
+        using (new EditorGUILayout.HorizontalScope())
+        {
             cur.animateBones = EditorGUILayout.TextField(new GUIContent("Animate only bones",
-                "Optional. Comma-separated bone-name PREFIXES to keep animation on — e.g. 'prop,rotor' keeps only the " +
-                "spinning parts and strips camera / body-bob curves that make the model wobble ('unbalanced flywheel'). " +
-                "Leave EMPTY to keep the whole clip (for a fully-animated model). The clip's frame range is always " +
-                "auto-clamped to kill the ~1s per-loop stall from padded tail frames."), cur.animateBones ?? "");
+                "Optional. Comma-separated bone-name PREFIXES to keep animation on — e.g. 'prop' keeps the spinning parts " +
+                "and strips camera / body-bob curves that make the model wobble. Use Pick to add a prefix found in the model. " +
+                "Leave EMPTY to keep the whole clip. The frame range is always auto-clamped (kills the ~1s per-loop stall)."), cur.animateBones ?? "");
+            using (new EditorGUI.DisabledScope(animBonePrefixes.Count == 0))
+                if (GUILayout.Button(new GUIContent("Pick", animBonePrefixes.Count == 0 ? "No bones readable from this model (glb/gltf only) — type prefixes" : null), GUILayout.Width(70)))
+                {
+                    var r = GUILayoutUtility.GetLastRect();
+                    var labels = animBonePrefixes.Select(kv => $"{kv.Key}  ({kv.Value} part{(kv.Value == 1 ? "" : "s")})").ToArray();
+                    var values = animBonePrefixes.Select(kv => kv.Key).ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), labels, values, "Bone prefixes", p =>
+                    {
+                        var set = (cur.animateBones ?? "").Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                        if (!set.Contains(p)) set.Add(p);
+                        cur.animateBones = string.Join(",", set);
+                        Repaint();
+                    }).Show(r);
+                }
+        }
         // Blender is a HARD dependency for the animated path (rig-slim + clip bake); glbconv can't emit a rigged FBX.
         // Warn as soon as an animated model is detected — not only after ticking — so a Blender-less adopter knows upfront.
         // (Detection itself needs no Blender, so the checkbox stays usable; only Bake will fail until Blender is present.)
@@ -150,7 +179,9 @@ public class ModelFactoryWindow : EditorWindow
         cur.position = EditorGUILayout.Vector3Field("Position offset (Z = waterline)", cur.position);
         using (new EditorGUILayout.HorizontalScope())
         {
-            cur.size = EditorGUILayout.FloatField(new GUIContent("Size (units)", "Length of the model's longest axis, in world units"), cur.size, GUILayout.Width(220));
+            // Keep the Size input compact (not full-width) but sized RELATIVE to the label column — a fixed 220 left the
+            // input a ~10px sliver once the label column widened to ~210. label + ~90px input keeps the box usable.
+            cur.size = EditorGUILayout.FloatField(new GUIContent("Size (units)", "Length of the model's longest axis, in world units"), cur.size, GUILayout.Width(EditorGUIUtility.labelWidth + 90f));
             GUILayout.FlexibleSpace();
         }
 
@@ -171,25 +202,55 @@ public class ModelFactoryWindow : EditorWindow
             "Add a back face to every surface so single-sided or CAD 'sketch' meshes don't render invisible in-game (the " +
             "engine culls backfaces). Enable for models with missing / see-through parts — e.g. a hovercraft skirt. " +
             "Doubles the triangle count."), cur.doubleSided);
-        cur.targetTris = EditorGUILayout.IntField(new GUIContent("Reduce to ~tris (0 = off)",
+        // IntSlider (not a bare field) for consistency with Smoothing angle + to show where you sit vs the ~25k per-model
+        // ceiling. Range 0..50000: 0 = off, default 24000 ≈ mid, and the max is generous headroom (values much above the
+        // ceiling overflow the shared buffer anyway). The slider keeps an editable number box, so exact values still work.
+        cur.targetTris = EditorGUILayout.IntSlider(new GUIContent("Reduce to ~tris (0 = off)",
             "Quadric-decimate a heavy model to about this many triangles (via Blender) before baking, to fit the engine's " +
             "SHARED buffer (one budget across ALL injected models + the game's own fx meshes). Default 24000 (halves to " +
             "12000 under double-sided — the confirmed best LCAC bake, just under the ~25k per-model ceiling). It's a " +
             "CEILING, not a quota: a model already under it passes through untouched (never " +
             "upscaled). Toggling Double-sided automatically HALVES the effective target (it doubles the baked geometry), so " +
             "you set this once and just flip Double-sided on/off. Preserves thin parts (per-object). 0 = no reduction. " +
-            "Needs Blender (auto-detected)."), cur.targetTris);
+            "Needs Blender (auto-detected)."), cur.targetTris, 0, 50000);
         if (cur.targetTris > 0 && !UniversalBaker.BlenderAvailable())
             EditorGUILayout.HelpBox("Reduce-to-tris uses Blender (quadric decimation) — Blender wasn't found, so Bake will " +
                 "fail. Either set this to 0, use 'Convert grid' below (Blender-free GLB decimation), or install Blender / " +
                 "set its path in Settings above.", MessageType.Warning);
-        cur.hideMeshes = EditorGUILayout.TextField(new GUIContent("Hide donor meshes",
-            "RUNTIME, not baked. Comma-separated name substrings of the DONOR unit's extra parts to hide on this unit — " +
-            "e.g. 'Rotor' to remove the attack-helicopter rotor from a drone. Leave EMPTY to keep them (a custom " +
-            "helicopter can borrow the donor's spinning rotor by leaving this blank). Find the exact names in the " +
-            "BepInEx log after a launch: \"[Uni] <name> donor fragment[i] mesh='...'\". Takes effect on reload — no re-bake. " +
-            "NOTE: only hides FRAGMENT-based extras; a donor's animated skinned sub-parts (helicopter rotor, spinning " +
-            "wheels) are encoded at pawn-spawn and can't be hidden — pick a donor without them."), cur.hideMeshes ?? "");
+        // Hide donor meshes — runtime field. The donor's fragment names only exist at runtime, so Pick reads them back
+        // from the BepInEx log (the plugin dumps "[Uni] <name> donor fragment[i] mesh='...'" once per launch).
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            cur.hideMeshes = EditorGUILayout.TextField(new GUIContent("Hide donor meshes",
+                "RUNTIME, not baked. Comma-separated name substrings of the DONOR unit's extra parts to hide on this unit — " +
+                "e.g. 'Rotor' to remove the attack-helicopter rotor from a drone. Leave EMPTY to keep them (a custom " +
+                "helicopter can borrow the donor's spinning rotor by leaving this blank). Use Pick to choose from the donor " +
+                "fragments the plugin logged (launch the game once first). Takes effect on reload — no re-bake. " +
+                "NOTE: only hides FRAGMENT-based extras; a donor's animated skinned sub-parts (helicopter rotor, spinning " +
+                "wheels) are encoded at pawn-spawn and can't be hidden — pick a donor without them."), cur.hideMeshes ?? "");
+            if (GUILayout.Button(new GUIContent("Pick", "List the donor's fragment meshes the plugin logged for this resource. Launch the game once with the model injected first."), GUILayout.Width(70)))
+            {
+                var r = GUILayoutUtility.GetLastRect();
+                var frags = ReadDonorFragments(cur.resourceName);
+                if (frags.Count == 0)
+                    EditorUtility.DisplayDialog("Hide donor meshes",
+                        $"No donor fragment meshes have been logged for '{cur.resourceName}' yet.\n\n" +
+                        "Launch the game once with this model injected — the plugin writes the donor's fragment mesh names " +
+                        "to BepInEx\\LogOutput.log — then click Pick again. (If the donor has no extra fragments, there's " +
+                        "nothing to hide and you can leave this empty.)", "OK");
+                else
+                {
+                    var arr = frags.ToArray();
+                    new StringDropdown(new AdvancedDropdownState(), arr, arr, "Donor fragments", m =>
+                    {
+                        var set = (cur.hideMeshes ?? "").Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                        if (!set.Contains(m)) set.Add(m);
+                        cur.hideMeshes = string.Join(",", set);
+                        Repaint();
+                    }).Show(r);
+                }
+            }
+        }
         cur.convertGrid = EditorGUILayout.IntField(new GUIContent("Convert grid",
             "GLB / glTF / .blend only — controls how the source mesh is converted to OBJ.\n\n" +
             "0 = faithful: keep every vertex and UV exactly (preserves texture seams). Use this for " +
@@ -304,6 +365,97 @@ public class ModelFactoryWindow : EditorWindow
         if (file == animProbeFile) return;
         animProbeFile = file;
         animProbeState = ProbeAnimation(file);
+        (animClips, animBonePrefixes) = InspectModel(file);   // populate the Clip / Bones pickers
+    }
+
+    // Read clip names + bone-name prefixes from the model, for the Pick dropdowns. glTF/GLB only (no Blender); returns
+    // empties for FBX/.blend (fields stay manual). Parsed by scoped bracket-matching, NOT JsonUtility — real glTF (all
+    // its accessors/bufferViews/extensions) makes JsonUtility.FromJson silently fail. Clips = the "name"s inside the
+    // top-level animations[]; bones = the "name"s inside the top-level nodes[] (its array-of-objects, not scenes' node
+    // index lists), grouped into prefixes (text before the first _ . - or space) with counts.
+    static (List<string>, List<KeyValuePair<string, int>>) InspectModel(string file)
+    {
+        var clips = new List<string>();
+        var prefixes = new List<KeyValuePair<string, int>>();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(file) || !System.IO.File.Exists(file)) return (clips, prefixes);
+            string ext = System.IO.Path.GetExtension(file).ToLowerInvariant();
+            string json = ext == ".glb" ? ReadGlbJson(file) : (ext == ".gltf" ? System.IO.File.ReadAllText(file) : null);
+            if (json == null) return (clips, prefixes);
+            clips = NamesInArray(json, "\"animations\"\\s*:\\s*\\[").Distinct().ToList();
+            var boneNames = NamesInArray(json, "\"nodes\"\\s*:\\s*\\[(?=\\s*\\{)");   // require array-of-objects (top-level nodes, not scenes' "nodes":[0,1])
+            prefixes = boneNames.Where(n => !string.IsNullOrEmpty(n)).GroupBy(PrefixOf)
+                .Where(gr => !string.IsNullOrEmpty(gr.Key))
+                .Select(gr => new KeyValuePair<string, int>(gr.Key, gr.Count()))
+                .OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key).ToList();
+        }
+        catch { }
+        return (clips, prefixes);
+    }
+
+    // Collect every "name":"…" inside the JSON array opened by `openRegex` (matched through its '['), by tracking bracket
+    // depth (strings respected) to find the array's matching ']'. Within that array the only "name" fields are the
+    // entities' names (glTF animation channels/samplers and node transforms carry no "name").
+    static List<string> NamesInArray(string json, string openRegex)
+    {
+        var res = new List<string>();
+        var m = System.Text.RegularExpressions.Regex.Match(json, openRegex);
+        if (!m.Success) return res;
+        int i = m.Index + m.Length, start = i, depth = 1; bool inStr = false, esc = false;
+        for (; i < json.Length && depth > 0; i++)
+        {
+            char c = json[i];
+            if (inStr) { if (esc) esc = false; else if (c == '\\') esc = true; else if (c == '"') inStr = false; }
+            else if (c == '"') inStr = true;
+            else if (c == '[' || c == '{') depth++;
+            else if (c == ']' || c == '}') depth--;
+        }
+        string arr = json.Substring(start, System.Math.Max(0, i - 1 - start));
+        foreach (System.Text.RegularExpressions.Match nm in System.Text.RegularExpressions.Regex.Matches(arr, "\"name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""))
+            res.Add(nm.Groups[1].Value);
+        return res;
+    }
+
+    // Read the donor fragment mesh names the plugin logged for this resource, from BepInEx/LogOutput.log. The plugin
+    // emits "[Uni] <name> donor fragment[i] mesh='...'" (and "HID donor fragment") once per launch. We tail the last
+    // ~16 MB (the most recent session is at the end) with a shared read (the running game holds the log open), and dedupe.
+    static List<string> ReadDonorFragments(string resourceName)
+    {
+        var res = new List<string>();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(resourceName)) return res;
+            string log = System.IO.Path.GetFullPath(System.IO.Path.Combine(ModelRegistry.ConfigDir, "..", "LogOutput.log"));
+            if (!System.IO.File.Exists(log)) return res;
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"\[Uni\] " + System.Text.RegularExpressions.Regex.Escape(resourceName) + @" (?:HID )?donor fragment\[\d+\] mesh='([^']*)'");
+            var seen = new HashSet<string>();
+            using (var fs = new System.IO.FileStream(log, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+            {
+                const long tail = 16L * 1024 * 1024;
+                if (fs.Length > tail) fs.Seek(-tail, System.IO.SeekOrigin.End);
+                using (var sr = new System.IO.StreamReader(fs))
+                {
+                    string line;
+                    while ((line = sr.ReadLine()) != null)
+                    {
+                        var m = rx.Match(line);
+                        if (m.Success) { var nm = m.Groups[1].Value; if (nm.Length > 0 && seen.Add(nm)) res.Add(nm); }
+                    }
+                }
+            }
+        }
+        catch { }
+        return res;
+    }
+
+    // Prefix = the name up to the first separator (_ . - space); "prop_1_jnt" -> "prop", "Center" -> "Center".
+    static string PrefixOf(string bone)
+    {
+        if (string.IsNullOrEmpty(bone)) return "";
+        int i = bone.IndexOfAny(new[] { '_', '.', '-', ' ' });
+        return i > 0 ? bone.Substring(0, i) : bone;
     }
 
     // Does the model file contain a skeletal animation? 0 = unknown (can't tell cheaply → allow), 1 = yes, 2 = no.
@@ -326,18 +478,25 @@ public class ModelFactoryWindow : EditorWindow
         catch { return 0; }
     }
 
-    // Read a binary glTF's JSON chunk and check for a non-empty "animations" array.
+    // Check a GLB's JSON chunk for a non-empty "animations" array.
     static int ProbeGlb(string file)
+    {
+        string json = ReadGlbJson(file);
+        return json == null ? 0 : (HasGltfAnim(json) ? 1 : 2);
+    }
+
+    // Extract the JSON (first) chunk of a binary glTF as a string, or null if it isn't a GLB.
+    static string ReadGlbJson(string file)
     {
         using (var fs = System.IO.File.OpenRead(file))
         using (var br = new System.IO.BinaryReader(fs))
         {
-            if (fs.Length < 20 || br.ReadUInt32() != 0x46546C67u) return 0;   // "glTF" magic
-            br.ReadUInt32(); br.ReadUInt32();                                  // version, total length
-            uint clen = br.ReadUInt32(); uint ctype = br.ReadUInt32();         // first chunk = JSON
-            if (ctype != 0x4E4F534Au) return 0;                               // "JSON"
+            if (fs.Length < 20 || br.ReadUInt32() != 0x46546C67u) return null;   // "glTF" magic
+            br.ReadUInt32(); br.ReadUInt32();                                    // version, total length
+            uint clen = br.ReadUInt32(); uint ctype = br.ReadUInt32();           // first chunk = JSON
+            if (ctype != 0x4E4F534Au) return null;                              // "JSON"
             var bytes = br.ReadBytes((int)System.Math.Min(clen, 16u * 1024 * 1024));
-            return HasGltfAnim(System.Text.Encoding.UTF8.GetString(bytes)) ? 1 : 2;
+            return System.Text.Encoding.UTF8.GetString(bytes);
         }
     }
 
@@ -430,4 +589,20 @@ class PawnDropdown : AdvancedDropdown
         return root;
     }
     protected override void ItemSelected(AdvancedDropdownItem item) { if (map.TryGetValue(item.id, out var n)) onPick(n); }
+}
+
+// Searchable dropdown over parallel label/value arrays (label shown, value returned). Used for the Clip and Bone pickers.
+class StringDropdown : AdvancedDropdown
+{
+    readonly string[] labels, values; readonly string title; readonly Action<string> onPick;
+    readonly Dictionary<int, string> map = new Dictionary<int, string>();
+    public StringDropdown(AdvancedDropdownState s, string[] labels, string[] values, string title, Action<string> onPick) : base(s)
+    { this.labels = labels; this.values = values; this.title = title; this.onPick = onPick; minimumSize = new Vector2(260, 320); }
+    protected override AdvancedDropdownItem BuildRoot()
+    {
+        var root = new AdvancedDropdownItem(title + " (" + labels.Length + ")");
+        for (int i = 0; i < labels.Length; i++) { var it = new AdvancedDropdownItem(labels[i]); root.AddChild(it); map[it.id] = values[i]; }
+        return root;
+    }
+    protected override void ItemSelected(AdvancedDropdownItem item) { if (map.TryGetValue(item.id, out var v)) onPick(v); }
 }
