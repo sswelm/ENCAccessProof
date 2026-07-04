@@ -69,11 +69,17 @@ public static class UniversalBaker
         if (!AssetDatabase.IsValidFolder("Assets/Resources")) AssetDatabase.CreateFolder("Assets", "Resources");
         string resDir = "Assets/Resources/" + name;
         if (!AssetDatabase.IsValidFolder(resDir)) AssetDatabase.CreateFolder("Assets/Resources", name);
+        // Bake the FBX into a DEDICATED subfolder that holds ONLY our clip. The ClipCollection's SetFromDirectory scans a
+        // whole folder for animation FBX, so if we dropped it in resDir it would also pick up any OTHER fbx there (e.g. a
+        // hand-made drone_rigged_slim.fbx) and bake a 2-clip collection — the runtime then resolves the wrong clip and the
+        // model tears apart. Isolating the fbx makes the bake correct regardless of what else is in the resource folder.
+        string animDir = resDir + "/anim";
+        if (!AssetDatabase.IsValidFolder(animDir)) AssetDatabase.CreateFolder(resDir, "anim");
         string projRoot = Directory.GetParent(Application.dataPath).FullName;
         string fsDir = Path.Combine(Application.dataPath, "Resources", name);
         Directory.CreateDirectory(fsDir);
 
-        string fbxRel = resDir + "/" + name + "_anim.fbx";
+        string fbxRel = animDir + "/" + name + "_anim.fbx";
         string fbxFull = Path.Combine(projRoot, fbxRel);
 
         // --- 1) Blender: slim the rigged model (keep armature + clip, clamp frame range, optional bone strip, albedo) ---
@@ -137,7 +143,7 @@ public static class UniversalBaker
         var skelField = clipType.GetField("skeleton", BindingFlags.NonPublic | BindingFlags.Instance);
         if (skelField == null || skelGuidObj == null) return Fail("could not bind ClipCollection.skeleton (field/guid missing)");
         skelField.SetValue(clipColl, skelGuidObj);
-        clipType.GetMethod("SetFromDirectory", new[] { typeof(string) })?.Invoke(clipColl, new object[] { resDir });   // scans the folder's FBX for clips
+        clipType.GetMethod("SetFromDirectory", new[] { typeof(string) })?.Invoke(clipColl, new object[] { animDir });   // isolated folder = only OUR fbx -> exactly one clip
         clipType.GetMethod("Reimport", Type.EmptyTypes)?.Invoke(clipColl, null);                                       // bakes the pose data
         EditorUtility.SetDirty(clipColl);
         AssetDatabase.SaveAssets(); AssetDatabase.Refresh();

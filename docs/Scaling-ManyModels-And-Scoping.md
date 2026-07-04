@@ -1051,3 +1051,35 @@ moves): both `Skeleton` and `ClipCollection` expose a parameterless **`Reimport(
 Note the **rendered** skeleton is the one the registry `skel` guid points at *and* the one the ClipCollection's `Skeleton`
 field references (here `ReconDrone_Model_Skeleton`); the clip only fixes timing, so re-importing a sibling skeleton is
 harmless, but re-import the one the registry actually renders if you also changed the mesh.
+
+### Now one-click in the Factory — animated import is a first-class bake (2026-07-04)
+
+The whole hand-pipeline above is now a **single Bake** in the Universal Model Factory. Tick **Animated (own rig + clip)**
+and `UniversalBaker.BuildAnimated` does everything: Blender slims the rigged model (`Tools/rig_anim.py` — join to one
+mesh + one material, decimate, **keep the armature + the chosen clip**, optional bone-prefix strip, auto-clamp the frame
+range, export the albedo) → import the FBX (Generic rig, animation, **Scale Factor auto-computed from `Size`**) → bake the
+`Skeleton` (`SetPrefab`/`Reimport`) → bake the atlas → bake the `ClipCollection` (set its skeleton guid → `SetFromDirectory`
+→ `Reimport`) → write `skel` + `clip` + `atlas` to the registry. Proven end-to-end: the ReconDrone flies, textured and
+prop-spinning, entirely Factory-made.
+
+**Discoverability (no memorising names).** The animated fields are click-driven: **Clip name** and **Animate only bones**
+have Pick buttons that read the clip names and bone-name prefixes straight from the glTF/GLB (scoped bracket-matching, not
+`JsonUtility` — real glTF makes `JsonUtility.FromJson` silently return empty). **Hide donor meshes** has a Pick that reads
+the donor fragment names the plugin logged to `BepInEx/LogOutput.log`. A cheap no-Blender animation probe disables the
+Animated toggle on static models.
+
+**THE TRAP that tore the drone apart — isolate the clip source.** `ClipCollection.SetFromDirectory(dir)` scans a whole
+folder for animation FBX and bakes **one clip per FBX it finds**. The first Factory bake dropped `<name>_anim.fbx` into the
+resource folder that *also* still held a hand-made `drone_rigged_slim.fbx` → the ClipCollection baked **two** clips (vs the
+working manual asset's one), the runtime resolved the wrong clip / shifted pose-data offsets, and the arms+props flew
+radially out of the body (looked like an exploded view; body + props still animated, so it wasn't skinning). **Diagnosis
+that nailed it:** the exported FBX was byte-for-behaviour identical to the working manual FBX (same rest span 0.254, same
+animation span, spread-ratio 1.15 — no fling in the clip), and the import settings matched — the *only* difference was the
+ClipCollection had 2 `UnityAnimationClip` entries instead of 1. **Fix:** `BuildAnimated` now bakes the FBX into a
+**dedicated `Assets/Resources/<name>/anim/` subfolder** and points `SetFromDirectory` at *that*, so exactly one clip is
+ever collected — the bake is correct no matter what else is in the resource folder (no manual cleanup required).
+
+Blender is a **hard dependency** for the animated path (the rig-slim + clip bake; `glbconv` can't emit a rigged FBX). The
+Factory surfaces this everywhere it matters: a Settings Blender status + in-UI path override, a header marker when it's
+missing, and warnings on the Animated / .blend / Reduce-to-tris features (which point at the Blender-free `Convert grid`
+fallback for static decimation). Detection itself needs no Blender.
