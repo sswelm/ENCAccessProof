@@ -535,6 +535,9 @@ public static class UniversalBaker
 
         // --- 4) atlas (multi-material: the packed atlas built above; single: pick the one extracted albedo) ---
         var atlas = multiMat ? packedAtlas : BuildAtlas(resDir, name);
+        // delete-first like the animated path: CreateAsset over an existing _Atlas.asset can keep the STALE atlas (old
+        // skin) on a re-bake -- the same in-place-overwrite trap the mesh/prefab/skeleton delete-first block below fixes.
+        AssetDatabase.DeleteAsset("Assets/Resources/" + name + "_Atlas.asset");
         AssetDatabase.CreateAsset(atlas, "Assets/Resources/" + name + "_Atlas.asset");
 
         // --- 5) Faceted shading: unweld so each triangle gets its own face normal ---

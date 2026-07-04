@@ -12,6 +12,49 @@ it's "here's what will bite the next modder or the next game patch."
 
 ---
 
+## Re-review — pass 2 (2026-07-04)
+
+Second full pass after the session's fixes, three parallel component reviews (baker/UI, plugin, tooling) with the
+load-bearing claims re-verified in code. The original findings below (pass 1) still stand except where marked
+**RESOLVED**.
+
+**Verified fixed this session** (all confirmed correct + non-regressing by the re-review):
+- Static re-bake **stale skeleton** (90° off in-game) → delete-first + force-reimport before the skeleton bake.
+- Static re-bake **stale atlas** (old skin) → the atlas was the one output left out of that delete-first block; now
+  `DeleteAsset`'d before `CreateAsset`, matching the animated path. *(Found by pass 2 — the incomplete half of the
+  skeleton fix.)*
+- Plugin **registration all-abort** → per-entry try/catch + `g == null` guards on all three loaders.
+- **Silent `?.Invoke` no-op bake** (`ok=true` on an empty asset) → `InvokeReq` + empty skeleton/clip GUID → `Fail`.
+
+**Open findings, calibrated + de-duplicated (pass 2):**
+
+| Sev | Where | Issue |
+|---|---|---|
+| **High** | baker shell-outs `230/712/760/785` | **Pipe-buffer deadlock** — all four Blender/glbconv runners do `StandardOutput.ReadToEnd()` *then* `StandardError.ReadToEnd()` before `WaitForExit`. Blender is verbose on **stderr**; when its ~4 KB pipe buffer fills, the child blocks writing → never exits → parent blocks forever on the stdout read → **Unity UI thread hangs** (synchronous, main thread). When-not-if on any real model. Fix: drain one stream async (`BeginOutputReadLine` / a `Task`) on all four. |
+| **High** | plugin `Plugin.cs PatchAll` (+ null `TargetMethod`s) | **All-or-nothing load** — any one patch's `TargetMethod` returning null (one renamed Amplitude type) throws in `PatchAll` inside `Awake` → the **whole plugin fails to load**, killing even unaffected features. Same shape as the registration all-abort we just fixed. Fix: patch each `HarmonyPatch` class in its own try/catch. |
+| **High** | plugin `OnPawnAdded ~538-599` | Hottest path: ~15+ reflection get/set + struct box/unbox **per pawn per frame**, and a bare `catch {}` → GC pressure with many units, and any member-rename after a game update = no anim, **no log**. Fix: cache the `MemberInfo`s in statics; log the catch once. |
+| **Medium** | baker `MeasureLongestAxis 165-176` | Uses per-mesh **local** `sharedMesh.bounds`, ignoring child bone offsets → combined bounds understate extent → animated models **over-scale** vs the requested Size. (Static path is correct — it bakes verts through `rootInv*localToWorld`.) Fix: transform bounds by each child's matrix before encapsulating. |
+| **Medium** | plugin `EnsureRegistered ~127` | Hard-fail returns (`RegisterMeshCollection not found`) don't set `registered`/a failed-flag → every subsequent pawn load re-runs the whole body → silent retry + log-spam on a broken update. Fix: set a `registerFailed` flag. |
+| **Medium** | baker shell-outs (source arg) | No `File.Exists(cfg.modelFile)` before shelling to Blender/converter (script + exe *are* guarded; the user's model isn't) → a missing/moved model fails deep inside Blender as an opaque "produced no FBX", not a clear "file not found". Fix: guard once after resolving `cfg.modelFile`. |
+| **Medium** | plugin `RepointMatch/EnsureRegistered` | `entries` null-guard is **inconsistent** — `TickTexture` guards `entries == null`, these two don't. Trivial: guard both (or assign `entries` before `loaded = true`). |
+| **Low** | baker multi-mat `627/634/641` | `Texture2D`s from `LoadReadableAlbedo`/`ReadableCopy` never `DestroyImmediate`'d after `PackTextures` → editor memory creep over a long bake-iteration session. |
+| **Low** | plugin (silent `catch {}`) | Bare catches across `SetMember`/`GetMember`/`TickOne`/`OnPawnAdded` → a future member-rename manifests as "models invisible, no logs". Add one-shot logged variants on the structural ones. |
+| **Low** | baker temp files `272/282` | Fixed-name temps in `GetTempPath()` (`<name>_reduced.glb`, `_fromblend.glb`) collide across concurrent bakes + accumulate forever. (Stale-*reuse* is already mitigated by pre-delete.) Use GUID-suffixed names in a per-bake subdir, delete in `finally`. |
+| **Low** | tooling `mesh_reduce.py 34-35` | Ratio uses `len(polygons)` (faces) as if triangles, but `target` is a tri budget → **over-decimates** quad/ngon meshes. `rig_anim.py` computes tris correctly; make them consistent. |
+| **Low** | plugin `TickTexture` per-frame | Re-applies 6 textures + 2 UV transforms to every entry's material every frame; only needed if the game overwrites `_MainTex` each frame — confirm, else dirty-flag it. |
+| **Low** | plugin regex fallback `84-111` | Index-aligned across independent match lists → a missing non-terminal field silently misaligns model→pawn mappings. Documented, last-resort only (Newtonsoft is primary). |
+| **Low** | baker preview `190-208` | `GeneratePreviewPrefab` shows only the largest sub-mesh but the log claims "the same mesh that gets injected" — misleading vert count for multi-mesh models (preview-only, not a bake defect). |
+
+**Strength confirmed by pass 2:** shell-out error *reporting* is unusually disciplined — every runner checks **both** exit
+code and output-file existence, and the new empty-GUID guards catch no-op bakes — so the "silent success" class is
+essentially absent in the tooling layer. `ModelRegistry` GUID encode/parse + Steam discovery are clean.
+
+**Priority order (pass 2):** (1) shell-out deadlock — the only "will actively hang the editor" bug; (2) `PatchAll`
+resilience — cheap, converts a total-load-failure into a one-feature failure; (3) hot-path reflection cache + logged
+catch; then the Medium robustness cleanups.
+
+---
+
 ## Cross-cutting themes
 
 Fix these and most individual findings collapse.
