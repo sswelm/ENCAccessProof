@@ -149,7 +149,31 @@ Then relaunch. This is the #1 "why didn't my change show up" cause.
 
 ---
 
-## 7. Troubleshooting
+## 7. Presentation tips — make the unit read well
+
+A few *game-data* touches (in `Databases`, not the Factory) that make an injected model land better on the battlefield.
+These are `PresentationUnitDefinition` / `UnitDefinition` edits — independent of the model bake, and they need a **mod
+rebuild**.
+
+**Formation = a swarm (visibility + presence).** The unit's `PresentationUnitDefinition` → **Presentation Formation
+Definition** controls how many *dummy figures* are drawn for the one unit. Switch a recon drone to `Formation_Wedge_3` and
+it renders as **three drones in a wedge** — far more visible on the map, and it reads as *less fragile* (a coordinated
+swarm vs a lone scout). It composes for free with an injected **animated** model: every formation dummy is the same pawn
+descriptor, so the plugin's multi-instance handling gives each one our skeleton + clip — all of them render and spin.
+Tune spacing with **Dummy Offset Position / Angle**.
+
+**Purely visual — not stronger.** Formation dummies are cosmetic; they add zero HP or damage. It's still one unit (one
+health bar, one combat roll; the figures move / fight / die together). If you want it to *be* as sturdy as it looks, edit
+the gameplay stats in its **`LandUnitDefinition`** (combat strength / health / defense) — a separate `Databases` edit.
+
+**Altitude (animated only).** The registry `position.z` raises an animated model at runtime (§5) — set it high enough
+that the swarm clears tall city buildings and stays above the terrain. Combined, formation + altitude make the unit read
+clearly at **every zoom**: close-up spinning props, mid-range city-skyline flyover, and an identifiable banner on the
+strategic map.
+
+---
+
+## 8. Troubleshooting
 
 | Symptom | Cause → fix |
 |---|---|
@@ -169,7 +193,7 @@ Then relaunch. This is the #1 "why didn't my change show up" cause.
 
 ---
 
-## 8. Where things land
+## 9. Where things land
 
 - **Baked assets:** `Assets/Resources/<name>_Skeleton.asset`, `_Atlas.asset`, `_Mat.mat`, `_ModelMesh.asset`
   (static); animated adds `_Clips.asset` and a `<name>/anim/<name>_anim.fbx`. The imported model + albedo sit in
