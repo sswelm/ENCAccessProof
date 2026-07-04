@@ -63,9 +63,11 @@ That's the whole loop. Everything below is detail and the animated workflow.
   Empty = keep the whole clip.
 
 ### Transform
-- **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. (Static models bake this in; animated models
-  apply it at runtime.)
-- **Position offset (Z = waterline)** — x sway, y fore/aft, **z = height** (negative sinks a ship to its waterline).
+- **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
+  animated models the orientation comes from the model's own rig, so export it facing correctly.
+- **Position offset (x, y, z = height)** — Static models bake it in (z = waterline; negative sinks a ship). For
+  **animated** models it's applied as a **runtime world offset** — **z raises altitude** — so you can change it and just
+  **relaunch, no re-bake**. This decouples altitude from Size (keep a small drone but fly it high).
 - **Size (units)** — the world length of the model's longest axis. This is what you tune to make the model the right
   size next to other units. The Factory computes the scale for you; the Console logs it.
 

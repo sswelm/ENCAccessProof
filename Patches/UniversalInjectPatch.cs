@@ -23,6 +23,7 @@ namespace ENCAccessProof
         public string layerHint = "";
         public object isolatedLayer;     // our private clone of the host output layer (texture isolation)
         public string hideMeshes = "";   // comma-separated donor-FRAGMENT name substrings to hide (works for fragment-based extras; a donor's animated skinned sub-parts, e.g. a helicopter rotor, are encoded at pawn-spawn and cannot be hidden this late — pick a rotor-free donor instead)
+        public UnityEngine.Vector3 position;  // ANIMATED models: applied as a runtime world offset in the pose hook (z = height/up). Static models bake position into the mesh at Bake time instead, so this is only read for animated entries.
         public int ca, cb, cc, cd;       // ANIMATED models: our baked ClipCollection Amplitude guid (its own clip, e.g. a drone's spinning-prop 'hover'). 0,0,0,0 = static model (no pose override).
         public object clipColl;          // loaded ClipCollection asset
         public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
@@ -72,7 +73,10 @@ namespace ENCAccessProof
                 var sk = Regex.Matches(text, "\"skel\"\\s*:\\s*" + i4);
                 var at = Regex.Matches(text, "\"atlas\"\\s*:\\s*" + i4);
                 var cl = Regex.Matches(text, "\"clip\"\\s*:\\s*" + i4);   // ClipCollection guid (animated models); absent on static models
+                // position object {x,y,z} — JsonUtility writes Vector3 in x,y,z order. Applied as a runtime world offset for animated models.
+                var po = Regex.Matches(text, "\"position\"\\s*:\\s*\\{\\s*\"x\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"y\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"z\"\\s*:\\s*(-?[\\d.eE+]+)");
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
+                float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
                 for (int i = 0; i < n; i++)
                 {
@@ -84,6 +88,7 @@ namespace ENCAccessProof
                         sa = G(sk[i], 1), sb = G(sk[i], 2), sc = G(sk[i], 3), sd = G(sk[i], 4),
                         ta = G(at[i], 1), tb = G(at[i], 2), tc = G(at[i], 3), td = G(at[i], 4),
                         ca = i < cl.Count ? G(cl[i], 1) : 0, cb = i < cl.Count ? G(cl[i], 2) : 0, cc = i < cl.Count ? G(cl[i], 3) : 0, cd = i < cl.Count ? G(cl[i], 4) : 0,
+                        position = i < po.Count ? new UnityEngine.Vector3(F(po[i], 1), F(po[i], 2), F(po[i], 3)) : UnityEngine.Vector3.zero,
                     });
                 }
                 Plugin.Log.LogInfo($"[Uni] read {text.Length} chars; parsed {entries.Count} entr(ies) [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -493,7 +498,7 @@ namespace ENCAccessProof
         }
 
         static bool? anyAnimated;        // cached early-out: skip the per-pawn hook if no model is animated
-        static bool poseHookLogged, rescueLogged;
+        static bool poseHookLogged, rescueLogged, posLogged;
 
         static ModelEntry AnimEntryFor(int skeletonId)
         {
@@ -549,6 +554,18 @@ namespace ENCAccessProof
                     if (pose == null) continue;
                     SetMember(pose, "Weight", 0f);
                     SetMember(entry, "Pose" + i, pose);
+                }
+                // Runtime position offset. Static models bake position into the mesh; the animated path can't, so we
+                // apply it to the pawn's world ObjectSpace here. z = height -> world up (Y); x/y -> world plane. Re-applied
+                // each frame on the game's fresh world position, so it never accumulates. Logged once to confirm the axis.
+                if (e.position != UnityEngine.Vector3.zero)
+                {
+                    var os = GetMember(entry, "ObjectSpace");                        // boxed TRS
+                    var tr = (UnityEngine.Vector3)GetMember(os, "Translation");
+                    if (!posLogged) { posLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} pawn world pos {tr} + registry position {e.position} (z->up Y)"); }
+                    tr.x += e.position.x; tr.y += e.position.z; tr.z += e.position.y;   // registry z (height) -> world Y (up)
+                    SetMember(os, "Translation", tr);
+                    SetMember(entry, "ObjectSpace", os);
                 }
                 pawnEntries.SetValue(entry, idx);
                 if (!poseHookLogged) { poseHookLogged = true; Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId} -> {e.skeletonId}, desc {descId})"); }

@@ -1079,6 +1079,14 @@ ClipCollection had 2 `UnityAnimationClip` entries instead of 1. **Fix:** `BuildA
 **dedicated `Assets/Resources/<name>/anim/` subfolder** and points `SetFromDirectory` at *that*, so exactly one clip is
 ever collected — the bake is correct no matter what else is in the resource folder (no manual cleanup required).
 
+**Runtime position offset (animated only).** Static models bake the position offset into the mesh vertices; the animated
+path can't (it uses the FBX as-is), so the `AddPawnEntry` pose hook applies the registry `position` to the pawn's world
+`ObjectSpace.Translation` — **registry `z` → world `Y` (up)** so the drone flies higher, `x`/`y` → world plane. It re-applies
+each frame on the game's fresh world position (so it never accumulates), and because it's a registry value it's **live on
+relaunch — no re-bake**. This decouples altitude from Size: a small drone can still fly high — high enough to clear tall
+city buildings instead of clipping through them. The plugin reads `position` from the registry via regex like the other
+fields; `ModelEntry.position` carries it into the hook.
+
 Blender is a **hard dependency** for the animated path (the rig-slim + clip bake; `glbconv` can't emit a rigged FBX). The
 Factory surfaces this everywhere it matters: a Settings Blender status + in-UI path override, a header marker when it's
 missing, and warnings on the Animated / .blend / Reduce-to-tris features (which point at the Blender-free `Convert grid`
