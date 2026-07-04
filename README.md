@@ -52,8 +52,9 @@ Built to work on a stranger's machine, not just the author's:
 - **One injection path.** A single `UniversalInject` drives every model from the registry, so there's one code path to
   understand and one to trust.
 - **Guided, not guessy.** Clip / bone / hide-donor fields are Pick-driven (read from the model + the plugin log); a
-  Settings panel shows the detected Blender path with an in-UI override; and every feature that needs Blender warns
-  *before* a failed bake.
+  Settings panel shows the detected Blender path with an in-UI override; every feature that needs Blender warns *before* a
+  failed bake; and an **embedded interactive 3D preview** shows the baked model right in the window (auto-updates on Bake)
+  so you can judge geometry/skin and dial in the vertex reduction live.
 
 ## Models & licenses
 Model files aren't committed — download each per its license into `Assets/Resources/<name>/` and bake. Authors +

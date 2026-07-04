@@ -148,6 +148,11 @@ public static class UniversalBaker
         EditorUtility.SetDirty(clipColl);
         AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
 
+        // --- 6) preview aid: a STATIC textured prefab (the baked mesh + the atlas skin) you can select to inspect in
+        //        Unity's preview window and to judge the (decimated) vertex count. NOT written to the registry, so the
+        //        runtime ignores it entirely — it's purely a modeling aid.
+        GeneratePreviewPrefab(name, resDir, fbxRel, atlas, cfg.rotationEuler);
+
         string skelGuid = AmplitudeGuid(skel), atlasGuid = AmplitudeGuid(atlas), clipGuid = AmplitudeGuid(clipColl);
         if (string.IsNullOrEmpty(clipGuid) || clipGuid == "0,0,0,0")
             Debug.LogWarning($"[Factory] {name}: ClipCollection guid looks empty — check the model actually has a clip.");
@@ -172,6 +177,39 @@ public static class UniversalBaker
 
     static Type FindAmpType(string fullName) =>
         AppDomain.CurrentDomain.GetAssemblies().SelectMany(SafeTypes).FirstOrDefault(t => t.FullName == fullName);
+
+    // Emit a static, textured, INSPECTABLE prefab (<name>_Preview) from the baked FBX mesh + the atlas skin. Purely a
+    // modeling aid for Unity's preview window + judging the decimated vertex count — it is NOT in the registry, so the
+    // runtime never touches it. Uses the same mesh that gets injected, so its vert count is the real one; logs it so you
+    // can see the effect of 'Reduce to ~tris' and cut further.
+    static void GeneratePreviewPrefab(string name, string resDir, string fbxRel, Texture2D atlas, Vector3 rotationEuler)
+    {
+        try
+        {
+            var mesh = AssetDatabase.LoadAllAssetsAtPath(fbxRel).OfType<Mesh>()
+                .OrderByDescending(m => m.vertexCount).FirstOrDefault();          // the body mesh
+            if (mesh == null) { Debug.LogWarning("[Factory] preview: no mesh found in " + fbxRel); return; }
+            var mat = new Material(Shader.Find("Standard")) { name = name + "_PreviewMat", mainTexture = atlas };
+            string matPath = resDir + "/" + name + "_PreviewMat.mat";
+            AssetDatabase.DeleteAsset(matPath); AssetDatabase.CreateAsset(mat, matPath);
+            // Mesh on a CHILD: the registry Rotation offset, then a fixed 180° world-X flip so the preview lands upright
+            // (the offset alone flattens the model but upside-down). Preview-only — the game orients animated units via the pawn.
+            var root = new GameObject(name + "_Preview");
+            var child = new GameObject("Mesh");
+            child.transform.SetParent(root.transform);
+            child.transform.localRotation = Quaternion.Euler(0f, 90f, 0f) * Quaternion.Euler(180f, 0f, 0f) * Quaternion.Euler(rotationEuler);
+            child.AddComponent<MeshFilter>().sharedMesh = mesh;
+            child.AddComponent<MeshRenderer>().sharedMaterial = mat;
+            string prefabPath = resDir + "/" + name + "_Preview.prefab";
+            AssetDatabase.DeleteAsset(prefabPath);
+            PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
+            UnityEngine.Object.DestroyImmediate(root);
+            Debug.Log($"[Factory] {name} preview prefab -> {prefabPath}  (STATIC, textured, NOT injected). " +
+                $"Mesh = {mesh.vertexCount} verts / {mesh.triangles.Length / 3} tris — select it to inspect; " +
+                "lower 'Reduce to ~tris' + re-bake to cut further.");
+        }
+        catch (Exception e) { Debug.LogWarning("[Factory] preview prefab: " + e.Message); }
+    }
 
     // Blender: slim a rigged/animated model into a decimated FBX that keeps its armature + one clip (Tools/rig_anim.py).
     static bool RigAnimViaBlender(string src, string outFbx, int targetTris, string bonePrefixes, string clipName, string albedoOut)

@@ -98,6 +98,14 @@ That's the whole loop. Everything below is detail and the animated workflow.
 ### Bake / Reset
 - **Bake** runs the pipeline and writes the registry. **Reset** clears the form.
 
+### Preview panel
+An interactive 3D preview is embedded near the bottom of the window (drag to orbit, scroll to zoom). It **auto-updates
+after every Bake** and when you pick a resource from the **3D resource** dropdown — so you see the baked result *in the
+window*, no hunting in the Project view. It renders the baked prefab: `<name>_Preview.prefab` for **animated** models (a
+static, textured, upright copy of the injected mesh — not itself injected) or `<name>_Model.prefab` for **static** models.
+Use it to judge geometry, skin, and — with the **Reduce to ~tris** field + the Console vert/tri count — to dial in the
+lowest triangle count with no visible loss: drop the count → Bake → watch the model degrade live, then step back up.
+
 ---
 
 ## 4. Static model workflow

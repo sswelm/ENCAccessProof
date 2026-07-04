@@ -19,6 +19,8 @@ public class ModelFactoryWindow : EditorWindow
     string status = "";
     Vector2 scroll;
     bool showSettings;
+    UnityEditor.Editor previewEditor;   // embedded interactive 3D preview of the baked model (its _Preview/_Model prefab)
+    string previewFor = "";
 
     // Cheap animation probe (no Blender), cached per model-file path. State: 0 = unknown (allow), 1 = animation
     // detected (allow + hint), 2 = definitely none (disable the Animated toggle). Keeps the checkbox from being ticked
@@ -36,7 +38,29 @@ public class ModelFactoryWindow : EditorWindow
         w.RefreshList();
     }
 
-    void OnEnable() { RefreshList(); }
+    void OnEnable() { RefreshList(); LoadPreview(cur.resourceName); }
+    void OnDisable() { if (previewEditor != null) { UnityEngine.Object.DestroyImmediate(previewEditor); previewEditor = null; } }
+
+    // Load the baked prefab (animated <name>_Preview, else static <name>_Model) and build an interactive preview editor.
+    void LoadPreview(string name)
+    {
+        if (previewEditor != null) { UnityEngine.Object.DestroyImmediate(previewEditor); previewEditor = null; }
+        previewFor = name ?? "";
+        if (string.IsNullOrEmpty(name)) return;
+        var go = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Resources/" + name + "/" + name + "_Preview.prefab")   // animated
+              ?? AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Resources/" + name + "_Model.prefab");                  // static
+        if (go != null) previewEditor = UnityEditor.Editor.CreateEditor(go);
+    }
+
+    // Interactive 3D preview embedded in the window, so a bake's result shows immediately (no hunting in the Project view).
+    void DrawPreview()
+    {
+        if (previewEditor == null || !previewEditor.HasPreviewGUI()) return;
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Preview — " + previewFor + "   (drag to orbit, scroll to zoom)", EditorStyles.miniBoldLabel);
+        var r = GUILayoutUtility.GetRect(200, 260, GUILayout.ExpandWidth(true));
+        previewEditor.OnInteractivePreviewGUI(r, EditorStyles.helpBox);
+    }
 
     void RefreshList()
     {
@@ -283,6 +307,7 @@ public class ModelFactoryWindow : EditorWindow
                       : "Set Resource name and Pawn description to bake.", MessageType.Warning);
 
         if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+        DrawPreview();
         EditorGUILayout.HelpBox(
             "Bake imports the model, bakes a skeleton + atlas, and writes the JSON registry the in-game plugin reads.\n" +
             "• Formats: GLB / glTF / OBJ / FBX, and .blend (auto-converted via installed Blender).\n" +
@@ -352,11 +377,12 @@ public class ModelFactoryWindow : EditorWindow
 
     void OnSelectResource()
     {
-        if (selected <= 0) { cur = new ModelDef(); status = ""; return; }
+        if (selected <= 0) { cur = new ModelDef(); status = ""; LoadPreview(null); return; }
         var e = ModelRegistry.Load().FirstOrDefault(x => x.resourceName == existing[selected]);
         if (e == null) return;
         cur = JsonUtility.FromJson<ModelDef>(JsonUtility.ToJson(e));   // clone so edits don't mutate the stored copy
         status = "Loaded '" + e.resourceName + "'. Edit + Bake; leave Model file empty to re-bake with new settings.";
+        LoadPreview(cur.resourceName);
     }
 
     // Re-probe only when the model-file path changes (OnGUI runs every frame; file I/O must not).
@@ -597,6 +623,7 @@ public class ModelFactoryWindow : EditorWindow
             ? $"Baked ANIMATED '{cur.resourceName}' -> '{cur.pawnDescription}'\nskeleton {r.skeletonGuid}\nclip {r.clipGuid}\nNow rebuild the mod + relaunch."
             : $"Baked '{cur.resourceName}' -> '{cur.pawnDescription}'  (raw bbox {r.bbox})\nskeleton {r.skeletonGuid}\nNow rebuild the mod + relaunch.";
         Debug.Log("[Factory] " + status);
+        LoadPreview(cur.resourceName);   // show the baked model right in the window
     }
 }
 
