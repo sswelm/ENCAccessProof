@@ -128,13 +128,19 @@ namespace ENCAccessProof
                 int n = 0;
                 foreach (var e in entries)
                 {
-                    if (e.skeleton == null) e.skeleton = LoadSkeleton(e.sa, e.sb, e.sc, e.sd, e.resourceName);
-                    if (e.skeleton == null) continue;
-                    var sf = AccessTools.Field(e.skeleton.GetType(), "loadingStatus");
-                    if (sf != null) sf.SetValue(e.skeleton, Enum.ToObject(sf.FieldType, 0)); // NotLoaded
-                    SetMember(e.skeleton, "SkeletonId", -1);
-                    reg.Invoke(animMgr, new[] { e.skeleton });
-                    n++;
+                    // isolate each entry: a single bad model (missing asset, reflection miss) must not abort the whole
+                    // loop -- that would skip Apply and take down EVERY custom model, not just the broken one.
+                    try
+                    {
+                        if (e.skeleton == null) e.skeleton = LoadSkeleton(e.sa, e.sb, e.sc, e.sd, e.resourceName);
+                        if (e.skeleton == null) continue;
+                        var sf = AccessTools.Field(e.skeleton.GetType(), "loadingStatus");
+                        if (sf != null) sf.SetValue(e.skeleton, Enum.ToObject(sf.FieldType, 0)); // NotLoaded
+                        SetMember(e.skeleton, "SkeletonId", -1);
+                        reg.Invoke(animMgr, new[] { e.skeleton });
+                        n++;
+                    }
+                    catch (Exception ex) { Plugin.Log.LogError($"[Uni] register '{e.resourceName}' failed (skipped, others continue): " + ex); }
                 }
                 // inject our ClipCollections (animated models) into loadedAnimationClipCollections BEFORE Apply, so
                 // Apply's builder bakes their pose data + assigns each clip an animation id.
@@ -221,6 +227,7 @@ namespace ENCAccessProof
             var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
                 .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length >= 1);
             var g = load?.MakeGenericMethod(mcType);
+            if (g == null) { Plugin.Log.LogError($"[Uni] LoadSkeleton '{tag}': Amplitude LoadAsset/TryLoadAsset not resolved (game update?) — skipping this model"); return null; }
             var args = g.GetParameters().Length == 1 ? new[] { guid } : new[] { guid, null };
             var skel = g.Invoke(null, args);
             Plugin.Log.LogInfo($"[Uni] loaded skeleton '{tag}': " + ((skel as UnityEngine.Object)?.name ?? "NULL (rebuild mod?)"));
@@ -451,6 +458,7 @@ namespace ENCAccessProof
                 var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
                     .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length >= 1);
                 var g = load?.MakeGenericMethod(ccType);
+                if (g == null) { Plugin.Log.LogError($"[Uni] loadClip '{tag}': Amplitude LoadAsset/TryLoadAsset not resolved (game update?)"); return null; }
                 var args = g.GetParameters().Length == 1 ? new[] { guid } : new[] { guid, null };
                 var cc = g.Invoke(null, args);
                 Plugin.Log.LogInfo($"[Uni] loaded clipCollection '{tag}': " + ((cc as UnityEngine.Object)?.name ?? "NULL (rebuild mod?)"));
@@ -633,6 +641,7 @@ namespace ENCAccessProof
                 var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
                     .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length >= 1);
                 var g = load?.MakeGenericMethod(typeof(UnityEngine.Texture2D));
+                if (g == null) { Plugin.Log.LogError($"[Uni] loadAtlas '{tag}': Amplitude LoadAsset/TryLoadAsset not resolved (game update?)"); return null; }
                 var args = g.GetParameters().Length == 1 ? new object[] { guid } : new object[] { guid, null };
                 var tex = g.Invoke(null, args) as UnityEngine.Texture2D;
                 Plugin.Log.LogInfo($"[Uni] loaded atlas '{tag}': " + (tex != null ? tex.name + " " + tex.width + "x" + tex.height : "NULL"));

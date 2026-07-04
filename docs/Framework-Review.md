@@ -21,9 +21,11 @@ The single biggest systemic risk, spanning both repos:
 - **Baker** reflected `GetMethod(...)?.Invoke(...)` for `SetPrefab`/`Reimport`/`SetFromDirectory`: the `?.` swallows a
   null method, so a future Amplitude rename produces an **empty skeleton/clip asset that reports `ok=true`** with a valid
   Unity GUID. `AmplitudeGuid` returns `""` on failure and the caller still returns success.
-- **Plugin** `LoadSkeleton`/`LoadAtlas`/`LoadClipCollection` (`:223-224`): `var g = load?.MakeGenericMethod(...)` then
+- ~~**Plugin** `LoadSkeleton`/`LoadAtlas`/`LoadClipCollection` (`:223-224`): `var g = load?.MakeGenericMethod(...)` then
   `g.GetParameters()` with **no null-check**, and `LoadSkeleton` (unlike `LoadClipCollection`) isn't in a try/catch — so
-  one renamed `LoadAsset` throws and aborts *all* registration.
+  one renamed `LoadAsset` throws and aborts *all* registration.~~ **RESOLVED:** all three loaders now `if (g == null) return null;`
+  with a clear log, **and** the registration loop wraps each entry in its own try/catch — one bad model is skipped (others
+  still register + Apply), instead of a single failure taking down every custom model.
 - **Plugin** `OnPawnAdded` bare `catch {}` per frame: a persistent field-rename fails silently on every pawn forever.
 
 **Fix pattern:** capture each `MethodInfo`/GUID into a local; `return Fail(...)` / log-once when null; treat empty GUID as
@@ -50,7 +52,7 @@ constant, derive keys + filename from it, strip dead scaffolding. Do it as one d
 
 | Sev | Location | Issue → fix |
 |---|---|---|
-| **Critical** | `:223-224` (all 3 loaders) | `g.GetParameters()` NRE if `LoadAsset` not resolved; `LoadSkeleton` not in try/catch → cascades to abort **all** registration. **Verified.** Add `if (g == null) return null;`. |
+| ~~**Critical**~~ **RESOLVED** | `:223-224` (all 3 loaders) | `g.GetParameters()` NRE if `LoadAsset` not resolved; `LoadSkeleton` not in try/catch → cascades to abort **all** registration. **Verified.** **Fixed:** all 3 loaders `if (g == null) return null;` (clear log) **+** per-entry try/catch in the registration loop (one bad model skipped, others register + Apply). |
 | **High** | `EnsureRegistered` `~124-158` | one bad model aborts the whole batch (single try/catch around the loop) and `registered` stays false → retries every hook. Wrap the per-entry body in its own try/catch. |
 | **High** | `OnPawnAdded` `:590` | bare `catch {}` every frame hides a persistent reflection break with zero log. Log once behind a one-shot flag. |
 | **High** | `Plugin.cs Update` → `TickOne` | textures re-applied every frame per model. **Verified.** Cache the `Material[]` + dirty flag. |
