@@ -10,10 +10,14 @@ Humankind.
 - **Animated custom models — a first, one-click.** A quadcopter drone injected onto a land unit renders full-size,
   textured, and **spins its own propellers from its own baked animation** — for any number of instances. Tick
   **Animated**, press Bake.
-- **Multiple static models live**, no new code each: a **Zeppelin**, an **LCAC Hovercraft**, and a fully-textured **USS
-  Zumwalt stealth cruiser** — correct orientation, correct skin, at the waterline.
-- **Your model's animation overrides the donor's.** A model rides a donor unit's rig; injection can't *remove* a donor's
-  animated sub-part (a rotor), but it can give your model **its own** clip. Match the donor to your model.
+- **Multiple static models live**, no new code each: a **Zeppelin**, an **LCAC Hovercraft**, a fully-textured **USS
+  Zumwalt stealth cruiser**, and a **RAH-66 Comanche** helicopter — correct orientation, correct skin, at the waterline.
+- **Borrow the donor's animation.** A model rides a donor unit's rig; injection can't *remove* a donor's animated sub-part
+  (a rotor), but you can turn that into a feature: **strip your model's own rotor** (see below) and the **donor's spinning
+  rotor shows through** — the Comanche flies with a spinning rotor it never had. Or give the model **its own** clip.
+- **Strip parts of your model at bake time.** A "Strip parts" field deletes named objects (+ children) from the source
+  mesh before baking — the mirror of Hide-donor, on *your* model. Drop a helicopter's own rotor, a crew figure, a weapon
+  pod… Name-Pick reads objects straight from the GLB/glTF. Proven removing the Comanche's rotor blades.
 - **Heavy / single-sided / multi-material meshes, handled** — a built-in vertex reducer, a winding fix + double-sided
   fallback for CAD "sketch" meshes, height-based UVs, and an N-material atlas packer. Formats: GLB / glTF / OBJ / FBX /
   `.blend`.

@@ -83,6 +83,12 @@ That's the whole loop. Everything below is detail and the animated workflow.
 - **Reduce to ~tris (0 = off)** — quadric-decimate a heavy model to about this many triangles (via Blender) to fit the
   engine's shared mesh buffer (~25k per model is the practical ceiling). It's a **ceiling, not a quota**: a model already
   under it passes through untouched. No Blender? Use **Convert grid** instead (below).
+- **Strip parts (names)** *(Pick)* — comma-separated object-name substrings to **DELETE from *your* model** before baking
+  (each match takes its children too). The **mirror of Hide-donor**, but on your source mesh: use it to drop a part you
+  don't want baked in — most importantly a **helicopter's own rotor**, so the **donor's animated rotor spins through** in
+  its place (also crew figures, weapon pods…). **Pick** reads the object names straight from the model file (GLB/glTF; for
+  FBX/OBJ/.blend, type them by hand — open in Blender to see names). Case-insensitive substring match; needs Blender (it
+  runs a delete-and-export step). Proven on the RAH-66 Comanche (`Cylinder06,Cylinder07` removed its main-rotor blades).
 - **Hide donor meshes** *(Pick)* — comma-separated name substrings of the **donor unit's extra parts** to hide (e.g. a
   leftover rotor). **Pick** reads the donor fragment names the plugin logged to `BepInEx\LogOutput.log` — so **launch the
   game once** with the model injected, then Pick. Runtime-only (takes effect on reload, no re-bake). *Can't* hide a
