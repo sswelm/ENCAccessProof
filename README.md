@@ -12,9 +12,11 @@ Humankind.
   **Animated**, press Bake.
 - **Multiple static models live**, no new code each: a **Zeppelin**, an **LCAC Hovercraft**, a fully-textured **USS
   Zumwalt stealth cruiser**, and a **RAH-66 Comanche** helicopter — correct orientation, correct skin, at the waterline.
-- **Borrow the donor's animation.** A model rides a donor unit's rig; injection can't *remove* a donor's animated sub-part
-  (a rotor), but you can turn that into a feature: **strip your model's own rotor** (see below) and the **donor's spinning
-  rotor shows through** — the Comanche flies with a spinning rotor it never had. Or give the model **its own** clip.
+- **Borrow the donor's animation — including *multiple* moving parts.** A model rides a donor unit's rig; injection can't
+  *remove* a donor's animated sub-part (a rotor), but you can turn that into a feature: **strip your model's own rotor(s)**
+  (see below) and the **donor's spinning rotor shows through**. The donor helicopter has *two* rotor bones (`Helix` main +
+  `Helix_back` tail), so stripping both the Comanche's main *and* tail rotor gives it a spinning main rotor **and** a spinning
+  shrouded fantail — two borrowed animations on one static model. Or give the model **its own** clip.
 - **First-instance rotor fix.** The engine draws the *first* borrowed-rotor pawn of a model, at the moment it's **created**,
   with its rotor ~1 unit low (a spawn race — every later instance is fine). Ticking **Re-spawn after load** makes the plugin
   watch for any such unit appearing — on a save-load, built in a city, or dev-spawned — and near-instantly re-run the game's
