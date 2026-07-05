@@ -228,15 +228,8 @@ public static class UniversalBaker
             if (File.Exists(outFbx)) File.Delete(outFbx);
             using (var p = System.Diagnostics.Process.Start(psi))
             {
-                // Drain stderr on a pool thread while THIS thread reads stdout. Reading stdout-then-stderr sequentially
-                // deadlocks: Blender is verbose on stderr, so its ~4KB stderr pipe buffer fills, the child blocks writing
-                // it, never exits, stdout never EOFs, and we hang forever on the stdout read -> frozen Unity UI thread.
-                // Task.Run (not ReadToEndAsync().Result) so the read runs on a pool thread with no SynchronizationContext
-                // capture -- blocking the main thread on GetResult() can't deadlock against a captured continuation.
-                var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                string e = errTask.GetAwaiter().GetResult();
+                if (!RunBounded(p, ProcTimeoutMs, out string o, out string e))
+                { Debug.LogError($"[Factory] a bake sub-process timed out (~{ProcTimeoutMs / 1000}s) and was killed (stuck process or over-heavy model)."); return false; }
                 if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[rig_anim] " + o.Trim());
                 if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[rig_anim] " + e.Trim());
                 if (p.ExitCode != 0 || !File.Exists(outFbx)) { Debug.LogError("[Factory] rig_anim produced no FBX (exit " + p.ExitCode + ")."); return false; }
@@ -730,21 +723,34 @@ public static class UniversalBaker
         {
             using (var p = System.Diagnostics.Process.Start(psi))
             {
-                // Drain stderr on a pool thread while THIS thread reads stdout. Reading stdout-then-stderr sequentially
-                // deadlocks: Blender is verbose on stderr, so its ~4KB stderr pipe buffer fills, the child blocks writing
-                // it, never exits, stdout never EOFs, and we hang forever on the stdout read -> frozen Unity UI thread.
-                // Task.Run (not ReadToEndAsync().Result) so the read runs on a pool thread with no SynchronizationContext
-                // capture -- blocking the main thread on GetResult() can't deadlock against a captured continuation.
-                var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                string e = errTask.GetAwaiter().GetResult();
+                if (!RunBounded(p, ProcTimeoutMs, out string o, out string e))
+                { Debug.LogError($"[Factory] a bake sub-process timed out (~{ProcTimeoutMs / 1000}s) and was killed (stuck process or over-heavy model)."); return false; }
                 if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[glbconv] " + o.Trim());
                 if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[glbconv] " + e.Trim());
                 return p.ExitCode == 0;
             }
         }
         catch (Exception ex) { Debug.LogError("[Factory] could not run converter ('" + psi.FileName + "'): " + ex.Message + "\n(GLB path uses Tools/glbconv/glbconv.exe; the dev fallback needs a dotnet on PATH or EditorPrefs 'ENC.dotnetPath'.)"); return false; }
+    }
+
+    // Hard cap on any Blender/glbconv shell-out (ms). A stuck child (bad model, driver stall, a modal dialog it shows
+    // despite --background) would otherwise block the editor's main thread on the pipe read FOREVER; this kills it and
+    // fails the bake cleanly instead. 3 min is well above any legit bake (they finish in seconds); bump it if a genuinely
+    // heavy decimation on a slow machine ever trips it.
+    const int ProcTimeoutMs = 180000;
+
+    // Run an already-configured redirected process with that hard timeout. BOTH streams are drained on pool threads
+    // (reading stdout-then-stderr on this thread deadlocks: the child fills its ~4KB stderr pipe buffer, blocks writing,
+    // never exits, stdout never EOFs, and we hang forever). The wait is bounded, so a hung child can't freeze the editor.
+    // Returns false (after killing the child) on timeout; otherwise the process has exited and stdout/stderr are filled.
+    static bool RunBounded(System.Diagnostics.Process p, int timeoutMs, out string stdout, out string stderr)
+    {
+        var outTask = System.Threading.Tasks.Task.Run(() => p.StandardOutput.ReadToEnd());
+        var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
+        if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } stdout = ""; stderr = ""; return false; }
+        stdout = outTask.GetAwaiter().GetResult();
+        stderr = errTask.GetAwaiter().GetResult();
+        return true;
     }
 
     // Locate blender.exe with zero config: explicit EditorPrefs override, else the newest install under Program Files,
@@ -786,10 +792,8 @@ public static class UniversalBaker
             if (File.Exists(outGlb)) File.Delete(outGlb);
             using (var p = System.Diagnostics.Process.Start(psi))
             {
-                var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());   // drain stderr off-thread (deadlock-safe)
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                string e = errTask.GetAwaiter().GetResult();
+                if (!RunBounded(p, ProcTimeoutMs, out string o, out string e))
+                { Debug.LogError($"[Factory] strip timed out (~{ProcTimeoutMs / 1000}s) and was killed (stuck process or over-heavy model)."); return false; }
                 if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[strip] " + o.Trim());
                 if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[strip] " + e.Trim());
                 if (p.ExitCode != 0 || !File.Exists(outGlb)) { Debug.LogError("[Factory] Blender strip produced no GLB (exit " + p.ExitCode + ")."); return false; }
@@ -813,15 +817,8 @@ public static class UniversalBaker
             if (File.Exists(outGlb)) File.Delete(outGlb);
             using (var p = System.Diagnostics.Process.Start(psi))
             {
-                // Drain stderr on a pool thread while THIS thread reads stdout. Reading stdout-then-stderr sequentially
-                // deadlocks: Blender is verbose on stderr, so its ~4KB stderr pipe buffer fills, the child blocks writing
-                // it, never exits, stdout never EOFs, and we hang forever on the stdout read -> frozen Unity UI thread.
-                // Task.Run (not ReadToEndAsync().Result) so the read runs on a pool thread with no SynchronizationContext
-                // capture -- blocking the main thread on GetResult() can't deadlock against a captured continuation.
-                var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                string e = errTask.GetAwaiter().GetResult();
+                if (!RunBounded(p, ProcTimeoutMs, out string o, out string e))
+                { Debug.LogError($"[Factory] a bake sub-process timed out (~{ProcTimeoutMs / 1000}s) and was killed (stuck process or over-heavy model)."); return false; }
                 if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[reduce] " + o.Trim());
                 if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[reduce] " + e.Trim());
                 if (p.ExitCode != 0 || !File.Exists(outGlb)) { Debug.LogError("[Factory] Blender reduce produced no GLB (exit " + p.ExitCode + ")."); return false; }
@@ -845,15 +842,8 @@ public static class UniversalBaker
             if (File.Exists(outGlb)) File.Delete(outGlb);
             using (var p = System.Diagnostics.Process.Start(psi))
             {
-                // Drain stderr on a pool thread while THIS thread reads stdout. Reading stdout-then-stderr sequentially
-                // deadlocks: Blender is verbose on stderr, so its ~4KB stderr pipe buffer fills, the child blocks writing
-                // it, never exits, stdout never EOFs, and we hang forever on the stdout read -> frozen Unity UI thread.
-                // Task.Run (not ReadToEndAsync().Result) so the read runs on a pool thread with no SynchronizationContext
-                // capture -- blocking the main thread on GetResult() can't deadlock against a captured continuation.
-                var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
-                string o = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
-                string e = errTask.GetAwaiter().GetResult();
+                if (!RunBounded(p, ProcTimeoutMs, out string o, out string e))
+                { Debug.LogError($"[Factory] a bake sub-process timed out (~{ProcTimeoutMs / 1000}s) and was killed (stuck process or over-heavy model)."); return false; }
                 if (!string.IsNullOrWhiteSpace(o)) Debug.Log("[blender] " + o.Trim());
                 if (!string.IsNullOrWhiteSpace(e)) Debug.LogWarning("[blender] " + e.Trim());
                 if (p.ExitCode != 0 || !File.Exists(outGlb)) { Debug.LogError("[Factory] Blender produced no GLB (exit " + p.ExitCode + ")."); return false; }

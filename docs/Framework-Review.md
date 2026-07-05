@@ -34,8 +34,11 @@ vanishes from the registry with only a `Debug.LogError` the user may never see.
   a blocking error and rename the bad file to `enc_models.corrupt.json` — never let a subsequent Save
   overwrite an unreadable-but-present file.
 
-### 2. No timeout on any external process
+### 2. No timeout on any external process — ✅ FIXED (2026-07-05)
 `baker/UniversalBaker.cs` — **confirmed** (5× `WaitForExit()` with no argument: ~238, 740, 791, 823, 855).
+> **Fixed:** added a `RunBounded(process, timeoutMs, out stdout, out stderr)` helper — both streams drain
+> on pool threads and the wait is bounded (`WaitForExit(ms)`; `Kill()` + fail on timeout). All five
+> shell-outs use it with a 3-min cap, so a stuck child fails the bake cleanly instead of freezing the editor.
 A hung Blender or glbconv (bad model, a modal dialog it shows despite `--background`, a driver stall,
 an infinite Python loop) wedges the Unity **main thread forever** — Task Manager is the only way out.
 The existing comments handle pipe-buffer deadlock, not a genuinely stuck child.
@@ -115,8 +118,8 @@ range, so no early-return leak) but there's no `try/finally` around `root`, so a
   `respawnAfterLoad`) by exact name via Newtonsoft, ignoring the bake-only fields. Verified.
 
 ## Recommended fix order
-1. ~~**#1 registry atomicity**~~ ✅ done · **#2 process timeouts** + **#3 Blender discovery** — the last
-   two matter only for distributing to strangers (the author's own machine has Blender and doesn't hang).
+1. ~~**#1 registry atomicity**~~ ✅ done · ~~**#2 process timeouts**~~ ✅ done · **#3 Blender discovery** —
+   the last one matters only for distributing to strangers (the author's own machine already has Blender).
 2. **#8 rig-block `try/finally`**, **#5 `anyAnimated`**, **#7 model-file check** — cheap correctness.
 3. **#4 `registered` reset**, **#6 `TryLoadAsset`** — resilience to a future game update.
 4. Cleanup: ~~delete `LoadHookPatch.cs`~~ ✅ done · neutralize ENC branding.
