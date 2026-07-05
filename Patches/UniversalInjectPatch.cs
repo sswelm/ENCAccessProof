@@ -607,25 +607,36 @@ namespace ENCAccessProof
         // re-run the game's OWN pawn rebuild (PresentationUnit.UpdatePawns = ReleasePawns + InstantiatePawns) on units of
         // models that opted in via respawnAfterLoad — a presentation-only refresh, no simulation touched, no unit lost.
         // Called from Plugin.Update (per-frame, a SAFE point OUTSIDE the AddPawnEntry loop — calling UpdatePawns inside
-        // that loop hangs). One-shot.
+        // that loop hangs). Fires once PER LOAD: these statics live for the whole game process (they don't reset between
+        // save-loads), so we re-arm on the rising edge below — otherwise the fix would run only on the first load of a
+        // session and every later reload would keep the buggy first-instance rotor.
         static bool respawnDone;
         static int respawnTick;
+        static bool presenceHigh;      // were on-map armies present last frame? a save-load empties then repopulates them
         // Strip a pawn description's trailing variant suffix ("Era6_Common_StealthHelicopters_01" -> "Era6_Common_StealthHelicopters")
         // so it matches the unit-definition name ("LandUnit_Era6_Common_StealthHelicopters").
         static string CoreDesc(string pd) => System.Text.RegularExpressions.Regex.Replace(pd ?? "", "_[0-9]+$", "");
         internal static void MaybeRespawnPostLoad()
         {
-            if (respawnDone || entries == null || !Plugin.UniversalInjectOn.Value) return;
-            if (!entries.Any(x => x.respawnAfterLoad)) { respawnDone = true; return; }   // no model opted in — nothing to do
+            if (entries == null || !Plugin.UniversalInjectOn.Value) return;
+            if (!entries.Any(x => x.respawnAfterLoad)) return;      // no model opted in — nothing to do
+
+            // Observe the presentation every frame (cheap null-scan). A save-load tears the army set down (all entries
+            // null / loading screen) and rebuilds it; the empty->populated RISING EDGE means a fresh load -> re-arm the
+            // one-shot so the fix applies to every load, not just the first of the session.
+            var presType = AccessTools.TypeByName("Amplitude.Mercury.Presentation.Presentation");
+            var factory = presType == null ? null : CachedField(presType, "PresentationEntityFactoryController")?.GetValue(null);
+            var armies = factory == null ? null : GetMember(factory, "PresentationArmyEntities") as Array;
+            int nonNull = 0;
+            if (armies != null) foreach (var a in armies) if (a != null) nonNull++;
+            if (nonNull > 0 && !presenceHigh) { respawnDone = false; respawnTick = 0; }   // rising edge: fresh presentation
+            presenceHigh = nonNull > 0;
+
+            if (respawnDone || nonNull == 0) return;
             if (++respawnTick < 180) return;                        // ~3s -> load settled, all armies spawned + repointed
             respawnDone = true;
             try
             {
-                var presType = AccessTools.TypeByName("Amplitude.Mercury.Presentation.Presentation");
-                var factory = presType == null ? null : CachedField(presType, "PresentationEntityFactoryController")?.GetValue(null);
-                if (factory == null) { Plugin.Log.LogWarning("[Uni][RESPAWN] factory not reachable"); return; }
-                var armies = GetMember(factory, "PresentationArmyEntities") as Array;
-                if (armies == null) { Plugin.Log.LogWarning("[Uni][RESPAWN] no army array"); return; }
                 int refreshed = 0, seen = 0;
                 foreach (var army in armies)
                 {
