@@ -368,6 +368,14 @@ public class ModelFactoryWindow : EditorWindow
             "• Normals: KeepModel = the artist's; Recalculate = hard edges via smoothing angle; Faceted = fully flat.\n" +
             "• Convert grid: 0 keeps UV seams (textured models); >0 decimates (heavy untextured meshes).\n" +
             "Registry: " + ModelRegistry.RegistryPath, MessageType.None);
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            // One-click way to reach the config folder (enc_models.json + the plugin's .cfg live here).
+            if (GUILayout.Button("Open config folder", GUILayout.Width(150)))
+                EditorUtility.RevealInFinder(System.IO.File.Exists(ModelRegistry.RegistryPath)
+                    ? ModelRegistry.RegistryPath : ModelRegistry.ConfigDir);
+            GUILayout.Label("↑ enc_models.json + the plugin .cfg", EditorStyles.miniLabel);
+        }
         EditorGUILayout.EndScrollView();
     }
 
