@@ -15,10 +15,11 @@ Humankind.
 - **Borrow the donor's animation.** A model rides a donor unit's rig; injection can't *remove* a donor's animated sub-part
   (a rotor), but you can turn that into a feature: **strip your model's own rotor** (see below) and the **donor's spinning
   rotor shows through** — the Comanche flies with a spinning rotor it never had. Or give the model **its own** clip.
-- **Save-load first-instance rotor fix.** On a save-load, the engine drew the *first* borrowed-rotor pawn built during the
-  load with its rotor ~1 unit low (an engine spawn race; every other instance was fine). Ticking **Re-spawn after load**
-  makes the plugin re-run the game's own pawn rebuild (`PresentationUnit.UpdatePawns`) on those units ~3s post-load — a
-  presentation-only refresh, no unit touched — and the rotor comes out correct on every instance. Opt-in per model.
+- **First-instance rotor fix.** The engine draws the *first* borrowed-rotor pawn of a model, at the moment it's **created**,
+  with its rotor ~1 unit low (a spawn race — every later instance is fine). Ticking **Re-spawn after load** makes the plugin
+  watch for any such unit appearing — on a save-load, built in a city, or dev-spawned — and ~5s later re-run the game's own
+  pawn rebuild (`PresentationUnit.UpdatePawns`) on it, a presentation-only refresh (no unit touched) that clears the low
+  rotor. Applied to every instance as it appears (one brief flicker each) so a buggy one is never missed. Opt-in per model.
 - **Strip parts of your model at bake time.** A "Strip parts" field deletes named objects (+ children) from the source
   mesh before baking — the mirror of Hide-donor, on *your* model. Drop a helicopter's own rotor, a crew figure, a weapon
   pod… Name-Pick reads objects straight from the GLB/glTF. Proven removing the Comanche's rotor blades.
