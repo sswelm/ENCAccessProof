@@ -17,9 +17,10 @@ Humankind.
   rotor shows through** — the Comanche flies with a spinning rotor it never had. Or give the model **its own** clip.
 - **First-instance rotor fix.** The engine draws the *first* borrowed-rotor pawn of a model, at the moment it's **created**,
   with its rotor ~1 unit low (a spawn race — every later instance is fine). Ticking **Re-spawn after load** makes the plugin
-  watch for any such unit appearing — on a save-load, built in a city, or dev-spawned — and ~5s later re-run the game's own
-  pawn rebuild (`PresentationUnit.UpdatePawns`) on it, a presentation-only refresh (no unit touched) that clears the low
-  rotor. Applied to every instance as it appears (one brief flicker each) so a buggy one is never missed. Opt-in per model.
+  watch for any such unit appearing — on a save-load, built in a city, or dev-spawned — and near-instantly re-run the game's
+  own pawn rebuild (`PresentationUnit.UpdatePawns`) on it, a presentation-only refresh (no unit touched) that clears the low
+  rotor. Applied to every instance as it appears (one brief flicker each) so a buggy one is never missed. Opt-in per model;
+  the re-spawn delay is tunable in the plugin cfg (`Factory/RespawnDelayFrames`, default 1) for slower machines.
 - **Strip parts of your model at bake time.** A "Strip parts" field deletes named objects (+ children) from the source
   mesh before baking — the mirror of Hide-donor, on *your* model. Drop a helicopter's own rotor, a crew figure, a weapon
   pod… Name-Pick reads objects straight from the GLB/glTF. Proven removing the Comanche's rotor blades.

@@ -22,6 +22,7 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> CopyFields;      // which pawn-def fields to copy
         internal static ConfigEntry<string> ClearFields;     // pawn-def fields to null out (kill duplicates)
         internal static ConfigEntry<bool>   UniversalInjectOn; // registry-driven universal injector (Model Factory)
+        internal static ConfigEntry<int>    RespawnDelayFrames; // frames to wait after a borrowed-rotor unit renders before re-spawning it (first-instance rotor fix)
 
         private bool show;
         private Rect winRect = new Rect(60, 60, 480, 420);
@@ -52,6 +53,10 @@ namespace ENCAccessProof
             UniversalInjectOn = Config.Bind("Factory", "UniversalInject", true,
                                   "Registry-driven universal model injector (the Model Factory). Reads the model registry JSON " +
                                   "from this config folder and repoints each listed pawn definition onto its baked skeleton.");
+            RespawnDelayFrames = Config.Bind("Factory", "RespawnDelayFrames", 1,
+                                  "Frames to wait after a borrowed-rotor unit (a model with respawnAfterLoad set) renders before " +
+                                  "the plugin re-spawns it to clear the first-instance low-rotor bug. 1 = near-instant (default). " +
+                                  "Increase (e.g. 30 = ~0.5s at 60fps) only if a slower machine briefly shows the low rotor before it corrects.");
 
             // Patch each hook independently so a single missing Amplitude target (a game update renaming one type) only
             // disables THAT hook -- instead of a null TargetMethod throwing out of PatchAll and failing the whole plugin.

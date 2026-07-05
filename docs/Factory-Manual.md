@@ -95,10 +95,12 @@ That's the whole loop. Everything below is detail and the animated workflow.
   donor's animated sub-parts (a rotor, spinning wheels) — those are baked at pawn spawn; pick a cleaner donor instead.
 - **Re-spawn after load (borrowed rotor fix)** — fixes a spawn quirk: the engine draws the **first** borrowed-rotor pawn of
   a model, *when it's created*, with its rotor ~1 unit low (every other instance is fine). Tick this and the plugin watches
-  for any such unit appearing — on a save-load, built in a city, or dev-spawned — and ~5 s later re-runs the game's own pawn
-  rebuild on it, so the rotor comes out right every time (a brief one-time flicker as it rebuilds, no unit affected). **Tick
-  ONLY** for models that borrow a donor's animated sub-part (a spinning rotor, i.e. you used **Strip parts** to drop your
-  own rotor); pointless flicker on any other model. Runtime-only (no re-bake needed — it's a registry flag).
+  for any such unit appearing — on a save-load, built in a city, or dev-spawned — and near-instantly re-runs the game's own
+  pawn rebuild on it, so the rotor comes out right every time (a brief one-time flicker as it rebuilds, no unit affected).
+  **Tick ONLY** for models that borrow a donor's animated sub-part (a spinning rotor, i.e. you used **Strip parts** to drop
+  your own rotor); pointless flicker on any other model. Runtime-only (no re-bake needed — it's a registry flag). The delay
+  before the re-spawn is tunable in the plugin cfg (`Factory/RespawnDelayFrames`, default 1 frame) if a slow machine shows
+  the low rotor briefly before it corrects.
 - **Convert grid** — GLB/glTF only. `0` = faithful (keeps UV seams — use for textured models). `>0` = vertex-cluster
   decimation **without Blender** (coarser; averages UVs across seams, so only for heavy *untextured* meshes).
 
@@ -207,7 +209,7 @@ strategic map.
 | **~1s stall each loop** | A padded frozen tail in the clip. The Factory auto-clamps the frame range now — re-bake. |
 | **Body wobbles / "unbalanced flywheel"** | The clip animates the whole body → set **Animate only bones** to just the spinning group (e.g. `prop`). |
 | **A donor part shows through** (rotor, extra mesh) | **Hide donor meshes → Pick** it (after one launch so it's logged). If it's an *animated* donor sub-part, it can't be hidden — pick a cleaner donor. |
-| **First unit's borrowed rotor sits ~1 low** (after a load, or on a freshly built/spawned unit; other instances fine) | An engine spawn race on the first pawn of the model, at creation. Tick **Re-spawn after load** on that model — the plugin rebuilds the unit's pawns ~5 s after it appears and the rotor comes out right. Registry flag, no re-bake. |
+| **First unit's borrowed rotor sits ~1 low** (after a load, or on a freshly built/spawned unit; other instances fine) | An engine spawn race on the first pawn of the model, at creation. Tick **Re-spawn after load** on that model — the plugin rebuilds the unit's pawns right after it renders and the rotor comes out right (tune `Factory/RespawnDelayFrames` in the plugin cfg if it's briefly visible). Registry flag, no re-bake. |
 | **Bake fails: "needs Blender"** | Install Blender or set its path in **Settings**. For static decimation without Blender, use **Convert grid** instead of Reduce-to-tris. |
 | **Re-baked static model is 90° off / tipped up in-game** (preview looks fine) | An older Factory shipped a **stale skeleton** on re-bake (the static outputs were overwritten in place, so the skeleton baked from cached geometry). Fixed now — the static path deletes its outputs and force-reimports before baking the skeleton, so a re-bake matches a first bake. Just **re-bake → rebuild → relaunch**. |
 | **Texture looks stale in the editor** | A Unity texture-residency quirk after a multi-material bake — open the source textures in the Project view and back. The in-game result is correct. |

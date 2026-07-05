@@ -610,9 +610,12 @@ namespace ENCAccessProof
         // to EVERY such unit (one brief flicker each): better to re-spawn one too many than miss a buggy one. Called from
         // Plugin.Update (per-frame, a SAFE point OUTSIDE the AddPawnEntry loop — calling UpdatePawns inside that loop hangs).
         static int respawnFrame;
-        const int RespawnDelayFrames = 300;    // ~5s at 60fps: the unit shows briefly, then rebuilds correct
-        static readonly Dictionary<object, int> respawnDue = new Dictionary<object, int>();   // opted-in unit -> frame to re-spawn it
-        static readonly HashSet<object> respawnHandled = new HashSet<object>();               // units already re-spawned (don't repeat)
+        const int RespawnAttempts = 1;         // re-spawn each unit ONCE; a single pass fixes the rotor and holds (tested)
+        // Delay (in frames, after the unit first renders) before the re-spawn is CONFIGURABLE via the plugin cfg
+        // (Factory/RespawnDelayFrames, default 1 = near-instant). A modder on slower hardware can raise it if a unit needs
+        // longer to settle. base = first LOADED frame — before the unit is rendered there's nothing to fix.
+        static readonly Dictionary<object, int> respawnBase = new Dictionary<object, int>();   // opted-in unit -> frame it was first seen loaded
+        static readonly Dictionary<object, int> respawnCount = new Dictionary<object, int>();  // opted-in unit -> re-spawns done so far
         // Strip a pawn description's trailing variant suffix ("Era6_Common_StealthHelicopters_01" -> "Era6_Common_StealthHelicopters")
         // so it matches the unit-definition name ("LandUnit_Era6_Common_StealthHelicopters").
         static string CoreDesc(string pd) => System.Text.RegularExpressions.Regex.Replace(pd ?? "", "_[0-9]+$", "");
@@ -640,19 +643,22 @@ namespace ENCAccessProof
                     if (!entries.Any(x => x.respawnAfterLoad && x.pawnDescription.Length > 0
                             && uname.IndexOf(CoreDesc(x.pawnDescription), StringComparison.OrdinalIgnoreCase) >= 0)) continue;
                     present.Add(unit);
-                    if (respawnHandled.Contains(unit)) continue;
-                    if (!respawnDue.TryGetValue(unit, out int due)) { respawnDue[unit] = respawnFrame + RespawnDelayFrames; continue; }  // just appeared -> schedule
+                    // Only start the clock once the unit is actually rendered (IsLoaded) — before that there's nothing to fix
+                    // and the 1s marks would be wasted during the load.
                     bool loaded = true; try { loaded = Convert.ToBoolean(GetMember(unit, "IsLoaded")); } catch { }
-                    if (!loaded || respawnFrame < due) continue;
-                    respawnHandled.Add(unit); respawnDue.Remove(unit);   // mark first so a throwing unit isn't retried forever
+                    if (!loaded) continue;
+                    if (!respawnBase.ContainsKey(unit)) { respawnBase[unit] = respawnFrame; respawnCount[unit] = 0; continue; }
+                    int done = respawnCount[unit];
+                    if (done >= RespawnAttempts) continue;                                             // all passes done
+                    if (respawnFrame - respawnBase[unit] < (done + 1) * Math.Max(1, Plugin.RespawnDelayFrames.Value)) continue; // not time for the next pass yet
+                    respawnCount[unit] = done + 1;                                                     // bump first so a throwing unit isn't stuck
                     bool naval = false; try { naval = Convert.ToBoolean(GetMember(unit, "IsNaval")); } catch { }
                     AccessTools.Method(unit.GetType(), "UpdatePawns", new[] { typeof(bool) })?.Invoke(unit, new object[] { naval });
-                    Plugin.Log.LogInfo($"[Uni][RESPAWN] re-spawned newly-created '{uname}' ~5s after it appeared (clears the first-instance rotor race)");
+                    Plugin.Log.LogInfo($"[Uni][RESPAWN] re-spawned '{uname}' shortly after it rendered (clears the first-instance rotor race)");
                 }
                 // Drop bookkeeping for units that are gone (destroyed, or the previous game's units after a reload) so the
-                // sets don't grow and a genuinely new instance (a new object) is detected + fixed again.
-                if (respawnDue.Count > 0) foreach (var k in respawnDue.Keys.Where(k => !present.Contains(k)).ToList()) respawnDue.Remove(k);
-                if (respawnHandled.Count > 0) respawnHandled.RemoveWhere(u => !present.Contains(u));
+                // dicts don't grow and a genuinely new instance (a new object) is detected + fixed again.
+                if (respawnBase.Count > 0) foreach (var k in respawnBase.Keys.Where(k => !present.Contains(k)).ToList()) { respawnBase.Remove(k); respawnCount.Remove(k); }
             }
             catch (Exception ex) { Plugin.Log.LogError("[Uni][RESPAWN] " + ex); }
         }
