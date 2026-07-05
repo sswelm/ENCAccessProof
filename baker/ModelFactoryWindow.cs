@@ -647,6 +647,11 @@ public class ModelFactoryWindow : EditorWindow
 
     void DoBake()
     {
+        // Tear down the preview editor BEFORE baking. The baked prefab has an Animator, so the preview is a GameObjectInspector
+        // with a live animator preview; the bake's delete-first (DeleteAsset _Model.prefab) would then null its target mid-bake,
+        // and SaveAsPrefabAsset's OnPostprocessAllAssets fires InstantiateForAnimatorPreview(null) -> ArgumentException. Destroying
+        // it up front means nothing watches the prefab while it's deleted; we rebuild the preview after the bake.
+        LoadPreview(null);
         var cfg = new BakeConfig
         {
             resourceName = cur.resourceName.Trim(), modelFile = (cur.modelFile ?? "").Trim(), pawnDescription = cur.pawnDescription.Trim(),
