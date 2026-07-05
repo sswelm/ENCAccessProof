@@ -327,6 +327,12 @@ public class ModelFactoryWindow : EditorWindow
             ">0 = decimate to a vertex-cluster grid of this resolution along the longest axis " +
             "(higher = more detail/vertices). Use only for heavy UNtextured meshes that need simplifying.\n\n" +
             "Ignored for OBJ/FBX (already meshes)."), cur.convertGrid);
+        cur.respawnAfterLoad = EditorGUILayout.Toggle(new GUIContent("Re-spawn after load (borrowed rotor fix)",
+            "FIX for the save-load first-instance rotor bug: on a save-load the engine draws the FIRST custom-helicopter " +
+            "pawn with its borrowed donor rotor ~1 unit low; anything (re)built after load is correct. Tick this and the " +
+            "plugin re-runs the game's own pawn rebuild on this model's units ~3s after load, clearing it (a brief one-time " +
+            "flicker as they rebuild). Tick ONLY for models that borrow a donor's animated sub-part (a spinning rotor); " +
+            "pointless flicker otherwise."), cur.respawnAfterLoad);
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Texture / import", EditorStyles.miniBoldLabel);
