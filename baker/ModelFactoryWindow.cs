@@ -564,8 +564,9 @@ public class ModelFactoryWindow : EditorWindow
     }
 
     // Read the donor fragment mesh names the plugin logged for this resource, from BepInEx/LogOutput.log. The plugin
-    // emits "[Uni] <name> donor fragment[i] mesh='...'" (and "HID donor fragment") once per launch. We tail the last
-    // ~16 MB (the most recent session is at the end) with a shared read (the running game holds the log open), and dedupe.
+    // emits "[Uni] <name> donor fragment[i] mesh='...'" (and "HID donor fragment") once per launch. We stream the WHOLE
+    // log with a shared read (the running game holds it open) — the fragments are logged early (first unit load), so on a
+    // big verbose log they're nowhere near the tail; a cheap substring pre-filter keeps the full scan fast. Deduped.
     static List<string> ReadDonorFragments(string resourceName)
     {
         var res = new List<string>();
@@ -719,9 +720,19 @@ public class ModelFactoryWindow : EditorWindow
         cur.skel = ModelRegistry.ParseGuid(r.skeletonGuid);
         cur.atlas = ModelRegistry.ParseGuid(r.atlasGuid);
         cur.clip = cfg.animated ? ModelRegistry.ParseGuid(r.clipGuid) : new int[4];   // static models carry {0,0,0,0}
-        ModelRegistry.Upsert(cur);
+        bool saved = ModelRegistry.Upsert(cur);
         RefreshList();
         selected = System.Array.IndexOf(existing, cur.resourceName); if (selected < 0) selected = 0;
+        if (!saved)
+        {
+            // The asset baked, but writing the registry entry failed (Save logged why). Say so plainly instead of a false
+            // "Baked ✓" — otherwise the user assumes it's registered when the plugin will never see it. Re-bake retries.
+            status = $"Baked '{cur.resourceName}', but the REGISTRY SAVE FAILED (see Console). The asset is baked; close " +
+                     "whatever's locking enc_models.json (AV / indexer / the running game) and re-bake to write the entry.";
+            Debug.LogError("[Factory] " + status);
+            LoadPreview(cur.resourceName, forceReimport: true);
+            return;
+        }
         status = cfg.animated
             ? $"Baked ANIMATED '{cur.resourceName}' -> '{cur.pawnDescription}'\nskeleton {r.skeletonGuid}\nclip {r.clipGuid}\nNow rebuild the mod + relaunch."
             : $"Baked '{cur.resourceName}' -> '{cur.pawnDescription}'  (raw bbox {r.bbox})\nskeleton {r.skeletonGuid}\nNow rebuild the mod + relaunch.";

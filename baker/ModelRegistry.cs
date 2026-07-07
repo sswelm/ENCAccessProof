@@ -1,6 +1,9 @@
 // ModelRegistry.cs (ENC editor) — the ENC Model Factory's config store. Writes a JSON file the in-game plugin reads
-// to bind each baked model onto its pawn definition at runtime. Uses UnityEngine.JsonUtility, which works in BOTH the
-// editor and the game runtime, so no JSON dependency on either side. Written into the game's BepInEx/config.
+// to bind each baked model onto its pawn definition at runtime. This EDITOR side uses UnityEngine.JsonUtility to WRITE
+// the file (fine in the editor's Mono). IMPORTANT: the game-runtime plugin does NOT read it back with JsonUtility —
+// JsonUtility silently returns an EMPTY object in the game's Mono runtime, so the plugin parses with Newtonsoft (its own
+// JSON dependency; see UniversalInjectPatch.LoadRegistry). Do not "simplify" the plugin back to JsonUtility — it will
+// no-op and inject nothing. Written into the game's BepInEx/config.
 
 using System;
 using System.Collections.Generic;
@@ -165,33 +168,48 @@ public static class ModelRegistry
         }
     }
 
-    public static void Save(List<ModelDef> models)
+    // Returns true if the registry was written. False = nothing was saved (corrupt-guard tripped, or the atomic write
+    // hit a transient lock) — the caller should surface that instead of assuming success.
+    public static bool Save(List<ModelDef> models)
     {
         if (lastLoadCorrupt)
         {
             Debug.LogError("[Factory] not saving: the existing registry was unreadable (see the .corrupt.json backup). " +
                            "Fix or delete it and press Refresh first — refusing to overwrite it and lose your models.");
-            return;
+            return false;
         }
         var json = JsonUtility.ToJson(new ModelDefList { models = models }, true);
-        // 1) Atomic write to the live game target (what the plugin reads): fill a temp file, then swap it in, so
-        //    an interrupted or locked write can never leave a truncated registry.
-        Directory.CreateDirectory(ConfigDir);
-        var tmp = RegistryPath + ".tmp";
-        File.WriteAllText(tmp, json);
-        if (File.Exists(RegistryPath)) File.Replace(tmp, RegistryPath, null);
-        else File.Move(tmp, RegistryPath);
+        // 1) Atomic write to the live game target (what the plugin reads): fill a temp file, then swap it in, so an
+        //    interrupted or locked write can never leave a truncated registry. GUARDED — File.Replace/Move throws on a
+        //    transient lock (AV, search indexer, the running game holding the file). Without this, a bake that succeeds
+        //    then fails to save would leak a raw editor exception AND leave the user thinking it saved.
+        try
+        {
+            Directory.CreateDirectory(ConfigDir);
+            var tmp = RegistryPath + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(RegistryPath)) File.Replace(tmp, RegistryPath, null);
+            else File.Move(tmp, RegistryPath);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[Factory] registry write FAILED — the model baked but its entry was NOT saved to " +
+                           $"'{RegistryPath}' ({e.Message}). Close whatever's locking it (AV, search indexer, the running " +
+                           $"game) and re-bake; the previous registry and the versioned copy at '{ProjectBackupPath}' are intact.");
+            return false;
+        }
         // 2) Versioned shadow copy inside the mod repo (git-tracked; survives a game reinstall). Best-effort.
         try { File.WriteAllText(ProjectBackupPath, json); } catch (Exception e) { Debug.LogWarning("[Factory] project backup write failed: " + e.Message); }
         AssetDatabase.Refresh();
+        return true;
     }
 
-    public static void Upsert(ModelDef def)
+    public static bool Upsert(ModelDef def)
     {
         var list = Load();
         list.RemoveAll(m => m.resourceName == def.resourceName);
         list.Add(def);
-        Save(list);
+        return Save(list);
     }
 
     // Remove a model from the registry by resource name. Returns true if something was removed. The baked skeleton/atlas
@@ -202,8 +220,7 @@ public static class ModelRegistry
         int before = list.Count;
         list.RemoveAll(m => m.resourceName == resourceName);
         if (list.Count == before) return false;
-        Save(list);
-        return true;
+        return Save(list);
     }
 
     public static int[] ParseGuid(string csv)

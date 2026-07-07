@@ -10,7 +10,7 @@ using Newtonsoft.Json.Linq;             // provided by the game (mod.io); robust
 
 namespace ENCAccessProof
 {
-    // Generic, registry-driven model injector — the runtime half of the Universal Baker. Reads enc_models.txt from
+    // Generic, registry-driven model injector — the runtime half of the Universal Baker. Reads enc_models.json from
     // BepInEx/config (written by the editor), registers every baked skeleton, and on each unit's AddOn.Load repoints
     // the matching pawn definition onto its skeleton using the proven self-discovery (read the host's body mesh name,
     // rename ours to match, resolve, skin via <bodyMesh>_OutputLayer). One patch handles any number of models.
@@ -41,16 +41,17 @@ namespace ENCAccessProof
         const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         static List<ModelEntry> entries;
         static bool loaded, registered, repointActiveLogged, stLogged;
+        static int loadAttempts;   // failed-load counter: latch `loaded` only after a success or a few tries, so a TRANSIENT read/parse error (AV scan, sharing violation at startup) retries instead of disabling injection for the whole session
         static UnityEngine.Texture2D _flatN, _white, _black, _grey;   // neutral overlay maps (kill the host's detail/camo)
 
         static void LoadRegistry()
         {
-            if (loaded) return; loaded = true;
+            if (loaded) return;
             entries = new List<ModelEntry>();
             try
             {
                 var path = Path.Combine(Paths.ConfigPath, "enc_models.json");
-                if (!File.Exists(path)) { Plugin.Log.LogInfo("[Uni] no registry at " + path); return; }
+                if (!File.Exists(path)) { Plugin.Log.LogInfo("[Uni] no registry at " + path); loaded = true; return; }
                 var text = File.ReadAllText(path);
 
                 // PRIMARY: Newtonsoft (the game's own copy) parses each model as an OBJECT, so fields stay with their
@@ -78,6 +79,7 @@ namespace ENCAccessProof
                             });
                         }
                         Plugin.Log.LogInfo($"[Uni] parsed {entries.Count} entr(ies) via Newtonsoft [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
+                        loaded = true;   // latch ONLY on a successful parse (not at the top) so a transient read/parse error retries
                         return;
                     }
                 }
@@ -94,6 +96,7 @@ namespace ENCAccessProof
                 var cl = Regex.Matches(text, "\"clip\"\\s*:\\s*" + i4);   // ClipCollection guid (animated models); absent on static models
                 // position object {x,y,z} — JsonUtility writes Vector3 in x,y,z order. Applied as a runtime world offset for animated models.
                 var po = Regex.Matches(text, "\"position\"\\s*:\\s*\\{\\s*\"x\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"y\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"z\"\\s*:\\s*(-?[\\d.eE+]+)");
+                var ra = Regex.Matches(text, "\"respawnAfterLoad\"\\s*:\\s*(true|false)");   // parity with the Newtonsoft path (line ~77) — else the first-instance rotor fix silently defaults off here
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
@@ -108,11 +111,21 @@ namespace ENCAccessProof
                         ta = G(at[i], 1), tb = G(at[i], 2), tc = G(at[i], 3), td = G(at[i], 4),
                         ca = i < cl.Count ? G(cl[i], 1) : 0, cb = i < cl.Count ? G(cl[i], 2) : 0, cc = i < cl.Count ? G(cl[i], 3) : 0, cd = i < cl.Count ? G(cl[i], 4) : 0,
                         position = i < po.Count ? new UnityEngine.Vector3(F(po[i], 1), F(po[i], 2), F(po[i], 3)) : UnityEngine.Vector3.zero,
+                        respawnAfterLoad = i < ra.Count && ra[i].Groups[1].Value == "true",
                     });
                 }
+                loaded = true;   // regex fallback also succeeded — latch so we don't re-parse every pawn
                 Plugin.Log.LogInfo($"[Uni] read {text.Length} chars; parsed {entries.Count} entr(ies) [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
             }
-            catch (Exception e) { Plugin.Log.LogError("[Uni] registry load: " + e); }
+            catch (Exception e)
+            {
+                // Do NOT latch `loaded` on a failure — a transient hiccup (AV scan, sharing violation while the game is
+                // still flushing the file) would otherwise disable ALL injection for the session. Retry on the next few
+                // pawn loads; give up (latch) only after 3 tries so a genuinely broken file doesn't re-parse forever.
+                entries = new List<ModelEntry>();
+                if (++loadAttempts >= 3) { loaded = true; Plugin.Log.LogError("[Uni] registry load failed 3x, giving up for this session: " + e); }
+                else Plugin.Log.LogWarning($"[Uni] registry load failed (attempt {loadAttempts}/3), will retry on next pawn: " + e.Message);
+            }
         }
 
         // register every skeleton before Apply() builds GPU buffers (AnimationLoad postfix)

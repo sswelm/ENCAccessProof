@@ -72,6 +72,9 @@ namespace ENCAccessProof
         // RegisterMeshCollection. If the live meshCollections list count goes up, we've proven we can
         // write to the registry the engine refuses to expose to data mods. (Harmless placeholder — nothing
         // references it, so it just proves the call path; real baked skeletons come next.)
+        // NOTE: this MUTATES shared engine state — the placeholder STAYS in the live registry until you restart the
+        // game (there's no unregister). It's inert (nothing references it), but this is a diagnostic side effect, not a
+        // dry run. Only press it when proving the write path, not casually.
         internal static void TestWrite()
         {
             Report.Clear();
@@ -91,6 +94,7 @@ namespace ENCAccessProof
                 int after = RuntimeListCount(AnimMgr);
                 Add($"live meshCollections list: {before} -> {after}   " +
                     (after > before ? ">>> WRITE PROVEN — we added to the live registry. <<<" : "(no change)"));
+                if (after > before) Add("(note: the placeholder stays in the live registry until you restart the game.)");
             }
             catch (Exception e) { Add("write test error: " + e.Message); }
         }
