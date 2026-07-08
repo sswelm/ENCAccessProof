@@ -115,7 +115,7 @@ public static class UniversalBaker
         if (fbxGo == null) return Fail("imported FBX has no GameObject");
 
         // --- 3) atlas from the exported albedo (same single-albedo path + Resources-root location as static) ---
-        var atlas = BuildAtlas(resDir, name);
+        var atlas = BuildAtlas(resDir, name, cfg.albedoBrightness, cfg.albedoSaturation);
         string atlasPath = "Assets/Resources/" + name + "_Atlas.asset";
         AssetDatabase.DeleteAsset(atlasPath);
         AssetDatabase.CreateAsset(atlas, atlasPath);
