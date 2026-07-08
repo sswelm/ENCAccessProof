@@ -50,15 +50,23 @@ if subs:
         print("PREP WARNING: no object name matched %s — nothing was stripped (check the names)" % subs)
 
 # --- REDUCE: per-object quadric collapse to ~target total triangles ---
+# Count TRIANGLES, not polygons: a quad is 1 polygon but 2 triangles (an n-gon is n-2), and the decimate
+# COLLAPSE ratio operates on the TRIANGULATED count (verified on Blender 5.1.2). Computing the ratio from
+# len(polygons) made quad-topology sources (OBJ/FBX/.blend; GLB is always triangles) under-reduce by up to
+# 2x — a 20k-quad model (40k real tris) with target 24000 got ratio 1.0 = NO reduction, blowing straight
+# past the engine's shared vertex-buffer ceiling. The engine budget is triangles, so we count triangles.
+def tri_count(me):
+    return sum(len(p.vertices) - 2 for p in me.polygons)
+
 if target > 0:
     meshes = [o for o in bpy.context.scene.objects if o.type == 'MESH']
     if not meshes:
         print("PREP_ERR no meshes to reduce"); sys.exit(1)
-    total = sum(len(o.data.polygons) for o in meshes)
+    total = sum(tri_count(o.data) for o in meshes)
     ratio = min(1.0, max(0.001, target / max(1, total)))
     before = after = 0
     for o in meshes:
-        before += len(o.data.polygons)
+        before += tri_count(o.data)
         # Instanced (multi-user) mesh data: modifier_apply refuses it ("Modifiers cannot be applied to multi-user
         # data" — verified on Blender 5.1.2), which aborted the whole bake; and applying through each user would
         # decimate the shared datablock once per user anyway. Give each object its own copy first. Linked duplicates
@@ -72,7 +80,7 @@ if target > 0:
         m.decimate_type = 'COLLAPSE'
         m.ratio = ratio
         bpy.ops.object.modifier_apply(modifier=m.name)
-        after += len(o.data.polygons)
+        after += tri_count(o.data)
     print("PREP reduce: tris %d -> %d (target %d, ratio %.4f)" % (before, after, target, ratio))
 
 bpy.ops.export_scene.gltf(filepath=outp, export_format='GLB', use_selection=False)

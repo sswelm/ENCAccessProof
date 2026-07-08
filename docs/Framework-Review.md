@@ -108,12 +108,15 @@ bake, and the surfaced error was the misleading "Blender prep produced no GLB (e
 > shared datablock). Verified end-to-end: a GLB whose import produces two objects sharing one mesh
 > (`users=2`) now reduces cleanly.
 
-#### T2 🟡 Reduce ratio counts polygons, but COLLAPSE ratio operates on triangles — **verified**
-A quad-heavy model under-reduces by up to 2×: 20k quads (40k tris) with target 24000 computes ratio 1.0 →
-*no reduction at all* → 40k tris ship into the ~25k-ceiling engine buffer this feature exists to protect.
-GLB inputs are immune (glTF is triangle-only); OBJ/FBX/.blend sources are exposed. The post-reduce log
-also under-reports (counts polys, not tris).
-- **Fix:** count `sum(len(p.vertices) - 2 for p in polygons)` like `rig_anim.py` already does.
+#### T2 🟡 Reduce ratio counts polygons, but COLLAPSE ratio operates on triangles — ✅ FIXED (2026-07-08)
+A quad-heavy model under-reduced by up to 2×: 20k quads (40k tris) with target 24000 computed ratio 1.0 →
+*no reduction at all* → 40k tris shipped into the ~25k-ceiling engine buffer this feature exists to protect.
+GLB inputs were immune (glTF is triangle-only); OBJ/FBX/.blend sources were exposed. The post-reduce log
+also under-reported (counted polys, not tris).
+> **Fixed:** ratio and the before/after report now count real triangles (`len(p.vertices) - 2` per polygon,
+> like `rig_anim.py`). Verified end-to-end: a 10,000-quad OBJ (20,000 real tris) with target 5000 now
+> computes ratio 0.25 and lands at 4,999 output triangles (independently re-imported and counted); the old
+> code would have produced ~10,000. Triangle inputs are byte-identical in behaviour (each tri counts 1).
 
 #### T3 🟡 `rig_anim.py` albedo grab takes the *first* `TEX_IMAGE` node, not Base Color
 Node order is creation order; a PBR material with normal/roughness maps can hand the Factory a **normal
@@ -175,8 +178,7 @@ defensively guarded throughout).
 
 ## Recommended fix order
 
-1. ~~**E1**~~ ✅ done · ~~**T1**~~ ✅ done · **T2** (small `prep_model.py` edit, verified; it defeats the
-   tri budget the engine ceiling depends on — a budget whose importance the AH-1 mast incident just proved).
+1. ~~**E1**~~ ✅ done · ~~**T1**~~ ✅ done · ~~**T2**~~ ✅ done — tier 1 complete.
 2. **E2** (Remove key + honest status) · **E4** (bound the pipe drain — completes the 07-05 timeout work).
 3. **T3 / T4 / T5** — the silent-corruption class (wrong albedo, lost skinning, inside-out mirror halves).
 4. **E3, E5, T6** — honest failures for empty/destroyed outputs.
