@@ -338,7 +338,7 @@ public class ModelFactoryWindow : EditorWindow
             "Longest side of the baked atlas, in pixels. The atlas is DXT1-compressed and saved to the shipped _Atlas.asset, " +
             "so SMALLER = smaller mod bundle. A unit is ~80px at map zoom (and its info card uses your 2D portrait, not the " +
             "model), so 512-1024 is plenty; pick 2048 only for a unit you zoom in on closely. Re-bake to apply."),
-            cur.atlasMaxDim, new[] { new GUIContent("512"), new GUIContent("1024"), new GUIContent("2048") }, new[] { 512, 1024, 2048 });
+            cur.atlasMaxDim, new[] { new GUIContent("256"), new GUIContent("512"), new GUIContent("1024"), new GUIContent("2048") }, new[] { 256, 512, 1024, 2048 });
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Runtime — applied on load, no re-bake", EditorStyles.miniBoldLabel);

@@ -90,11 +90,11 @@ That's the whole loop. Everything below is detail and the animated workflow.
   neutral grey, to hide UV dead-zones and packing gaps that would otherwise render as black patches. That also flattens
   an **intentionally black material** (a glossy canopy, a dark cockpit) to grey. Tick this to keep true black on such a
   model. Off by default (existing behaviour). Re-bake to apply.
-- **Atlas size** (512 / 1024 / 2048) — longest side of the baked atlas. It's DXT1-compressed into the shipped
+- **Atlas size** (256 / 512 / 1024 / 2048) — longest side of the baked atlas. It's DXT1-compressed into the shipped
   `_Atlas.asset`, so **smaller = smaller mod bundle**. A unit is ~80 px at map zoom and its info card uses your 2D
-  portrait (not the model), so **512–1024 is ample**; pick 2048 only for a unit you zoom in on closely. Default 1024.
-  (Before this existed, atlases baked uncompressed at up to 4096×8192 — a single `_Atlas.asset` could be 128 MB. Now a
-  1024 atlas is ~0.5 MB, a 512 atlas ~0.1 MB.) Re-bake to apply.
+  portrait (not the model), so **512–1024 is ample** (256 for very simple units); pick 2048 only for a unit you zoom in
+  on closely. Default 1024. (Before this existed, atlases baked uncompressed at up to 4096×8192 — a single `_Atlas.asset`
+  could be 128 MB. DXT1 sizes: 2048 ≈ 2 MB, 1024 ≈ 0.5 MB, 512 ≈ 0.1 MB, 256 ≈ 32 KB.) Re-bake to apply.
 - **Reduce to ~tris (0 = off)** — quadric-decimate a heavy model to about this many triangles (via Blender) to fit the
   engine's shared mesh buffer (~25k per model is the practical ceiling). It's a **ceiling, not a quota**: a model already
   under it passes through untouched. No Blender? Use **Convert grid** instead (below).

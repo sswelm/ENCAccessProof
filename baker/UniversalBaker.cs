@@ -32,7 +32,7 @@ public struct BakeConfig
     public float   albedoBrightness; // multiply the baked atlas RGB (1 = unchanged). >1 lifts a dark skin — the injection path ships FLAT albedo (donor PBR neutralized), so shiny/dark models read muddy in-game; this compensates at bake time
     public float   albedoSaturation; // scale colour vividness around per-pixel luminance (1 = unchanged, 0 = greyscale, >1 = punchier). Fixes desaturated albedos (game lighting can't add colour back)
     public bool    keepBlack;        // MULTI-MATERIAL only: skip the near-black->grey remap so an intentionally black material (glossy canopy, dark cockpit) stays black. Default false = neutralize (hides UV dead-zones / packing gaps)
-    public int     atlasMaxDim;      // longest side of the baked atlas in px (512 / 1024 / 2048). Smaller = smaller shipped _Atlas.asset. A unit is ~80px at map zoom so 512-1024 is plenty; 0 = default (1024)
+    public int     atlasMaxDim;      // longest side of the baked atlas in px (256 / 512 / 1024 / 2048). Smaller = smaller shipped _Atlas.asset. A unit is ~80px at map zoom so 512-1024 is plenty; 0 = default (1024)
     public int     targetTris;      // >0 = quadric-decimate the source to ~this many triangles (Blender) before baking, to fit the engine's shared vertex/index buffer
     public string  stripParts;      // bake-time (Blender): comma-separated object-name substrings to DELETE from the source before baking (e.g. a helicopter's own rotor so the donor's spinning rotor shows through). Empty = keep everything.
     public bool    animated;        // true = ANIMATED path: bake from the model's OWN armature + clip (Skeleton + ClipCollection), not the procedural vehicle rig
