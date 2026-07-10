@@ -31,6 +31,7 @@ public struct BakeConfig
     public bool    heightUV;        // true = override UVs with U=length, V=height so a vertical-gradient albedo maps by height (black skirt low, grey hull high)
     public float   albedoBrightness; // multiply the baked atlas RGB (1 = unchanged). >1 lifts a dark skin — the injection path ships FLAT albedo (donor PBR neutralized), so shiny/dark models read muddy in-game; this compensates at bake time
     public float   albedoSaturation; // scale colour vividness around per-pixel luminance (1 = unchanged, 0 = greyscale, >1 = punchier). Fixes desaturated albedos (game lighting can't add colour back)
+    public bool    keepBlack;        // MULTI-MATERIAL only: skip the near-black->grey remap so an intentionally black material (glossy canopy, dark cockpit) stays black. Default false = neutralize (hides UV dead-zones / packing gaps)
     public int     targetTris;      // >0 = quadric-decimate the source to ~this many triangles (Blender) before baking, to fit the engine's shared vertex/index buffer
     public string  stripParts;      // bake-time (Blender): comma-separated object-name substrings to DELETE from the source before baking (e.g. a helicopter's own rotor so the donor's spinning rotor shows through). Empty = keep everything.
     public bool    animated;        // true = ANIMATED path: bake from the model's OWN armature + clip (Skeleton + ClipCollection), not the procedural vehicle rig
@@ -385,16 +386,17 @@ public static class UniversalBaker
             var albs = matList.Select(mm => LoadReadableAlbedo(fsResDir, mm)).ToArray();
             packedAtlas = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = name + "_Atlas" };
             atlasRects = packedAtlas.PackTextures(albs, 2, 4096);
-            // Force opaque AND repaint near-black regions neutral grey. Two sources of near-black: (a) unused UV
-            // "dead-zones" inside a source albedo (very common — e.g. the zeppelin hull texture's black corner that the
-            // hull top samples), and (b) the gaps PackTextures leaves between packed islands. Faces whose UVs land on
-            // either would render BLACK. The <32 threshold only catches near-pure-black, so real dark skins are safe.
+            // Force opaque AND (unless keepBlack) repaint near-black regions neutral grey. Two sources of near-black:
+            // (a) unused UV "dead-zones" inside a source albedo (e.g. the zeppelin hull texture's black corner that the
+            // hull top samples), and (b) the gaps PackTextures leaves between packed islands — faces whose UVs land on
+            // either render BLACK. BUT this can't tell those from an INTENTIONALLY black material (a glossy canopy, a
+            // dark cockpit), which it would flatten to grey. keepBlack skips the remap for models that want true black.
             var apx = packedAtlas.GetPixels32();
             AdjustAlbedo(apx, cfg.albedoBrightness, cfg.albedoSaturation);   // optional brightness/saturation lift (baked in)
             for (int i = 0; i < apx.Length; i++)
             {
                 apx[i].a = 255;
-                if (apx[i].r < 32 && apx[i].g < 32 && apx[i].b < 32) { apx[i].r = 160; apx[i].g = 160; apx[i].b = 168; }
+                if (!cfg.keepBlack && apx[i].r < 32 && apx[i].g < 32 && apx[i].b < 32) { apx[i].r = 160; apx[i].g = 160; apx[i].b = 168; }
             }
             packedAtlas.SetPixels32(apx); packedAtlas.Apply();
             Debug.Log($"[Factory] {name} MULTI-MATERIAL: {matList.Count} materials [{string.Join(", ", matList.Select(mm => mm.name))}] -> packed atlas {packedAtlas.width}x{packedAtlas.height}");

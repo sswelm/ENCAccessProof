@@ -86,6 +86,10 @@ That's the whole loop. Everything below is detail and the animated workflow.
   (0 = greyscale, >1 = punchier). Baked into the atlas, so **re-bake to apply** (no re-import needed — quick to iterate).
   Cheaper and repeatable vs hand-editing the extracted albedo. Note: the Factory preview is dim, so judge the final
   amount **in-game** (brighter lighting) and dial back if over-warm.
+- **Keep black (glass/cockpit)** — *multi-material models only.* By default the bake repaints near-black atlas regions
+  neutral grey, to hide UV dead-zones and packing gaps that would otherwise render as black patches. That also flattens
+  an **intentionally black material** (a glossy canopy, a dark cockpit) to grey. Tick this to keep true black on such a
+  model. Off by default (existing behaviour). Re-bake to apply.
 - **Reduce to ~tris (0 = off)** — quadric-decimate a heavy model to about this many triangles (via Blender) to fit the
   engine's shared mesh buffer (~25k per model is the practical ceiling). It's a **ceiling, not a quota**: a model already
   under it passes through untouched. No Blender? Use **Convert grid** instead (below).
@@ -210,6 +214,7 @@ strategic map.
 | **Model invisible / see-through** | Single-sided/CAD mesh (backface-culled) → **Winding fix** or **Double-sided**. Or it overflowed the shared buffer → lower **Reduce to ~tris**. |
 | **Model tiny (a speck) or huge** | **Size** is the world length — set it to what looks right; the Console logs the scale. |
 | **Model looks dark / grey / washed-out in-game** | Expected for skins that relied on PBR shine or a dark texture — the injection path ships flat albedo (donor PBR neutralized). Raise **Albedo brightness** and/or **Albedo saturation** and re-bake. Judge the amount in-game, not in the dim preview. |
+| **A black part (glass canopy, cockpit) renders grey in-game** (multi-material model) | The near-black→grey neutralize step (which hides UV dead-zones) is flattening an intentionally black material. Tick **Keep black (glass/cockpit)** and re-bake. |
 | **Change didn't show in-game** | You didn't **rebuild the mod** (§6). Or **Reuse extracted** was on and skipped the re-slim after you changed Clip/bones/model — untick it. |
 | **Animated toggle greyed out** | The model has no animation the probe can see (OBJ, or a glTF with no `animations`). Use a rigged glb/fbx. FBX/.blend can't be probed cheaply, so the toggle stays enabled — type the clip/bones by hand. |
 | **"No clips readable from this model"** | Clip/Bone Pick works for glTF/GLB only. For FBX/.blend, type the clip name and bone prefixes manually. |

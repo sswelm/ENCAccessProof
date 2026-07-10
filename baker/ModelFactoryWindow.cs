@@ -329,6 +329,10 @@ public class ModelFactoryWindow : EditorWindow
         cur.albedoSaturation = EditorGUILayout.Slider(new GUIContent("Albedo saturation",
             "Colour vividness of the baked skin. 1 = unchanged, 0 = greyscale, >1 = punchier. Fixes a washed-out/" +
             "desaturated albedo (the game's lighting can't add colour back). Baked into the atlas — re-bake to apply."), cur.albedoSaturation < 0f ? 1f : cur.albedoSaturation, 0f, 2f);
+        cur.keepBlack = EditorGUILayout.Toggle(new GUIContent("Keep black (glass/cockpit)",
+            "MULTI-MATERIAL models only. By default the bake repaints near-black atlas regions neutral grey to hide UV " +
+            "dead-zones and packing gaps (which would render as black patches). That also flattens an INTENTIONALLY black " +
+            "material — a glossy canopy, a dark cockpit — to grey. Tick this to keep true black on such a model. Re-bake to apply."), cur.keepBlack);
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Runtime — applied on load, no re-bake", EditorStyles.miniBoldLabel);
@@ -733,7 +737,7 @@ public class ModelFactoryWindow : EditorWindow
             rotationEuler = cur.rotation, positionOffset = cur.position, size = cur.size,
             normals = (NormalsMode)cur.normalsMode, smoothingAngle = cur.smoothingAngle, convertGrid = cur.convertGrid,
             reuseExtracted = cur.reuseExtracted, doubleSided = cur.doubleSided, windingFix = cur.windingFix, heightUV = cur.heightUV, targetTris = cur.targetTris,
-            albedoBrightness = cur.albedoBrightness, albedoSaturation = cur.albedoSaturation,
+            albedoBrightness = cur.albedoBrightness, albedoSaturation = cur.albedoSaturation, keepBlack = cur.keepBlack,
             stripParts = cur.stripParts,
             animated = cur.animated, animClip = cur.animClip, animateBones = cur.animateBones
         };
