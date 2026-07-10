@@ -43,6 +43,7 @@ public class ModelDef
     public string animClip = "";        // ANIMATED only: name of the clip to bake when the model has several (e.g. "hover"); empty = the assigned/first action
     public string animateBones = "";    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
     public bool respawnAfterLoad = false; // RUNTIME (not baked): fix the save-load first-instance rotor race. The engine draws the FIRST custom pawn that borrows a donor's animated sub-part (a helicopter rotor) built during a save-load ~1 low; anything rebuilt AFTER load is correct. Tick this and the plugin re-runs the game's own PresentationUnit.UpdatePawns (release+re-instantiate) on this model's units ~3s post-load, clearing it. Set ONLY for borrowed-rotor models; a brief one-time flicker as those units rebuild.
+    public bool freezeDonorAnim = false;  // RUNTIME (not baked): freeze the DONOR's idle/move animation so a STATIC borrowed mesh doesn't inherit its pose bob. Use when your model rides a donor whose hover/idle wiggle looks wrong on it (e.g. the Zeppelin on the Recon-Drone donor). The plugin pins every pawn pose's Time to 0 each frame, holding the mesh rigid while it still glides tile-to-tile. Static models only (animated models play their own baked clip); no re-bake.
 }
 
 [Serializable]

@@ -23,6 +23,9 @@ Humankind.
   own pawn rebuild (`PresentationUnit.UpdatePawns`) on it, a presentation-only refresh (no unit touched) that clears the low
   rotor. Applied to every instance as it appears (one brief flicker each) so a buggy one is never missed. Opt-in per model;
   the re-spawn delay is tunable in the plugin cfg (`Factory/RespawnDelayFrames`, default 1) for slower machines.
+- **Freeze the donor's motion.** A *static* model riding an animated ground/hover donor inherits the donor's idle/move bob;
+  **Freeze donor animation** pins the donor's pose so a rigid model (an airship) holds still while it still glides
+  tile-to-tile — applied across *every* instance the same way animated models are (descriptor-matched + skeleton-forced).
 - **Strip parts of your model at bake time.** A "Strip parts" field deletes named objects (+ children) from the source
   mesh before baking — the mirror of Hide-donor, on *your* model. Drop a helicopter's own rotor, a crew figure, a weapon
   pod… Name-Pick reads objects straight from the GLB/glTF. Proven removing the Comanche's rotor blades.
@@ -30,8 +33,14 @@ Humankind.
   fallback for CAD "sketch" meshes, height-based UVs, and an N-material atlas packer. Formats: GLB / glTF / OBJ / FBX /
   `.blend`.
 - **Correct, isolated textures.** Custom skins map right-side-up out of the box (the glTF-V-top vs OBJ/Unity-V-bottom
-  convention is reconciled during OBJ import), and each model gets a private `FxOutputLayer` so its skin never bleeds
-  onto the donor.
+  convention is reconciled during OBJ import, and off-tile UVs — a skin mapped into the V 1→2 tile relying on wrap — are
+  shifted back into range so they don't collapse to a flat smear), and each model gets a private `FxOutputLayer` so its
+  skin never bleeds onto the donor.
+- **Tune the skin, shrink the bundle.** Bake-time **Albedo brightness / saturation** lift a dark or washed-out skin (the
+  injection ships *flat* albedo — donor PBR neutralized — so a shiny/dark source reads muddy without this); a **Keep black**
+  toggle preserves an intentionally black material (a glass canopy); and **Atlas size** (256–2048, default 512) + DXT1
+  compression keep each shipped skin ~0.1–2 MB. Bake *inputs* live in `Assets/FactorySource/` — out of the shipped mod, so
+  the licensed source models are never redistributed.
 - **Add a model = bake it.** The Factory writes the JSON registry; the plugin picks it up on next launch — no per-model code.
 
 Full detail — the shared-buffer ceiling, texture flip, per-model isolation, limitations — in
@@ -69,8 +78,9 @@ Built to work on a stranger's machine, not just the author's:
   so you can judge geometry/skin and dial in the vertex reduction live.
 
 ## Models & licenses
-Model files aren't committed — download each per its license into `Assets/Resources/<name>/` and bake. Authors +
-licenses in [**CREDITS.md**](CREDITS.md) (CC-BY requires attribution).
+Model files aren't committed — download each per its license, point the Factory's **Model file** at it, and bake (the
+converter extracts it into `Assets/FactorySource/<name>/`, which stays out of the shipped mod). Authors + licenses in
+[**CREDITS.md**](CREDITS.md) (CC-BY requires attribution).
 
 ## Config
 The plugin reads one JSON file — `<Humankind>\BepInEx\config\enc_models.json` (one entry per model: pawn description,
@@ -88,7 +98,9 @@ The plugin's own cfg (`…\community.humankind.encaccessproof.cfg`) — press **
 
 ## Toward a Unity package
 Goal: ship the Factory as a distributable Unity package. **Done:** zero-config path auto-detection, self-contained
-converter (no .NET dependency), one consolidated injection path, full multi-material support, and **one-click animated
-import** (own rig + clip, Pick-driven fields). **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`),
-package scaffolding (`package.json` / asmdef / LICENSE), single-DLL plugin packaging, an install guide + quickstart, and
-(optional) multi-material GLB. Editor scripts are mirrored in `baker/` (the ENCReload mod repo tracks only its `Databases`).
+converter (no .NET dependency), one consolidated injection path, full multi-material GLB support, **one-click animated
+import** (own rig + clip, Pick-driven fields), bake-time skin controls (albedo brightness/saturation, keep-black),
+configurable atlas size + bundle slimming (source models kept out of the shipped mod, DXT1 atlases), and a static-model
+**donor-animation freeze**. **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`), package scaffolding
+(`package.json` / asmdef / LICENSE), single-DLL plugin packaging, and an install guide + quickstart. Editor scripts are
+mirrored in `baker/` (the ENCReload mod repo tracks only its `Databases`).

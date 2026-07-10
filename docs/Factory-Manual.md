@@ -118,6 +118,16 @@ That's the whole loop. Everything below is detail and the animated workflow.
   your own rotor); pointless flicker on any other model. Runtime-only (no re-bake needed — it's a registry flag). The delay
   before the re-spawn is tunable in the plugin cfg (`Factory/RespawnDelayFrames`, default 1 frame) if a slow machine shows
   the low rotor briefly before it corrects.
+- **Freeze donor animation** — stops the **donor's** idle/move animation from bobbing your **static** mesh. A borrowed mesh
+  is skinned to a rig the donor animates, so if you ride a donor with a hover/idle wiggle (e.g. the Recon-Drone donor), a
+  large rigid model like an airship visibly wobbles. Tick this and the plugin **pins every pawn pose's time to frame 0 each
+  frame**, so the donor clip can't advance — the mesh holds rigid while the pawn **still glides tile-to-tile** (that motion
+  is transform-driven, not animation). **Static models only** (an animated model plays its own baked clip — leave it off).
+  Runtime-only (no re-bake — it's a registry flag; Bake just re-writes the registry). Confirm it took with the
+  `[Uni] freeze: '<name>' donor pose time pinned` line in `BepInEx\LogOutput.log`. *Note:* it holds **frame 0** of the donor
+  clip; if that frame isn't a neutral pose the model may rest at a slight static offset (no wobble, just held) — report it if
+  so. It lives in **Runtime** (not the Animation section) because it's a runtime flag that acts on the *donor*, and the
+  Animation section is disabled for the static models that use it.
 - **Convert grid** — GLB/glTF only. `0` = faithful (keeps UV seams — use for textured models). `>0` = vertex-cluster
   decimation **without Blender** (coarser; averages UVs across seams, so only for heavy *untextured* meshes).
 
@@ -228,6 +238,7 @@ strategic map.
 | **~1s stall each loop** | A padded frozen tail in the clip. The Factory auto-clamps the frame range now — re-bake. |
 | **Body wobbles / "unbalanced flywheel"** | The clip animates the whole body → set **Animate only bones** to just the spinning group (e.g. `prop`). |
 | **A donor part shows through** (rotor, extra mesh) | **Hide donor meshes → Pick** it (after one launch so it's logged). If it's an *animated* donor sub-part, it can't be hidden — pick a cleaner donor. |
+| **Model bobs / wiggles / wobbles** (a rigid model on a hovering donor — e.g. an airship on the Recon-Drone donor) | Your static mesh is inheriting the **donor's** idle/move animation. Tick **Freeze donor animation** (Runtime section) — the plugin pins the donor's pose so the mesh holds rigid, and it still glides tile-to-tile. Static models only; no re-bake. Different from the "unbalanced flywheel" row (that's a model's *own* clip animating its whole body — use **Animate only bones**). |
 | **First unit's borrowed rotor sits ~1 low** (after a load, or on a freshly built/spawned unit; other instances fine) | An engine spawn race on the first pawn of the model, at creation. Tick **Re-spawn after load** on that model — the plugin rebuilds the unit's pawns right after it renders and the rotor comes out right (tune `Factory/RespawnDelayFrames` in the plugin cfg if it's briefly visible). Registry flag, no re-bake. |
 | **Bake fails: "needs Blender"** | Install Blender or set its path in **Settings**. For static decimation without Blender, use **Convert grid** instead of Reduce-to-tris. |
 | **Re-baked static model is 90° off / tipped up in-game** (preview looks fine) | An older Factory shipped a **stale skeleton** on re-bake (the static outputs were overwritten in place, so the skeleton baked from cached geometry). Fixed now — the static path deletes its outputs and force-reimports before baking the skeleton, so a re-bake matches a first bake. Just **re-bake → rebuild → relaunch**. |
@@ -245,9 +256,10 @@ strategic map.
 
 ## 9. Where things land
 
-- **Baked assets:** `Assets/Resources/<name>_Skeleton.asset`, `_Atlas.asset`, `_Mat.mat`, `_ModelMesh.asset`
-  (static); animated adds `_Clips.asset` and a `<name>/anim/<name>_anim.fbx`. The imported model + albedo sit in
-  `Assets/Resources/<name>/`.
+- **Baked assets (shipped):** `Assets/Resources/<name>_Skeleton.asset`, `_Atlas.asset`, `_Mat.mat`, `_ModelMesh.asset`
+  (static); animated adds `_Clips.asset` and a `<name>/anim/<name>_anim.fbx`.
+- **Bake inputs (NOT shipped):** the imported model + extracted OBJ/albedo sit in `Assets/FactorySource/<name>/`, kept out
+  of the built mod so licensed source models aren't redistributed. Safe to delete to reclaim space (a re-bake re-extracts).
 - **Registry:** `<Humankind>\BepInEx\config\enc_models.json` — one entry per model (pawn description, `skel`/`atlas` GUIDs,
   transform, flags; animated adds `clip` + `animated`/`animClip`/`animateBones`).
 - **Registry backup (versioned):** `Assets/Databases/enc_models.backup.json` — a git-tracked shadow copy, rewritten on

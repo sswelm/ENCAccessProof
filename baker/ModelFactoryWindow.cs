@@ -383,6 +383,13 @@ public class ModelFactoryWindow : EditorWindow
             "flicker as they rebuild). Tick ONLY for models that borrow a donor's animated sub-part (a spinning rotor); " +
             "pointless flicker otherwise."), cur.respawnAfterLoad);
 
+        cur.freezeDonorAnim = EditorGUILayout.Toggle(new GUIContent("Freeze donor animation",
+            "Stop the DONOR's idle/move animation from bobbing your STATIC mesh. A borrowed mesh inherits the donor's pose " +
+            "wiggle (e.g. a Recon-Drone donor's hover bob looks wrong on a big airship). Tick this and the plugin pins every " +
+            "pose's time to frame 0 each frame, holding the mesh rigid — it still glides tile-to-tile (that's transform-driven, " +
+            "not animation). Static models only; animated models play their own baked clip. No re-bake, just rebuild the mod."),
+            cur.freezeDonorAnim);
+
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Texture / import", EditorStyles.miniBoldLabel);
         cur.reuseExtracted = EditorGUILayout.Toggle(new GUIContent("Reuse extracted files", "Skip re-importing the model file and reuse the OBJ/albedo already in the resource folder. Tick this after hand-editing the extracted texture (e.g. in paint.net) so your fix survives the bake."), cur.reuseExtracted);

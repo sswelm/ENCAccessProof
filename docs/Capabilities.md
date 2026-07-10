@@ -18,7 +18,9 @@ see the [Factory Manual](Factory-Manual.md).
   drone/ground model wants a donor with **no animated sub-parts and a full idle/move animation set** (a land vehicle is
   ideal). The one thing injection **can't** do: *remove* a donor's *animated* sub-part (a rotor, spinning wheels) — those
   are baked into the pawn at spawn. But it **can** give your model **its own** animation (see the animated bullet above),
-  which overrides the donor's. Choose the donor accordingly; see the drone case study in the docs.
+  which overrides the donor's. And for a **static** model that only suffers the donor's *whole-body* idle/move bob (e.g. a
+  rigid airship on a hovering drone donor), the **Freeze donor animation** runtime flag pins the donor's pose so the mesh
+  holds rigid while still gliding tile-to-tile — no re-bake. Choose the donor accordingly; see the drone case study in the docs.
 - **Any number of materials — GLB *and* FBX.** A model with N materials (the Zeppelin has 4; the AH-1 Cobra has **52**)
   is packed into one atlas and each sub-mesh's UVs are remapped into its rect — no per-model code, no material cap. The
   `glbconv` converter emits per-material `usemtl` groups + a `.mtl` (and an 8×8 solid-colour swatch for any flat,
@@ -47,6 +49,19 @@ see the [Factory Manual](Factory-Manual.md).
   triangles never tear. Genuine *repeat*-tiling (a small texture spanning [0,N]) remains outside what an atlas can do.
 - **Texture isolation:** each model gets a private `FxOutputLayer` clone, so its skin never bleeds onto the vanilla donor
   unit — proven on screen with a custom cruiser and its donor corvette side-by-side, each keeping its own skin.
+- **Skin controls at bake time.** The injection ships a *flat* albedo (donor PBR — normal/metallic/roughness —
+  neutralized so the donor's camo can't bleed through), which reads muddy for a source that leaned on shine or a dark
+  texture. **Albedo brightness** and **Albedo saturation** sliders correct that into the baked atlas; a **Keep black**
+  toggle preserves an intentionally black material (glass canopy) that the default near-black→grey dead-zone neutralize
+  would otherwise flatten.
+- **Small shipped bundle.** Bake *inputs* (the source model + extracted OBJ/albedos) live in `Assets/FactorySource/`,
+  which is **not** part of the shipped mod — so licensed source models are never redistributed. The baked atlas is capped
+  by a configurable **Atlas size** (256 / 512 / 1024 / 2048, default 512) and DXT1-compressed, so each shipped skin is
+  ~0.1–2 MB (a big airship wants 1024; a small unit is fine at 512).
+- **Freeze the donor's animation (static models).** A rigid model on an animated ground/hover donor inherits the donor's
+  idle/move bob. The **Freeze donor animation** runtime flag pins the donor's pose so the mesh holds still while the pawn
+  still glides tile-to-tile — matched across every instance the same way animated models are (descriptor + forced
+  skeleton), so it holds for the 2nd, 3rd… unit, not just the first. Static models only; no re-bake.
 - **Add a model = bake it.** The Factory writes the registry; the plugin picks it up on next launch.
 - **The registry can't be lost.** Atomic writes (no truncation on an interrupted save), a corrupt-file guard (an
   unparseable registry is copied aside and never overwritten), and a **git-tracked versioned backup with
@@ -58,7 +73,18 @@ see the [Factory Manual](Factory-Manual.md).
 - **Editor-only texture preview:** right after a multi-material bake, Unity may show the baked atlas stale until the
   source textures are touched (open them in the Project view, return to the model). The shipped/in-game result is
   correct — a Unity editor texture-residency quirk, not a bake defect.
-- **Resource-name folder casing (cosmetic):** the source folder `Assets/Resources/<name>/` is case-insensitively matched
+- **Resource-name folder casing (cosmetic):** the source folder `Assets/FactorySource/<name>/` is case-insensitively matched
   by Windows/Unity — if a differently-cased asset with that name already exists (e.g. a vanilla `attackHelicopter512.png`
   portrait), a new `AttackHelicopter/` folder inherits the existing lowercase spelling. Bake-time only; the baked assets,
   the registry, and in-game loading (by GUID) are all correctly cased. Pick a non-colliding `resourceName` if it bothers you.
+- **Flat-albedo lighting artifacts (cosmetic, inherent to the technique):** the injection neutralizes the donor's PBR maps
+  (normal/metallic/roughness) so the donor's camo can't bleed onto the skin — but that also means an injected model doesn't
+  get the full PBR response a vanilla unit does. Two visible consequences:
+  - **Dark shadow side.** The face turned away from the (fixed) sun falls off to near-black instead of being lifted by fill,
+    most obvious on big smooth surfaces (an airship flank). Nudge **Albedo brightness** up to soften it (lightens both sides).
+  - **Grazing-angle shimmer.** On flat surfaces at a specific sun-relative heading (e.g. a ship's hull travelling *east*),
+    the shading can shimmer/flicker as if effects fight — the neutralized surface interacting with the engine's
+    reflection/depth passes at grazing angles. Confirmed **not** fixable from the mod side by the reachable levers: changing
+    **Normals mode** and forcing the surface fully matte (roughness 1.0) both left it unchanged, so it's the engine's render
+    passes, not our material. Diagnosing further needs a live GPU frame capture (RenderDoc). Worst on ships (they sit in the
+    reflective water); subtle on round/small models. Treated as a technique limitation rather than a bug.

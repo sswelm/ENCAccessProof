@@ -34,6 +34,7 @@ namespace ENCAccessProof
         public bool fragsLogged;         // one-shot: dump the donor's fragment mesh names once, so the modder can find hide targets
         public bool repointed;
         public bool respawnAfterLoad;    // FIX for the save-load first-instance rotor race: when true, the plugin re-runs the game's own PresentationUnit.UpdatePawns (ReleasePawns+InstantiatePawns) on this model's units ~3s after load, so the first instance's borrowed donor rotor is rebuilt correctly. Set ONLY for models that borrow a donor's animated sub-part (e.g. the helicopter's rotor); harmless-but-pointless flicker otherwise, so default off.
+        public bool freezeDonorAnim;     // FREEZE the donor's idle/move animation: a STATIC borrowed mesh inherits the donor's pose bob (e.g. a drone donor's hover wiggle looks wrong on a large airship). When true, the pose hook pins every pawn pose's Time to 0 each frame so the donor animation can't advance — the mesh holds rigid while the pawn still glides tile-to-tile. Static models only (animated models drive their own clip).
     }
 
     internal static class UniversalInject
@@ -76,6 +77,7 @@ namespace ENCAccessProof
                                 ca = A(c, 0), cb = A(c, 1), cc = A(c, 2), cd = A(c, 3),
                                 position = new UnityEngine.Vector3(Fp(p, "x"), Fp(p, "y"), Fp(p, "z")),
                                 respawnAfterLoad = (bool?)m["respawnAfterLoad"] ?? false,
+                                freezeDonorAnim = (bool?)m["freezeDonorAnim"] ?? false,
                             });
                         }
                         Plugin.Log.LogInfo($"[Uni] parsed {entries.Count} entr(ies) via Newtonsoft [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -97,6 +99,7 @@ namespace ENCAccessProof
                 // position object {x,y,z} — JsonUtility writes Vector3 in x,y,z order. Applied as a runtime world offset for animated models.
                 var po = Regex.Matches(text, "\"position\"\\s*:\\s*\\{\\s*\"x\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"y\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"z\"\\s*:\\s*(-?[\\d.eE+]+)");
                 var ra = Regex.Matches(text, "\"respawnAfterLoad\"\\s*:\\s*(true|false)");   // parity with the Newtonsoft path (line ~77) — else the first-instance rotor fix silently defaults off here
+                var fz = Regex.Matches(text, "\"freezeDonorAnim\"\\s*:\\s*(true|false)");   // parity with the Newtonsoft path — else the donor-animation freeze silently defaults off here
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
@@ -112,6 +115,7 @@ namespace ENCAccessProof
                         ca = i < cl.Count ? G(cl[i], 1) : 0, cb = i < cl.Count ? G(cl[i], 2) : 0, cc = i < cl.Count ? G(cl[i], 3) : 0, cd = i < cl.Count ? G(cl[i], 4) : 0,
                         position = i < po.Count ? new UnityEngine.Vector3(F(po[i], 1), F(po[i], 2), F(po[i], 3)) : UnityEngine.Vector3.zero,
                         respawnAfterLoad = i < ra.Count && ra[i].Groups[1].Value == "true",
+                        freezeDonorAnim = i < fz.Count && fz[i].Groups[1].Value == "true",
                     });
                 }
                 loaded = true;   // regex fallback also succeeded — latch so we don't re-parse every pawn
@@ -541,12 +545,18 @@ namespace ENCAccessProof
         }
 
         static bool? anyAnimated;        // cached early-out: skip the per-pawn hook if no model is animated
+        static bool? anyFreeze;          // cached early-out: skip the per-pawn hook if no model wants its donor animation frozen
         static bool poseHookLogged, rescueLogged, posLogged, poseErrLogged;
+        static HashSet<int> freezeLogSkels;   // distinct skeleton ids we've logged a freeze for (so a second-instance "twin via descriptor" shows up in the log without spamming)
 
-        static ModelEntry AnimEntryFor(int skeletonId)
+        // An entry the per-pawn hook acts on: an ANIMATED model (plays its own baked clip) OR a STATIC model that freezes
+        // the donor's animation. Both share the same match (our skeleton id → learned descriptor) + skeleton force; only the
+        // pose manipulation differs. Kept as one predicate so the two paths can't drift apart.
+        static bool Hooked(ModelEntry x) => x.animId >= 0 || x.freezeDonorAnim;
+        static ModelEntry HookedEntryFor(int skeletonId)
         {
             if (entries == null || skeletonId < 0) return null;
-            foreach (var e in entries) if (e.animId >= 0 && e.skeletonId == skeletonId) return e;
+            foreach (var e in entries) if (Hooked(e) && e.skeletonId == skeletonId) return e;
             return null;
         }
 
@@ -558,7 +568,8 @@ namespace ENCAccessProof
             try
             {
                 if (anyAnimated == null) anyAnimated = entries != null && entries.Any(x => x.ca != 0 || x.cb != 0 || x.cc != 0 || x.cd != 0);
-                if (anyAnimated != true || !Plugin.UniversalInjectOn.Value) return;
+                if (anyFreeze == null) anyFreeze = entries != null && entries.Any(x => x.freezeDonorAnim);
+                if ((anyAnimated != true && anyFreeze != true) || !Plugin.UniversalInjectOn.Value) return;
                 var pawnEntries = GetMember(pawnManager, "pawnEntries") as Array;
                 if (pawnEntries == null) return;
                 int pawnCount = Convert.ToInt32(GetMember(pawnManager, "pawnCount"));
@@ -568,19 +579,42 @@ namespace ENCAccessProof
                 int skelId = Convert.ToInt32(GetMember(entry, "SkeletonId"));
                 int descId = Convert.ToInt32(GetMember(entry, "PawnDescriptorId"));
 
-                // Match our animated unit by our skeleton id (the correct pawn) OR by our unit's DESCRIPTOR — the game
-                // can spawn a unit's pawn on a different vanilla skeleton, which then draws our mesh mis-skinned. Learn
-                // the descriptor from the first correct pawn, then rescue any wrong-skeleton pawn.
-                var e = AnimEntryFor(skelId);
-                if (e != null) e.descId = descId;                      // learn our unit's descriptor
-                else if (descId >= 0) e = entries.FirstOrDefault(x => x.animId >= 0 && x.descId >= 0 && x.descId == descId);
+                // Match this pawn to one of our entries (animated OR freeze-static) by OUR baked skeleton id (the correctly
+                // skinned pawn), else by the descriptor learned from that first correct pawn. The game spawns a unit's LATER
+                // instances on a different vanilla skeleton; without the descriptor fallback only the first instance is
+                // handled and the rest slip through (animating / rocking on the donor's rig).
+                var e = HookedEntryFor(skelId);
+                if (e != null) e.descId = descId;                      // learn our unit's descriptor from the correct pawn
+                else if (descId >= 0) e = entries.FirstOrDefault(x => Hooked(x) && x.descId >= 0 && x.descId == descId);
                 if (e == null) return;
 
-                // FORCE our skeleton so this pawn skins by OUR rig (fixes a unit that spawned on a vanilla skeleton).
+                // FORCE our skeleton so this pawn skins by OUR rig. A LATER instance the game spawned on a vanilla skeleton
+                // would otherwise draw mis-skinned (animated) or WARP when we pin a foreign skeleton's frame 0 (freeze — the
+                // vertical, "shape-shifting" airship). Shared by both paths, so every instance ends up on our skeleton.
                 if (skelId != e.skeletonId)
                 {
                     SetMember(entry, "SkeletonId", e.skeletonId);
                     if (!rescueLogged) { rescueLogged = true; Plugin.Log.LogInfo($"[Uni] rescued wrong-skeleton pawn: skelId {skelId} -> {e.skeletonId} (descId {descId})"); }
+                }
+
+                // FREEZE (static): pin every pose's Time to frame 0 so the donor clip can't advance — the borrowed mesh holds
+                // rigid instead of inheriting the donor's hover/drive bob. Weights untouched (keep the pose SHAPE, stop the
+                // MOTION); the pawn still glides tile-to-tile (transform-driven, not in the pose). Re-applied every frame (this
+                // Postfix runs per pawn-add per frame), so it holds. No clip of our own to play, so it returns early.
+                if (e.freezeDonorAnim && e.animId < 0)
+                {
+                    for (int i = 0; i < 9; i++)
+                    {
+                        var pose = GetMember(entry, "Pose" + i);
+                        if (pose == null) continue;
+                        SetMember(pose, "Time", 0f);
+                        SetMember(entry, "Pose" + i, pose);
+                    }
+                    pawnEntries.SetValue(entry, idx);
+                    if (freezeLogSkels == null) freezeLogSkels = new HashSet<int>();
+                    if (freezeLogSkels.Add(skelId) && freezeLogSkels.Count <= 6)
+                        Plugin.Log.LogInfo($"[Uni] freeze: '{e.resourceName}' pinned (skelId {skelId} -> {e.skeletonId}, descId {descId})");
+                    return;
                 }
 
                 // Play OUR clip on Pose0 (weight 1, advancing time); zero the others. Never all-zero (=> NaN => invisible).
