@@ -333,7 +333,7 @@ public class ModelFactoryWindow : EditorWindow
             "MULTI-MATERIAL models only. By default the bake repaints near-black atlas regions neutral grey to hide UV " +
             "dead-zones and packing gaps (which would render as black patches). That also flattens an INTENTIONALLY black " +
             "material — a glossy canopy, a dark cockpit — to grey. Tick this to keep true black on such a model. Re-bake to apply."), cur.keepBlack);
-        if (cur.atlasMaxDim <= 0) cur.atlasMaxDim = 1024;   // default / migrate old registries
+        if (cur.atlasMaxDim <= 0) cur.atlasMaxDim = 512;   // default / migrate old registries
         cur.atlasMaxDim = EditorGUILayout.IntPopup(new GUIContent("Atlas size",
             "Longest side of the baked atlas, in pixels. The atlas is DXT1-compressed and saved to the shipped _Atlas.asset, " +
             "so SMALLER = smaller mod bundle. A unit is ~80px at map zoom (and its info card uses your 2D portrait, not the " +
@@ -744,7 +744,7 @@ public class ModelFactoryWindow : EditorWindow
             normals = (NormalsMode)cur.normalsMode, smoothingAngle = cur.smoothingAngle, convertGrid = cur.convertGrid,
             reuseExtracted = cur.reuseExtracted, doubleSided = cur.doubleSided, windingFix = cur.windingFix, heightUV = cur.heightUV, targetTris = cur.targetTris,
             albedoBrightness = cur.albedoBrightness, albedoSaturation = cur.albedoSaturation, keepBlack = cur.keepBlack,
-            atlasMaxDim = cur.atlasMaxDim <= 0 ? 1024 : cur.atlasMaxDim,
+            atlasMaxDim = cur.atlasMaxDim <= 0 ? 512 : cur.atlasMaxDim,
             stripParts = cur.stripParts,
             animated = cur.animated, animClip = cur.animClip, animateBones = cur.animateBones
         };
