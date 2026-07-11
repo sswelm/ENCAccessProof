@@ -95,9 +95,10 @@ see the [Factory Manual](Factory-Manual.md).
     **Normals mode** and forcing the surface fully matte (roughness 1.0) both left it unchanged, so it's the engine's render
     passes, not our material. Diagnosing further needs a live GPU frame capture (RenderDoc). Worst on ships (they sit in the
     reflective water); subtle on round/small models. Treated as a technique limitation rather than a bug.
-- **Animated bake unit scale (per-model toggle):** some rigged FBX exports embed a Blender-metres→centimetres unit scale
-  that makes the model bake ~100× too big and float high (fine in the Factory preview, wrong only in-game); others don't,
-  and the two need *opposite* handling. There is **no single rule** — so it's a per-model checkbox, **Fix 100× oversize
-  (FBX unit scale)**: tick it if a model bakes huge/floating (measures the FBX at its true scale, then bakes with the unit
-  scale on, so Size = in-game units); leave it off otherwise. If ticking it makes the model *vanish/shrink*, untick it. (The
-  drone bakes correct **off**; the howitzer needs it **on**.) The *static* path is unaffected either way.
+- **Animated bake unit scale (auto-prefilled per-model toggle):** some rigged FBX exports embed a Blender-metres→centimetres
+  unit scale that makes the model bake ~100× too big and float high (fine in the Factory preview, wrong only in-game); others
+  don't, and the two need *opposite* handling. There is **no single rule** — so it's a per-model checkbox, **Fix 100× oversize
+  (FBX unit scale)**, that the Factory **auto-prefills** when you pick a GLB/glTF by reading the model's true size (accessor
+  extent × node scale): metre-scale → on, tiny-authored (e.g. a 0.0025u drone with a 0.01 root node scale) → off. Best-effort
+  and overridable; for FBX/.blend/OBJ (unreadable cheaply) it makes no guess and you set it by hand. On = measure the FBX at
+  true scale then bake with the unit scale on, so Size = in-game units; off = normal import. The *static* path is unaffected.

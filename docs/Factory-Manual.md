@@ -66,6 +66,11 @@ That's the whole loop. Everything below is detail and the animated workflow.
   — some exports need it, some break with it: if a model bakes huge/floating, tick it; if ticking it makes the model
   **vanish or shrink to a speck**, untick it. (The drone bakes right **off**; the howitzer needs it **on**.) Re-bake after
   changing. Static path unaffected.
+  - **Auto-prefilled on Browse:** when you pick a **GLB/glTF** model, the Factory reads its *true* size (POSITION accessor
+    extent × node scale — what glbconv would report) and pre-ticks this for you: metre-scale models (≈≥0.1u) → **on**,
+    tiny-authored models (a GLB with a small root node scale, e.g. a 0.0025u drone) → **off**. It's a best-effort guess you
+    can override, and a status line shows what it chose. For **FBX / .blend / OBJ** (and `matrix`-transform glTF) the size
+    can't be read cheaply, so it makes **no guess** and leaves the box as-is — set it by hand there.
 - **Fire on attack (play once)** — play the baked clip **once when the unit attacks**, instead of looping. The model rests,
   then plays a single pass on the shot and returns to rest — e.g. a **howitzer barrel that elevates only when it bombards**.
   The plugin listens for the game's artillery-strike event, matches the firing unit to this model, and triggers one `0→1`
