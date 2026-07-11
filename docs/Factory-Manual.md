@@ -91,9 +91,11 @@ That's the whole loop. Everything below is detail and the animated workflow.
     **binds at the rest frame** (so the mesh isn't baked pre-posed), and optionally retargets the barrel to a `readyFrame`
     elevation (`barrelScale` > 1 exaggerates past the source's max) and scales the leg spread (`legScale`; 1 = full, 0 =
     stay folded). Bake the result normally. Find the deploy sub-range + `readyFrame` by scrubbing the clip in Blender.
-  - **The rest state must hold deployed** — that's the runtime half (already built): the plugin uses each pawn's `IsMoving`
-    with the wait-to-idle ignored, plus a ~0.6s fold debounce, so a stopped unit stays deployed through the settle. No knob;
-    it just works. *(The static **preview** shows the folded bind pose, not the deployed one — judge deploy in-game.)*
+  - **The rest state holds deployed, folds instantly** — the runtime half (already built): the plugin detects travel by the
+    unit's **render-position change** (not the game's `IsMoving`, whose wait-to-idle settle would drop the pose), so it folds
+    the instant it moves and holds deployed at rest. Also bake **`deployPoseTime` ≤ 0.99** (never 1.0 — the pose sampler wraps
+    exactly-1.0 back to frame 0 = folded; the plugin also clamps to 0.999 defensively). *(The static **preview** shows the
+    folded bind pose, not the deployed one — judge deploy in-game.)*
 
 ### Transform
 - **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for

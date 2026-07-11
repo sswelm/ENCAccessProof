@@ -13,10 +13,12 @@ see the [Factory Manual](Factory-Manual.md).
 - **Deploy-when-stopped — a model that reacts to *movement*.** Tick **Deploy when stopped** and the model **plays its deploy
   clip forward** when the unit stops (e.g. an M114 howitzer's trail legs spread + barrel elevates) and **snaps folded** while it
   travels — a per-unit *held state* driven by movement, not an event. It reuses the fire-on-attack sim→presentation bridge but
-  triggers off each pawn's `IsMoving`, polled on the main thread, so it's concurrency/AI-safe (only *visible*, our-model units).
-  **The rest state holds fully deployed** — the key hard-won detail: use `IsMoving(ignoreWaitToIdle: true, isMovingAlongTilesOnly:
-  true)` (not the unit-level `IsAnyPawnMoving`, which counts the settle-after-stop as "moving") *plus* a **fold debounce** (only
-  fold after ~0.6s of sustained travel), so the wait-to-idle flicker can never drop the deployed pose. **Gradual + tunable:** the
+  triggers off the unit's **actual render-position change between polls** (real tile traversal), so it's concurrency/AI-safe
+  (only *visible*, our-model units). **Rest holds deployed, folds instantly** — two hard-won details: (1) detect travel by
+  position delta, NOT the game's `IsMoving`/`IsAnyPawnMoving` (the wait-to-idle/turn settle after stopping reads as "moving" and
+  drops the deployed pose) — the settle doesn't move the tile, so a position check is instant to fold *and* settle-immune; (2)
+  the pose sampler does `Mathf.Repeat(Time,1)`, so poseTime **exactly 1.0 wraps to 0.0 = the folded frame** — the deploy target
+  is clamped to 0.999 (and bake `deployPoseTime` ≤ 0.99) so it holds the last real frame. **Gradual + tunable:** the
   deploy ramps at the clip's authored speed × a **Deploy speed** slider; **Deployed pose time** sets how far it opens (also the
   live barrel-angle knob when the clip is baked with an over-range elevation). **Real deploy clips from rigid-part-animated
   models:** `Tools/deploy_convert.py` converts a model animated by *moving parts* (node transforms, no skinning — common in
