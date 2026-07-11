@@ -10,6 +10,10 @@ Humankind.
 - **Animated custom models — a first, one-click.** A quadcopter drone injected onto a land unit renders full-size,
   textured, and **spins its own propellers from its own baked animation** — for any number of instances. Tick
   **Animated**, press Bake.
+- **Fire-on-attack — a model that animates when the unit *fires*.** Tick **Fire on attack** and the baked clip plays
+  **once, on the combat action**, not on a loop: the model rests, then plays a single pass the moment the unit attacks and
+  returns to rest. Proven with a **howitzer whose barrel elevates only when it bombards** — the plugin hooks Humankind's
+  own combat event bus, matches the firing unit to the injected model, and triggers one playthrough.
 - **Multiple static models live**, no new code each: a **Zeppelin**, an **LCAC Hovercraft**, a fully-textured **USS
   Zumwalt stealth cruiser**, and a **RAH-66 Comanche** helicopter — correct orientation, correct skin, at the waterline.
 - **Borrow the donor's animation — including *multiple* moving parts.** A model rides a donor unit's rig; injection can't
@@ -95,12 +99,14 @@ The plugin's own cfg (`…\community.humankind.encaccessproof.cfg`) — press **
 - **Build it:** [Building.md](docs/Building.md) — plugin build steps + the Blender dependency.
 - **Review / roadmap:** [Framework-Review.md](docs/Framework-Review.md) — verified code-review findings
   (prioritized) and the hardening order toward package-readiness.
+- **Fire-on-attack:** [Firing-On-Attack.md](docs/Firing-On-Attack.md) — how a model plays its clip on the unit's combat
+  action (Humankind's `SimulationEvent` bus), the one-shot pose trigger, and the animated-bake 100× scale fix. **Built.**
 
 ## Toward a Unity package
 Goal: ship the Factory as a distributable Unity package. **Done:** zero-config path auto-detection, self-contained
 converter (no .NET dependency), one consolidated injection path, full multi-material GLB support, **one-click animated
 import** (own rig + clip, Pick-driven fields), bake-time skin controls (albedo brightness/saturation, keep-black),
-configurable atlas size + bundle slimming (source models kept out of the shipped mod, DXT1 atlases), and a static-model
-**donor-animation freeze**. **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`), package scaffolding
+configurable atlas size + bundle slimming (source models kept out of the shipped mod, DXT1 atlases), a static-model
+**donor-animation freeze**, and **fire-on-attack** (a model's clip triggered once by the unit's combat action). **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`), package scaffolding
 (`package.json` / asmdef / LICENSE), single-DLL plugin packaging, and an install guide + quickstart. Editor scripts are
 mirrored in `baker/` (the ENCReload mod repo tracks only its `Databases`).

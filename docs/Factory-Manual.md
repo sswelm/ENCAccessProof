@@ -60,6 +60,12 @@ That's the whole loop. Everything below is detail and the animated workflow.
 - **Animate only bones** *(Pick)* — comma-separated bone-name **prefixes** to keep animation on (e.g. `prop`). Strips
   everything else (camera pans, body bob) that would make the model wobble. **Pick** lists the bone prefixes with counts.
   Empty = keep the whole clip.
+- **Fire on attack (play once)** — play the baked clip **once when the unit attacks**, instead of looping. The model rests,
+  then plays a single pass on the shot and returns to rest — e.g. a **howitzer barrel that elevates only when it bombards**.
+  The plugin listens for the game's artillery-strike event, matches the firing unit to this model, and triggers one `0→1`
+  playthrough. **Author the clip to start *and* end at rest** so the single pass looks clean. Leave **off** for a continuous
+  loop (a drone's spinning prop). Animated models only; runtime flag (no re-bake to toggle — Bake just re-writes the
+  registry). See §5 and [Firing-On-Attack.md](Firing-On-Attack.md).
 
 ### Transform
 - **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
@@ -228,12 +234,15 @@ strategic map.
 |---|---|
 | **Model invisible / see-through** | Single-sided/CAD mesh (backface-culled) → **Winding fix** or **Double-sided**. Or it overflowed the shared buffer → lower **Reduce to ~tris**. |
 | **Model tiny (a speck) or huge** | **Size** is the world length — set it to what looks right; the Console logs the scale. |
+| **OLD animated bake floats huge in the sky at a normal Size** (only if you baked before mid-2026) | Historic bug, **now fixed in the baker** — the animated FBX round-trip applied a Blender-metres→FBX-centimetres unit scale that the SDK skeleton needs, but the size factor was computed against the shrunk mesh, so the model came out **exactly 100× oversize**. The baker now measures the FBX at its true scale (`useFileScale` off) and bakes with the unit scale on, so **Size means in-game units like the static path**. **Just re-bake at the real Size** (e.g. `5`, *not* `0.05`). If you have an entry still carrying the old `Size 0.05` / a `"scale": 0.01` workaround, drop those and re-bake. |
 | **Model looks dark / grey / washed-out in-game** | Expected for skins that relied on PBR shine or a dark texture — the injection path ships flat albedo (donor PBR neutralized). Raise **Albedo brightness** and/or **Albedo saturation** and re-bake. Judge the amount in-game, not in the dim preview. |
 | **A black part (glass canopy, cockpit) renders grey in-game** (multi-material model) | The near-black→grey neutralize step (which hides UV dead-zones) is flattening an intentionally black material. Tick **Keep black (glass/cockpit)** and re-bake. |
 | **Change didn't show in-game** | You didn't **rebuild the mod** (§6). Or **Reuse extracted** was on and skipped the re-slim after you changed Clip/bones/model — untick it. |
 | **Animated toggle greyed out** | The model has no animation the probe can see (OBJ, or a glTF with no `animations`). Use a rigged glb/fbx. FBX/.blend can't be probed cheaply, so the toggle stays enabled — type the clip/bones by hand. |
 | **"No clips readable from this model"** | Clip/Bone Pick works for glTF/GLB only. For FBX/.blend, type the clip name and bone prefixes manually. |
 | **Animated model plays the wrong motion** (parts assemble/explode) | You baked the wrong clip → set **Clip name** to the loop (e.g. `hover`), not `exploded_view`. |
+| **"Fire on attack" clip loops constantly** (won't rest) | The **Fire on attack** toggle isn't set on this model → tick it and rebuild the mod. If it *is* set, confirm the firing unit matches (the plugin logs `[Fire] *** OUR MODEL '<name>' FIRED` on bombard) — only artillery/bombard units raise the event. |
+| **"Fire on attack" model never moves when it fires** | The clip must **start and end at rest** (the single pass returns to frame 0). Re-check the rig's keyframes. Also confirm `[Fire] *** OUR MODEL … FIRED` appears in `BepInEx\LogOutput.log` when it bombards — no log = the unit didn't raise the artillery event (it's melee/air, not a bombard). |
 | **Animated model tears apart / arms fly out** | The clip source wasn't isolated (an extra FBX in the folder → a multi-clip collection). Fixed in the current Factory (it bakes into a per-model `anim/` subfolder). Re-bake; if it persists, remove stray `.fbx` from the resource folder. |
 | **~1s stall each loop** | A padded frozen tail in the clip. The Factory auto-clamps the frame range now — re-bake. |
 | **Body wobbles / "unbalanced flywheel"** | The clip animates the whole body → set **Animate only bones** to just the spinning group (e.g. `prop`). |

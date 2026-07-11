@@ -10,6 +10,13 @@ see the [Factory Manual](Factory-Manual.md).
   `ClipCollection` + atlas and writes the registry; at runtime the clip is registered and a `PawnManager.AddPawnEntry`
   hook drives the pawn's pose onto it — normalized by clip duration so it plays at real speed. Works for **any number of
   instances**. Clip/bone/hide-donor fields are **Pick-driven** (read from the model's glTF + the plugin log).
+- **Fire-on-attack — a model that animates when the unit *fires*.** Tick **Fire on attack** and the baked clip plays
+  **once, on the combat action**, instead of looping: the model rests, then plays a single pass the moment the unit
+  attacks and returns to rest. Proven with a **howitzer whose barrel elevates only when it bombards**. The plugin
+  subscribes to Humankind's own combat event bus (`SimulationEvent_ArtilleryStrikeStarted`), matches the firing unit's
+  `UnitDefinition` to the injected model, and triggers a single `0→1` playthrough of its clip — re-entrant, so rapid fire
+  restarts cleanly. Author the clip to start *and* end at rest. Extensible to bombers (`AirStrikeStarted`) and melee
+  (`BattleStarted`) the same way. See [Firing-On-Attack.md](Firing-On-Attack.md).
 - **Multiple static models live**, each added with no new code: a **Zeppelin**, an **LCAC Hovercraft**, and a
   fully-textured **USS Zumwalt stealth cruiser** (first textured naval-combat unit) — correct orientation, correct skin,
   sitting at the waterline.
@@ -88,3 +95,7 @@ see the [Factory Manual](Factory-Manual.md).
     **Normals mode** and forcing the surface fully matte (roughness 1.0) both left it unchanged, so it's the engine's render
     passes, not our material. Diagnosing further needs a live GPU frame capture (RenderDoc). Worst on ships (they sit in the
     reflective water); subtle on round/small models. Treated as a technique limitation rather than a bug.
+- *(resolved mid-2026)* **Animated bake 100× oversize** — the animated path hit a Blender-metres→FBX-centimetres unit
+  scale that made an animated model bake exactly 100× too big. **Fixed in the baker:** it now measures the FBX at its true
+  scale (`useFileScale` off) and bakes with the unit scale on, so **Size means in-game units like the static path** — no
+  more ÷100. Re-bake any old animated entry at its real Size (drop any `Size 0.05` / `"scale": 0.01` workaround).

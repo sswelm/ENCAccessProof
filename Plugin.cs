@@ -47,12 +47,16 @@ namespace ENCAccessProof
             // disables THAT hook -- instead of a null TargetMethod throwing out of PatchAll and failing the whole plugin.
             var harmony = new Harmony(GUID);
             int patched = 0;
-            foreach (var t in new[] { typeof(UniRegisterHook), typeof(UniRepointHook), typeof(UniPawnPoseHook) })
+            var hooks = new[] {
+                typeof(UniRegisterHook), typeof(UniRepointHook), typeof(UniPawnPoseHook),
+                typeof(Hk_ArtilleryStrike),   // firing-on-attack: bombard -> play the model's clip once (docs/Firing-On-Attack.md)
+            };
+            foreach (var t in hooks)
             {
                 try { harmony.CreateClassProcessor(t).Patch(); patched++; }
                 catch (System.Exception ex) { Log.LogError($"[Uni] hook '{t.Name}' failed to apply (Amplitude API changed?): {ex.Message}"); }
             }
-            Log.LogInfo($"Model Factory plugin loaded ({patched}/3 hooks patched). Press {ToggleKey.Value} in-game for the " +
+            Log.LogInfo($"Model Factory plugin loaded ({patched}/{hooks.Length} hooks patched). Press {ToggleKey.Value} in-game for the " +
                         $"diagnostic window. UniversalInject={UniversalInjectOn.Value}");
         }
 

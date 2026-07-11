@@ -25,6 +25,7 @@ namespace ENCAccessProof
         public object isolatedLayer;     // our private clone of the host output layer (texture isolation)
         public string hideMeshes = "";   // comma-separated donor-FRAGMENT name substrings to hide (works for fragment-based extras; a donor's animated skinned sub-parts, e.g. a helicopter rotor, are encoded at pawn-spawn and cannot be hidden this late — pick a rotor-free donor instead)
         public UnityEngine.Vector3 position;  // ANIMATED models: applied as a runtime world offset in the pose hook (z = height/up). Static models bake position into the mesh at Bake time instead, so this is only read for animated entries.
+        public float scale = 1f;              // ANIMATED models: runtime multiplier on the pawn's ObjectSpace.Scale (default 1 = unchanged). Lets us fix an animated model baked at the wrong scale WITHOUT a re-bake (e.g. the howitzer's 100x FBX unit-conversion oversize -> set 0.01). Config-only field; absent = 1.
         public int ca, cb, cc, cd;       // ANIMATED models: our baked ClipCollection Amplitude guid (its own clip, e.g. a drone's spinning-prop 'hover'). 0,0,0,0 = static model (no pose override).
         public object clipColl;          // loaded ClipCollection asset
         public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
@@ -35,6 +36,9 @@ namespace ENCAccessProof
         public bool repointed;
         public bool respawnAfterLoad;    // FIX for the save-load first-instance rotor race: when true, the plugin re-runs the game's own PresentationUnit.UpdatePawns (ReleasePawns+InstantiatePawns) on this model's units ~3s after load, so the first instance's borrowed donor rotor is rebuilt correctly. Set ONLY for models that borrow a donor's animated sub-part (e.g. the helicopter's rotor); harmless-but-pointless flicker otherwise, so default off.
         public bool freezeDonorAnim;     // FREEZE the donor's idle/move animation: a STATIC borrowed mesh inherits the donor's pose bob (e.g. a drone donor's hover wiggle looks wrong on a large airship). When true, the pose hook pins every pawn pose's Time to 0 each frame so the donor animation can't advance — the mesh holds rigid while the pawn still glides tile-to-tile. Static models only (animated models drive their own clip).
+        public bool fireOnAttack;        // ANIMATED: play the clip ONCE when the unit attacks (ArtilleryStrikeStarted), resting at frame 0 otherwise — instead of the default continuous loop (a drone's spinning prop). Set for a howitzer's barrel-elevation-on-fire. See docs/Firing-On-Attack.md.
+        public volatile bool fireRequested;   // RUNTIME: set true by the combat hook when THIS model's unit bombards; the pose hook consumes it to (re)start the one-shot clip. volatile: written on the sim thread, read on the render thread.
+        public float fireStartTime = -1f;     // RUNTIME: Time.time when the current one-shot started; -1 = idle (rest). Cleared back to -1 when the clip finishes.
     }
 
     internal static class UniversalInject
@@ -76,8 +80,10 @@ namespace ENCAccessProof
                                 ta = A(t, 0), tb = A(t, 1), tc = A(t, 2), td = A(t, 3),
                                 ca = A(c, 0), cb = A(c, 1), cc = A(c, 2), cd = A(c, 3),
                                 position = new UnityEngine.Vector3(Fp(p, "x"), Fp(p, "y"), Fp(p, "z")),
+                                scale = m["scale"] != null ? (float)m["scale"] : 1f,
                                 respawnAfterLoad = (bool?)m["respawnAfterLoad"] ?? false,
                                 freezeDonorAnim = (bool?)m["freezeDonorAnim"] ?? false,
+                                fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
                             });
                         }
                         Plugin.Log.LogInfo($"[Uni] parsed {entries.Count} entr(ies) via Newtonsoft [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -100,6 +106,8 @@ namespace ENCAccessProof
                 var po = Regex.Matches(text, "\"position\"\\s*:\\s*\\{\\s*\"x\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"y\"\\s*:\\s*(-?[\\d.eE+]+)\\s*,\\s*\"z\"\\s*:\\s*(-?[\\d.eE+]+)");
                 var ra = Regex.Matches(text, "\"respawnAfterLoad\"\\s*:\\s*(true|false)");   // parity with the Newtonsoft path (line ~77) — else the first-instance rotor fix silently defaults off here
                 var fz = Regex.Matches(text, "\"freezeDonorAnim\"\\s*:\\s*(true|false)");   // parity with the Newtonsoft path — else the donor-animation freeze silently defaults off here
+                var foa = Regex.Matches(text, "\"fireOnAttack\"\\s*:\\s*(true|false)");     // parity: play the clip once on attack vs loop
+                var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
@@ -116,6 +124,8 @@ namespace ENCAccessProof
                         position = i < po.Count ? new UnityEngine.Vector3(F(po[i], 1), F(po[i], 2), F(po[i], 3)) : UnityEngine.Vector3.zero,
                         respawnAfterLoad = i < ra.Count && ra[i].Groups[1].Value == "true",
                         freezeDonorAnim = i < fz.Count && fz[i].Groups[1].Value == "true",
+                        fireOnAttack = i < foa.Count && foa[i].Groups[1].Value == "true",
+                        scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
                     });
                 }
                 loaded = true;   // regex fallback also succeeded — latch so we don't re-parse every pawn
@@ -130,6 +140,21 @@ namespace ENCAccessProof
                 if (++loadAttempts >= 3) { loaded = true; Plugin.Log.LogError("[Uni] registry load failed 3x, giving up for this session: " + e); }
                 else Plugin.Log.LogWarning($"[Uni] registry load failed (attempt {loadAttempts}/3), will retry on next pawn: " + e.Message);
             }
+        }
+
+        // FIRING-ON-ATTACK: match a firing unit's UnitDefinition text (e.g. "LandUnit_Era6_Common_TowedGunHowitzers …")
+        // to one of our injected models by the shared core of its pawnDescription
+        // ("Era6_Common_TowedGunHowitzers_01" -> core "Era6_Common_TowedGunHowitzers"). Returns the entry, or null.
+        internal static ModelEntry FindEntryForUnitDefinition(string unitDefText)
+        {
+            if (entries == null || string.IsNullOrEmpty(unitDefText)) return null;
+            foreach (var e in entries)
+            {
+                if (string.IsNullOrEmpty(e.pawnDescription)) continue;
+                var core = Regex.Replace(e.pawnDescription, "_\\d+$", "");   // drop the trailing _NN instance suffix
+                if (core.Length > 4 && unitDefText.IndexOf(core, StringComparison.OrdinalIgnoreCase) >= 0) return e;
+            }
+            return null;
         }
 
         // register every skeleton before Apply() builds GPU buffers (AnimationLoad postfix)
@@ -546,7 +571,8 @@ namespace ENCAccessProof
 
         static bool? anyAnimated;        // cached early-out: skip the per-pawn hook if no model is animated
         static bool? anyFreeze;          // cached early-out: skip the per-pawn hook if no model wants its donor animation frozen
-        static bool poseHookLogged, rescueLogged, posLogged, poseErrLogged;
+        static bool rescueLogged, posLogged, poseErrLogged, scaleLogged;
+        static HashSet<string> poseHookSeen;   // dump the pose-hook + runtime transform once PER MODEL (so the howitzer logs even if the drone spawns first)
         static HashSet<int> freezeLogSkels;   // distinct skeleton ids we've logged a freeze for (so a second-instance "twin via descriptor" shows up in the log without spamming)
 
         // An entry the per-pawn hook acts on: an ANIMATED model (plays its own baked clip) OR a STATIC model that freezes
@@ -623,7 +649,26 @@ namespace ENCAccessProof
                 SetMember(pose0, "Weight", 1f);
                 // PawnEntryPose.Time is NORMALIZED (sampler does Mathf.Repeat(Time,1) = one loop). Divide by the clip
                 // duration so it plays at REAL speed and hits every frame; raw Time.time = duration× too fast + frame-skipping.
-                SetMember(pose0, "Time", UnityEngine.Time.time / (e.animDuration > 0.001f ? e.animDuration : 1f));
+                float dur = e.animDuration > 0.001f ? e.animDuration : 1f;
+                float poseTime;
+                if (e.fireOnAttack)
+                {
+                    // FIRE-ONCE: rest at frame 0 until the combat hook flags a bombard, then play the clip exactly once and
+                    // return to rest. (The clip is authored to start AND end at rest, so one 0->1 pass elevates and lowers.)
+                    if (e.fireRequested) { e.fireStartTime = UnityEngine.Time.time; e.fireRequested = false; }
+                    if (e.fireStartTime >= 0f)
+                    {
+                        float elapsed = UnityEngine.Time.time - e.fireStartTime;
+                        if (elapsed >= dur) { e.fireStartTime = -1f; poseTime = 0f; }   // clip done -> hold at rest
+                        else poseTime = elapsed / dur;                                   // playing the single pass
+                    }
+                    else poseTime = 0f;                                                  // idle -> rest (frame 0)
+                }
+                else
+                {
+                    poseTime = UnityEngine.Time.time / dur;   // default: continuous loop (a drone's spinning prop)
+                }
+                SetMember(pose0, "Time", poseTime);
                 SetMember(entry, "Pose0", pose0);
                 for (int i = 1; i < 9; i++)
                 {
@@ -644,8 +689,28 @@ namespace ENCAccessProof
                     SetMember(os, "Translation", tr);
                     SetMember(entry, "ObjectSpace", os);
                 }
+                // Runtime scale multiplier: fix an animated model baked at the wrong scale WITHOUT a re-bake (the howitzer's
+                // 100x FBX unit-conversion oversize -> scale 0.01). Multiplies the pawn's ObjectSpace.Scale each frame.
+                if (e.scale != 1f && e.scale > 0f)
+                {
+                    var oss = GetMember(entry, "ObjectSpace");
+                    var scObj = GetMember(oss, "Scale");
+                    if (scObj is float sf) SetMember(oss, "Scale", sf * e.scale);
+                    else if (scObj is UnityEngine.Vector3 sv) SetMember(oss, "Scale", sv * e.scale);
+                    else if (scObj != null) { try { SetMember(oss, "Scale", Convert.ToSingle(scObj) * e.scale); } catch { } }
+                    SetMember(entry, "ObjectSpace", oss);
+                    if (!scaleLogged) { scaleLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} runtime scale x{e.scale} (ObjectSpace.Scale was {scObj})"); }
+                }
                 pawnEntries.SetValue(entry, idx);
-                if (!poseHookLogged) { poseHookLogged = true; Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId} -> {e.skeletonId}, desc {descId})"); }
+                if (poseHookSeen == null) poseHookSeen = new HashSet<string>();
+                if (poseHookSeen.Add(e.resourceName))
+                {
+                    var osd = GetMember(entry, "ObjectSpace");
+                    // Diagnostic: dump the pawn's runtime transform — a zero/huge Scale or an off Translation explains an
+                    // animated model that's fine in the editor preview but invisible in-game (docs/Firing-On-Attack.md).
+                    Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId} -> {e.skeletonId}, desc {descId}); " +
+                        $"ObjectSpace T={GetMember(osd, "Translation")} S={GetMember(osd, "Scale")} R={GetMember(osd, "Rotation")} poseW={GetMember(pose0, "Weight")}");
+                }
             }
             // one-shot log: a bare catch here hid member renames after a game update (models just stopped animating, no clue why).
             catch (Exception ex) { if (!poseErrLogged) { poseErrLogged = true; Plugin.Log.LogError("[Uni] OnPawnAdded (pose hook disabled this pawn): " + ex); } }
