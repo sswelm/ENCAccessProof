@@ -10,14 +10,18 @@ see the [Factory Manual](Factory-Manual.md).
   `ClipCollection` + atlas and writes the registry; at runtime the clip is registered and a `PawnManager.AddPawnEntry`
   hook drives the pawn's pose onto it — normalized by clip duration so it plays at real speed. Works for **any number of
   instances**. Clip/bone/hide-donor fields are **Pick-driven** (read from the model's glTF + the plugin log).
-- **Deploy-when-stopped — a model that reacts to *movement*.** Tick **Deploy when stopped** and the model holds its clip's
-  **deployed** pose while idle and snaps to the **undeployed** pose the instant it moves (e.g. a howitzer that deploys when it
-  halts and folds for travel) — an instant, per-unit *held state* driven by the unit's moving state, not an event. It reuses
-  the same sim→presentation bridge as fire-on-attack but triggers off `PresentationUnit.IsAnyPawnMoving` (polled on the main
-  thread), so it's concurrency/AI-safe: only *visible*, our-model units are considered, and each pawn's pose is an independent
-  function of whether its unit is moving right now. Proven in-game using the barrel clip as a stand-in (barrel up when
-  stopped, down while moving); a purpose-made deploy clip is the next step. Mutually exclusive with fire-on-attack until
-  multi-clip lands. See [Firing-On-Attack.md](Firing-On-Attack.md).
+- **Deploy-when-stopped — a model that reacts to *movement*.** Tick **Deploy when stopped** and the model **plays its deploy
+  clip forward** when the unit stops (e.g. an M114 howitzer's trail legs spread open) and **snaps folded** the instant it
+  moves — a per-unit *held state* driven by the unit's moving state, not an event. It reuses the same sim→presentation bridge
+  as fire-on-attack but triggers off `PresentationUnit.IsAnyPawnMoving` (polled on the main thread), so it's concurrency/AI-safe:
+  only *visible*, our-model units are considered, and each pawn's pose is an independent function of whether its unit is moving.
+  **Gradual + tunable:** the deploy ramps at the clip's authored speed × a **Deploy speed** slider; **Deployed pose time** sets
+  how far it opens. **Real deploy clips from rigid-part-animated models:** `Tools/deploy_convert.py` converts a model animated
+  by *moving parts* (node transforms, no skinning — common in Maya/Sketchfab exports) into a bone-per-part skinned armature the
+  bake can consume, stripping soft-skinned crew that would collapse the bake — proven end-to-end on the M114's real deploy.
+  **Donor-aim override:** artillery donors aim their barrel via a procedural `PawnEntry.BoneRotation` layer that twisted the
+  injected barrel; the pose hook now zeros it so only our clip drives the skeleton. Mutually exclusive with fire-on-attack
+  until multi-clip lands. See [Firing-On-Attack.md](Firing-On-Attack.md).
 - **Fire-on-attack — a model that animates when the unit *fires*.** Tick **Fire on attack** and the baked clip plays
   **once, on the combat action**, instead of looping: the model rests, then plays a single pass the moment the unit
   attacks and returns to rest. Proven with a **howitzer whose barrel elevates only when it bombards**. The plugin

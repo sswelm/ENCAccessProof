@@ -45,12 +45,20 @@ namespace ENCAccessProof
         // AI/concurrency-safe. Plugin.Update polls PresentationUnit.IsAnyPawnMoving and records the moving pawns' positions.
         public bool deployOnStop;             // hold the deployed pose when idle, undeploy (frame 0) while moving
         public float deployPoseTime = 1f;     // normalized clip time of the DEPLOYED pose (1 = a real deploy clip's end; 0.5 = the barrel-fire clip's raised plateau, used to prove the plumbing without a deploy clip)
-        public readonly List<UnityEngine.Vector3> movingPawnPositions = new List<UnityEngine.Vector3>();  // MAIN thread only (locked): render positions of THIS model's pawns whose unit is currently moving; the pose hook undeploys a pawn near one of these.
+        public float deploySpeed = 1f;        // multiplier on the gradual-deploy ramp speed (1 = the clip's authored speed; 2 = twice as fast). Only affects the forward deploy-on-stop; folding on move is always instant.
+        // GRADUAL deploy: instead of snapping, ramp each unit's pose time toward its target (0 while moving, deployPoseTime
+        // when stopped) at the clip's authored speed, so the legs visibly spread/fold. Progress is per-unit (stateful) so it
+        // survives across polls and units entering/leaving view; the pose hook reads the ramped value matched by position.
+        public readonly Dictionary<long, float> deployProgress = new Dictionary<long, float>();  // MAIN thread: unit GUID -> current normalized pose time (ramps toward target)
+        public readonly List<DeploySample> deploySamples = new List<DeploySample>();             // MAIN thread only (locked): each pawn's render position + its unit's current (ramped) pose time; the pose hook holds that pose on the nearest pawn.
+        public float deployLastPoll;          // Time.time of the last deploy poll, for a framerate-independent ramp step
     }
 
     // One in-flight one-shot: the world position of a pawn that just fired + when it started. The pose hook matches a
     // pawn to the nearest active fire by ObjectSpace position (both are Unity render coords), so only the firer animates.
     internal struct FireInstance { public UnityEngine.Vector3 pos; public float startTime; }
+    // A pawn's render position + the (ramped) normalized pose time its unit should currently hold, for the gradual deploy.
+    internal struct DeploySample { public UnityEngine.Vector3 pos; public float poseTime; }
 
     internal static class UniversalInject
     {
@@ -97,6 +105,7 @@ namespace ENCAccessProof
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
                                 deployOnStop = (bool?)m["deployOnStop"] ?? false,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
+                                deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
                             });
                         }
                         Plugin.Log.LogInfo($"[Uni] parsed {entries.Count} entr(ies) via Newtonsoft [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -122,6 +131,7 @@ namespace ENCAccessProof
                 var foa = Regex.Matches(text, "\"fireOnAttack\"\\s*:\\s*(true|false)");     // parity: play the clip once on attack vs loop
                 var dos = Regex.Matches(text, "\"deployOnStop\"\\s*:\\s*(true|false)");     // parity: hold deployed when idle, undeploy while moving
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
+                var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
                 var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
@@ -142,6 +152,7 @@ namespace ENCAccessProof
                         fireOnAttack = i < foa.Count && foa[i].Groups[1].Value == "true",
                         deployOnStop = i < dos.Count && dos[i].Groups[1].Value == "true",
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
+                        deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
                         scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
                     });
                 }
@@ -670,16 +681,19 @@ namespace ENCAccessProof
                 float poseTime;
                 if (e.deployOnStop)
                 {
-                    // DEPLOY-ON-STOP (held state, instant snap): hold the DEPLOYED pose (deployPoseTime) by default; snap to
-                    // UNDEPLOYED (frame 0) while THIS pawn's unit is moving. Plugin.Update records the moving pawns' positions;
-                    // a pawn near one is moving. Pure per-pawn function of current moving-state — AI/concurrency-safe, no state.
+                    // DEPLOY-ON-STOP (gradual): hold the pose time Plugin.Update has ramped for THIS pawn's unit — it plays the
+                    // deploy clip forward (legs spread) after the unit stops and rewinds (fold) while it moves. Match by nearest
+                    // recorded pawn position (Unity render coords). Default deployPoseTime if unmatched (idle -> deployed).
                     var osD = GetMember(entry, "ObjectSpace");
                     UnityEngine.Vector3 dpos = (UnityEngine.Vector3)GetMember(osD, "Translation");
-                    bool moving = false;
-                    lock (e.movingPawnPositions)
-                        for (int i = 0; i < e.movingPawnPositions.Count; i++)
-                            if ((e.movingPawnPositions[i] - dpos).sqrMagnitude <= 3f * 3f) { moving = true; break; }
-                    poseTime = moving ? 0f : e.deployPoseTime;
+                    poseTime = e.deployPoseTime;
+                    float bestSqD = 3f * 3f;
+                    lock (e.deploySamples)
+                        for (int i = 0; i < e.deploySamples.Count; i++)
+                        {
+                            float d = (e.deploySamples[i].pos - dpos).sqrMagnitude;
+                            if (d < bestSqD) { bestSqD = d; poseTime = e.deploySamples[i].poseTime; }
+                        }
                 }
                 else if (e.fireOnAttack)
                 {
@@ -718,6 +732,16 @@ namespace ENCAccessProof
                     if (pose == null) continue;
                     SetMember(pose, "Weight", 0f);
                     SetMember(entry, "Pose" + i, pose);
+                }
+                // Clear the procedural AIM layer (PawnEntry.BoneRotation0-3 = SkeletonBoneIndex/AxisIndex/Angle): the game aims
+                // an artillery barrel by layering a bone rotation ON TOP of the pose, which twists our barrel (most visible while
+                // moving, as the aim swings). Zero the angles so ONLY our baked clip drives the skeleton. No-op for un-aimed models.
+                for (int i = 0; i < 4; i++)
+                {
+                    var br = GetMember(entry, "BoneRotation" + i);
+                    if (br == null) continue;
+                    SetMember(br, "Angle", 0f);
+                    SetMember(entry, "BoneRotation" + i, br);
                 }
                 // Runtime position offset. Static models bake position into the mesh; the animated path can't, so we
                 // apply it to the pawn's world ObjectSpace here. z = height -> world up (Y); x/y -> world plane. Re-applied
@@ -894,11 +918,23 @@ namespace ENCAccessProof
         {
             if (entries == null || !Plugin.UniversalInjectOn.Value) return;
             if (!entries.Any(x => x.deployOnStop)) return;
-            if (++deployFrame % 3 != 0) return;   // ~20x/s is plenty for an instant-feeling snap, and keeps the walk cheap
+            if (++deployFrame % 3 != 0) return;   // ~20x/s; the ramp is dt-based so it stays smooth + framerate-independent
             try
             {
-                var fresh = new Dictionary<ModelEntry, List<UnityEngine.Vector3>>();
-                foreach (var e in entries) if (e.deployOnStop) fresh[e] = new List<UnityEngine.Vector3>();
+                // per-entry ramp step: dt (since last poll) / clip duration => normalized pose-time units this tick
+                var now = UnityEngine.Time.time;
+                var step = new Dictionary<ModelEntry, float>();
+                var fresh = new Dictionary<ModelEntry, List<DeploySample>>();
+                var seen = new Dictionary<ModelEntry, HashSet<long>>();
+                foreach (var e in entries) if (e.deployOnStop)
+                {
+                    float dt = e.deployLastPoll > 0f ? Math.Min(now - e.deployLastPoll, 0.5f) : 0f;   // clamp a big first/stall gap
+                    e.deployLastPoll = now;
+                    float dur = e.animDuration > 0.001f ? e.animDuration : 1f;
+                    step[e] = dt / dur * (e.deploySpeed > 0f ? e.deploySpeed : 1f);
+                    fresh[e] = new List<DeploySample>();
+                    seen[e] = new HashSet<long>();
+                }
                 var presType = AccessTools.TypeByName("Amplitude.Mercury.Presentation.Presentation");
                 var factory = presType == null ? null : CachedField(presType, "PresentationEntityFactoryController")?.GetValue(null);
                 var armies = factory == null ? null : GetMember(factory, "PresentationArmyEntities") as Array;
@@ -913,15 +949,26 @@ namespace ENCAccessProof
                         var e = entries.FirstOrDefault(x => x.deployOnStop && x.pawnDescription.Length > 0
                                     && uname.IndexOf(CoreDesc(x.pawnDescription), StringComparison.OrdinalIgnoreCase) >= 0);
                         if (e == null) continue;
+                        long guid = GuidToLong(GetMember(unit, "GUID"));
+                        if (guid == 0) continue;
                         bool moving = false;
                         try { moving = Convert.ToBoolean(AccessTools.Method(unit.GetType(), "IsAnyPawnMoving", new[] { typeof(bool) })?.Invoke(unit, new object[] { false })); } catch { }
-                        if (!moving) continue;   // not moving -> its pawns stay deployed (default); only record the movers
+                        // Moving -> SNAP to folded (frame 0) instantly (no reverse-deploy while driving off). Stopped -> RAMP
+                        // toward the deployed pose at clip speed, so it plays the deploy forward only.
+                        float cur;
+                        if (moving) cur = 0f;
+                        else cur = e.deployProgress.TryGetValue(guid, out float p) ? UnityEngine.Mathf.MoveTowards(p, e.deployPoseTime, step[e]) : e.deployPoseTime;
+                        e.deployProgress[guid] = cur;
+                        seen[e].Add(guid);
                         if (GetMember(unit, "Pawns") is System.Collections.IEnumerable pawns)
                             foreach (var pawn in pawns)
-                                if (GetMember(pawn, "Transform") is UnityEngine.Transform tr) fresh[e].Add(tr.position);
+                                if (GetMember(pawn, "Transform") is UnityEngine.Transform tr) fresh[e].Add(new DeploySample { pos = tr.position, poseTime = cur });
                     }
-                foreach (var kv in fresh)
-                    lock (kv.Key.movingPawnPositions) { kv.Key.movingPawnPositions.Clear(); kv.Key.movingPawnPositions.AddRange(kv.Value); }
+                foreach (var e in fresh.Keys)
+                {
+                    lock (e.deploySamples) { e.deploySamples.Clear(); e.deploySamples.AddRange(fresh[e]); }
+                    foreach (var g in e.deployProgress.Keys.Where(k => !seen[e].Contains(k)).ToList()) e.deployProgress.Remove(g);   // drop gone units
+                }
             }
             catch (Exception ex) { Plugin.Log.LogError("[Deploy] ProcessDeployState: " + ex); }
         }

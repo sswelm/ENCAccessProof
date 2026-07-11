@@ -77,12 +77,17 @@ That's the whole loop. Everything below is detail and the animated workflow.
   playthrough. **Author the clip to start *and* end at rest** so the single pass looks clean. Leave **off** for a continuous
   loop (a drone's spinning prop). Animated models only; runtime flag (no re-bake to toggle — Bake just re-writes the
   registry). See §5 and [Firing-On-Attack.md](Firing-On-Attack.md).
-- **Deploy when stopped** *(+ **Deployed pose time**)* — hold the clip's **deployed** pose while the unit is idle and snap to
-  the **undeployed** pose (frame 0) the instant it moves — e.g. a howitzer that deploys when it stops and folds for travel.
-  **Author the clip** so frame 0 = travelling and the deployed pose sits at **Deployed pose time** (0..1; `1` = a real deploy
-  clip's end). It's a *held state*, per-unit and instant, driven by the unit's moving state — concurrency/AI-safe (only
-  visible, our-model units are polled). **Mutually exclusive with Fire on attack for now** (both use the model's single clip
-  slot; running deploy *and* fire together is the multi-clip TODO). Animated models only; runtime flag.
+- **Deploy when stopped** *(+ **Deployed pose time**, **Deploy speed**)* — **play the clip forward** when the unit stops (e.g.
+  a howitzer that spreads its trail legs) and **snap folded** the instant it moves. **Author the clip** so frame 0 = travelling
+  and the deployed pose sits at **Deployed pose time** (0..1; `1` = a real deploy clip's end). **Deploy speed** multiplies the
+  ramp (1 = the clip's authored speed, 2 = twice as fast); folding on move is always instant. It's a *held state*, per-unit,
+  driven by the unit's moving state — concurrency/AI-safe (only visible, our-model units are polled). **Mutually exclusive with
+  Fire on attack for now** (both use the model's single clip slot; running deploy *and* fire together is the multi-clip TODO).
+  Animated models only; runtime flag.
+  - **Rigid-part-animated source?** Many Maya/Sketchfab models animate *moving parts* (a turret, trail legs, landing gear) by
+    node transforms, not skinning — the animated bake needs an armature. Run **`Tools/deploy_convert.py`** first
+    (`blender -b -P Tools/deploy_convert.py -- in.glb out.glb [startFrame endFrame] [stripCsv]`): it builds a bone-per-part
+    skinned armature carrying the same motion, trims to the deploy sub-range, and strips crew/props. Bake the result normally.
 
 ### Transform
 - **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
