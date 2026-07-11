@@ -50,6 +50,7 @@ namespace ENCAccessProof
         // when stopped) at the clip's authored speed, so the legs visibly spread/fold. Progress is per-unit (stateful) so it
         // survives across polls and units entering/leaving view; the pose hook reads the ramped value matched by position.
         public readonly Dictionary<long, float> deployProgress = new Dictionary<long, float>();  // MAIN thread: unit GUID -> current normalized pose time (ramps toward target)
+        public readonly Dictionary<long, float> deployMovingSince = new Dictionary<long, float>();  // MAIN thread: unit GUID -> Time.time it STARTED moving; a debounce so the wait-to-idle settle can't drop the deployed pose
         public readonly List<DeploySample> deploySamples = new List<DeploySample>();             // MAIN thread only (locked): each pawn's render position + its unit's current (ramped) pose time; the pose hook holds that pose on the nearest pawn.
         public float deployLastPoll;          // Time.time of the last deploy poll, for a framerate-independent ramp step
     }
@@ -914,6 +915,7 @@ namespace ENCAccessProof
         // one of those and holds the deployed pose for the rest — an instant, per-pawn moving→pose mapping (no state machine).
         // Same presentation walk as MaybeRespawnPostLoad; scoped to VISIBLE our-model units, so AI/off-screen moves never reach it.
         static int deployFrame;
+        static Dictionary<long, bool> deployMoveState;   // diagnostic: log each deploy unit's moving<->stopped transitions
         internal static void ProcessDeployState()
         {
             if (entries == null || !Plugin.UniversalInjectOn.Value) return;
@@ -951,17 +953,32 @@ namespace ENCAccessProof
                         if (e == null) continue;
                         long guid = GuidToLong(GetMember(unit, "GUID"));
                         if (guid == 0) continue;
-                        bool moving = false;
-                        try { moving = Convert.ToBoolean(AccessTools.Method(unit.GetType(), "IsAnyPawnMoving", new[] { typeof(bool) })?.Invoke(unit, new object[] { false })); } catch { }
-                        // Moving -> SNAP to folded (frame 0) instantly (no reverse-deploy while driving off). Stopped -> RAMP
-                        // toward the deployed pose at clip speed, so it plays the deploy forward only.
+                        // Movement per PAWN via IsMoving(ignoreWaitToIdle: TRUE, isMovingAlongTilesOnly: TRUE). The unit-level
+                        // IsAnyPawnMoving hardcodes ignoreWaitToIdle:false, so the wait-to-idle/turn settle after a unit stops
+                        // reads as "moving" and the deploy snaps back to folded (barrel raises then drops to horizontal). We
+                        // only want folded during ACTUAL tile-to-tile travel — ignoring the settle keeps the deployed pose held.
+                        var pawnList = (GetMember(unit, "Pawns") as System.Collections.IEnumerable)?.Cast<object>().ToList();
+                        bool rawMoving = false;
+                        if (pawnList != null)
+                            foreach (var pawn in pawnList)
+                                try { if (Convert.ToBoolean(AccessTools.Method(pawn.GetType(), "IsMoving", new[] { typeof(bool), typeof(bool) })?.Invoke(pawn, new object[] { true, true }))) { rawMoving = true; break; } } catch { }
+                        // REST STATE = FULLY DEPLOYED is the #1 requirement. Only FOLD after SUSTAINED real travel (debounce);
+                        // the game's brief wait-to-idle / settle flicker after stopping must NEVER drop the deployed pose. The
+                        // moment travel stops we reset instantly, so a resting unit always ramps to (and holds) fully deployed.
+                        const float FoldDebounce = 0.6f;
+                        if (rawMoving) { if (!e.deployMovingSince.ContainsKey(guid)) e.deployMovingSince[guid] = now; }
+                        else e.deployMovingSince.Remove(guid);
+                        bool moving = e.deployMovingSince.TryGetValue(guid, out float ms) && (now - ms) >= FoldDebounce;
                         float cur;
-                        if (moving) cur = 0f;
-                        else cur = e.deployProgress.TryGetValue(guid, out float p) ? UnityEngine.Mathf.MoveTowards(p, e.deployPoseTime, step[e]) : e.deployPoseTime;
+                        if (moving) cur = 0f;                                                          // sustained travel -> folded
+                        else cur = e.deployProgress.TryGetValue(guid, out float p) ? UnityEngine.Mathf.MoveTowards(p, e.deployPoseTime, step[e]) : e.deployPoseTime;   // rest -> ramp to / HOLD fully deployed
                         e.deployProgress[guid] = cur;
                         seen[e].Add(guid);
-                        if (GetMember(unit, "Pawns") is System.Collections.IEnumerable pawns)
-                            foreach (var pawn in pawns)
+                        if (deployMoveState == null) deployMoveState = new Dictionary<long, bool>();
+                        if (!deployMoveState.TryGetValue(guid, out bool wasMoving) || wasMoving != moving)   // log on each moving<->stopped flip
+                        { deployMoveState[guid] = moving; Plugin.Log.LogInfo($"[Deploy] '{e.resourceName}' unit {guid} moving={moving} poseTime={cur:0.00}"); }
+                        if (pawnList != null)
+                            foreach (var pawn in pawnList)
                                 if (GetMember(pawn, "Transform") is UnityEngine.Transform tr) fresh[e].Add(new DeploySample { pos = tr.position, poseTime = cur });
                     }
                 foreach (var e in fresh.Keys)
