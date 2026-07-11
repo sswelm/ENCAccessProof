@@ -85,9 +85,15 @@ That's the whole loop. Everything below is detail and the animated workflow.
   Fire on attack for now** (both use the model's single clip slot; running deploy *and* fire together is the multi-clip TODO).
   Animated models only; runtime flag.
   - **Rigid-part-animated source?** Many Maya/Sketchfab models animate *moving parts* (a turret, trail legs, landing gear) by
-    node transforms, not skinning — the animated bake needs an armature. Run **`Tools/deploy_convert.py`** first
-    (`blender -b -P Tools/deploy_convert.py -- in.glb out.glb [startFrame endFrame] [stripCsv]`): it builds a bone-per-part
-    skinned armature carrying the same motion, trims to the deploy sub-range, and strips crew/props. Bake the result normally.
+    node transforms, not skinning — the animated bake needs an armature. Run **`Tools/deploy_convert.py`** first:
+    `blender -b -P Tools/deploy_convert.py -- in.glb out.glb [start end] [stripCsv] [readyFrame] [legScale] [barrelScale]`
+    — it builds a bone-per-part skinned armature carrying the same motion, trims to the deploy sub-range, strips crew/props,
+    **binds at the rest frame** (so the mesh isn't baked pre-posed), and optionally retargets the barrel to a `readyFrame`
+    elevation (`barrelScale` > 1 exaggerates past the source's max) and scales the leg spread (`legScale`; 1 = full, 0 =
+    stay folded). Bake the result normally. Find the deploy sub-range + `readyFrame` by scrubbing the clip in Blender.
+  - **The rest state must hold deployed** — that's the runtime half (already built): the plugin uses each pawn's `IsMoving`
+    with the wait-to-idle ignored, plus a ~0.6s fold debounce, so a stopped unit stays deployed through the settle. No knob;
+    it just works. *(The static **preview** shows the folded bind pose, not the deployed one — judge deploy in-game.)*
 
 ### Transform
 - **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
