@@ -11,17 +11,25 @@ see the [Factory Manual](Factory-Manual.md).
   hook drives the pawn's pose onto it — normalized by clip duration so it plays at real speed. Works for **any number of
   instances**. Clip/bone/hide-donor fields are **Pick-driven** (read from the model's glTF + the plugin log).
 - **Deploy-when-stopped — a model that reacts to *movement*.** Tick **Deploy when stopped** and the model **plays its deploy
-  clip forward** when the unit stops (e.g. an M114 howitzer's trail legs spread open) and **snaps folded** the instant it
-  moves — a per-unit *held state* driven by the unit's moving state, not an event. It reuses the same sim→presentation bridge
-  as fire-on-attack but triggers off `PresentationUnit.IsAnyPawnMoving` (polled on the main thread), so it's concurrency/AI-safe:
-  only *visible*, our-model units are considered, and each pawn's pose is an independent function of whether its unit is moving.
-  **Gradual + tunable:** the deploy ramps at the clip's authored speed × a **Deploy speed** slider; **Deployed pose time** sets
-  how far it opens. **Real deploy clips from rigid-part-animated models:** `Tools/deploy_convert.py` converts a model animated
-  by *moving parts* (node transforms, no skinning — common in Maya/Sketchfab exports) into a bone-per-part skinned armature the
-  bake can consume, stripping soft-skinned crew that would collapse the bake — proven end-to-end on the M114's real deploy.
-  **Donor-aim override:** artillery donors aim their barrel via a procedural `PawnEntry.BoneRotation` layer that twisted the
-  injected barrel; the pose hook now zeros it so only our clip drives the skeleton. Mutually exclusive with fire-on-attack
-  until multi-clip lands. See [Firing-On-Attack.md](Firing-On-Attack.md).
+  clip forward** when the unit stops (e.g. an M114 howitzer's trail legs spread + barrel elevates) and **snaps folded** while it
+  travels — a per-unit *held state* driven by movement, not an event. It reuses the fire-on-attack sim→presentation bridge but
+  triggers off the unit's **actual render-position change between polls** (real tile traversal), so it's concurrency/AI-safe
+  (only *visible*, our-model units). **Rest holds deployed, folds instantly** — two hard-won details: (1) detect travel by
+  position delta, NOT the game's `IsMoving`/`IsAnyPawnMoving` (the wait-to-idle/turn settle after stopping reads as "moving" and
+  drops the deployed pose) — the settle doesn't move the tile, so a position check is instant to fold *and* settle-immune; (2)
+  the pose sampler does `Mathf.Repeat(Time,1)`, so poseTime **exactly 1.0 wraps to 0.0 = the folded frame** — the deploy target
+  is clamped to 0.999 (and bake `deployPoseTime` ≤ 0.99) so it holds the last real frame. **Gradual + tunable:** the
+  deploy ramps at the clip's authored speed × a **Deploy speed** slider; **Deployed pose time** sets how far it opens (also the
+  live barrel-angle knob when the clip is baked with an over-range elevation). **Real deploy clips from rigid-part-animated
+  models:** `Tools/deploy_convert.py` converts a model animated by *moving parts* (node transforms, no skinning — common in
+  Maya/Sketchfab exports) into a bone-per-part skinned armature the bake can consume: strips soft-skinned crew (they collapse the
+  bake), retargets the trail-leg spread (scale) and barrel elevation (amplify past the source's max), and — critically — **binds
+  the mesh at the rest frame** so it isn't baked pre-posed and double-deformed. Args: `in out start end strip readyFrame legScale
+  barrelScale`. **Donor-aim override:** artillery donors aim their barrel via a procedural `PawnEntry.BoneRotation` layer that
+  twisted the injected barrel; the pose hook zeros it so only our clip drives the skeleton. Mutually exclusive with fire-on-attack
+  until multi-clip lands. *(Known limitation: the Factory's static **preview** shows the folded bind pose, not the deployed pose —
+  judge the result in-game, or via the deployed-preview attempt on the `howitzer-deploy-wip` branch once its duplicate-mesh issue
+  is fixed.)* See [Firing-On-Attack.md](Firing-On-Attack.md).
 - **Fire-on-attack — a model that animates when the unit *fires*.** Tick **Fire on attack** and the baked clip plays
   **once, on the combat action**, instead of looping: the model rests, then plays a single pass the moment the unit
   attacks and returns to rest. Proven with a **howitzer whose barrel elevates only when it bombards**. The plugin

@@ -50,6 +50,7 @@ namespace ENCAccessProof
         // when stopped) at the clip's authored speed, so the legs visibly spread/fold. Progress is per-unit (stateful) so it
         // survives across polls and units entering/leaving view; the pose hook reads the ramped value matched by position.
         public readonly Dictionary<long, float> deployProgress = new Dictionary<long, float>();  // MAIN thread: unit GUID -> current normalized pose time (ramps toward target)
+        public readonly Dictionary<long, UnityEngine.Vector3> deployLastPos = new Dictionary<long, UnityEngine.Vector3>();  // MAIN thread: unit GUID -> last render position; movement = the position actually changed (instant fold, settle-immune)
         public readonly List<DeploySample> deploySamples = new List<DeploySample>();             // MAIN thread only (locked): each pawn's render position + its unit's current (ramped) pose time; the pose hook holds that pose on the nearest pawn.
         public float deployLastPoll;          // Time.time of the last deploy poll, for a framerate-independent ramp step
     }
@@ -914,6 +915,7 @@ namespace ENCAccessProof
         // one of those and holds the deployed pose for the rest — an instant, per-pawn moving→pose mapping (no state machine).
         // Same presentation walk as MaybeRespawnPostLoad; scoped to VISIBLE our-model units, so AI/off-screen moves never reach it.
         static int deployFrame;
+        static Dictionary<long, bool> deployMoveState;   // diagnostic: log each deploy unit's moving<->stopped transitions
         internal static void ProcessDeployState()
         {
             if (entries == null || !Plugin.UniversalInjectOn.Value) return;
@@ -951,17 +953,38 @@ namespace ENCAccessProof
                         if (e == null) continue;
                         long guid = GuidToLong(GetMember(unit, "GUID"));
                         if (guid == 0) continue;
+                        // Movement per PAWN via IsMoving(ignoreWaitToIdle: TRUE, isMovingAlongTilesOnly: TRUE). The unit-level
+                        // IsAnyPawnMoving hardcodes ignoreWaitToIdle:false, so the wait-to-idle/turn settle after a unit stops
+                        // reads as "moving" and the deploy snaps back to folded (barrel raises then drops to horizontal). We
+                        // only want folded during ACTUAL tile-to-tile travel — ignoring the settle keeps the deployed pose held.
+                        var pawnList = (GetMember(unit, "Pawns") as System.Collections.IEnumerable)?.Cast<object>().ToList();
+                        // MOVEMENT = the unit's RENDER POSITION actually changed since the last poll (real tile traversal). This is
+                        // INSTANT (no debounce lag) and settle-immune: the game's wait-to-idle / turn-in-place after stopping does
+                        // NOT move the tile position, so a resting unit reads "not moving" and stays deployed, while a travelling one
+                        // folds the moment it starts. (The deploy clip animates the SKELETON, not the pawn transform — no self-trigger.)
+                        UnityEngine.Vector3 upos = UnityEngine.Vector3.zero; bool hasPos = false;
+                        if (pawnList != null)
+                            foreach (var pawn in pawnList)
+                                if (GetMember(pawn, "Transform") is UnityEngine.Transform tr0) { upos = tr0.position; hasPos = true; break; }
                         bool moving = false;
-                        try { moving = Convert.ToBoolean(AccessTools.Method(unit.GetType(), "IsAnyPawnMoving", new[] { typeof(bool) })?.Invoke(unit, new object[] { false })); } catch { }
-                        // Moving -> SNAP to folded (frame 0) instantly (no reverse-deploy while driving off). Stopped -> RAMP
-                        // toward the deployed pose at clip speed, so it plays the deploy forward only.
+                        if (hasPos)
+                        {
+                            if (e.deployLastPos.TryGetValue(guid, out var lastP)) moving = (upos - lastP).sqrMagnitude > 0.1f * 0.1f;
+                            e.deployLastPos[guid] = upos;
+                        }
+                        // Clamp the deployed target just below 1.0: the pose sampler does Mathf.Repeat(Time,1), so a poseTime of
+                        // EXACTLY 1.0 wraps to 0.0 = frame 0 = the FOLDED pose. Holding at 0.999 lands on the last real frame instead.
+                        float target = UnityEngine.Mathf.Min(e.deployPoseTime, 0.999f);
                         float cur;
-                        if (moving) cur = 0f;
-                        else cur = e.deployProgress.TryGetValue(guid, out float p) ? UnityEngine.Mathf.MoveTowards(p, e.deployPoseTime, step[e]) : e.deployPoseTime;
+                        if (moving) cur = 0f;                                                          // travelling -> folded (instant)
+                        else cur = e.deployProgress.TryGetValue(guid, out float p) ? UnityEngine.Mathf.MoveTowards(p, target, step[e]) : target;   // rest -> ramp to / HOLD fully deployed
                         e.deployProgress[guid] = cur;
                         seen[e].Add(guid);
-                        if (GetMember(unit, "Pawns") is System.Collections.IEnumerable pawns)
-                            foreach (var pawn in pawns)
+                        if (deployMoveState == null) deployMoveState = new Dictionary<long, bool>();
+                        if (!deployMoveState.TryGetValue(guid, out bool wasMoving) || wasMoving != moving)   // log on each moving<->stopped flip
+                        { deployMoveState[guid] = moving; Plugin.Log.LogInfo($"[Deploy] '{e.resourceName}' unit {guid} moving={moving} poseTime={cur:0.00}"); }
+                        if (pawnList != null)
+                            foreach (var pawn in pawnList)
                                 if (GetMember(pawn, "Transform") is UnityEngine.Transform tr) fresh[e].Add(new DeploySample { pos = tr.position, poseTime = cur });
                     }
                 foreach (var e in fresh.Keys)
