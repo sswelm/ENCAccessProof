@@ -43,6 +43,7 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-07 | csproj: `DefaultItemExcludes baker\**` — glbconv's .NET 8 publish output was being swept in as candidate assemblies, making the net471 build fail with 271 phantom type errors |
 | 07-12 | **A1**: `OnPawnAdded` decomposed from a ~190-line per-pawn-per-frame god-method into a dispatcher + one named handler per behavior (verified in-game + 12/12 bake smoke test) |
 | 07-12 | Registry kept **alphabetical** on load AND save (`ModelRegistry.SortByName`) — a stable Factory dropdown and no more meaningless reorder churn in the git-tracked backup on every bake |
+| 07-12 | **A3**: `check_schema_parity.sh` rewritten — Newtonsoft==regex read paths, read⊆written, and read-cast==declared-type; verified to fail on each drift type (Option A: verify, don't merge) |
 
 ---
 
@@ -189,12 +190,16 @@ Registry data, runtime-resolved handles (`skeleton`, `animId`, `skeletonId`), pe
 feature touches the parser, the POCO, and the (now-decomposed) hot loop in lockstep. Natural next split, pairing
 with A3: a plain serialized config record vs. a runtime-state object.
 
-#### A3 🟡 The cross-repo registry schema is defined in FOUR places, guarded by a grep
+#### A3 🟡 The cross-repo registry schema is defined in FOUR places — now guarded by a real check (2026-07-12)
 `ModelDef` (editor writer, JsonUtility) · `ModelEntry` (runtime) · the Newtonsoft parse · the regex-fallback
-parse — a new field is edited in all four. `check_schema_parity.sh` only checks *plugin-read keys ⊆ ModelDef
-fields*; it does **not** verify types, defaults, or that the regex fallback stayed in sync with the Newtonsoft
-path. Highest structural leverage, since the schema is touched on every new field. Options: one shared serialized
-POCO, or make the parity check type-aware and cover the regex path.
+parse — a new field is edited in all four. **Mitigated (Option A — verify, don't merge):** `check_schema_parity.sh`
+was rewritten to make drift loud. It now asserts (1) the Newtonsoft and regex read paths read the **same** key set,
+(2) every read key is a `ModelDef` field the baker writes (minus a runtime-only allowlist), and (3) each read cast's
+type matches `ModelDef`'s declared type; bake-time-only fields are listed as INFO. Proven to fail on all three drift
+types (dropped regex key, unwritten key, type mismatch). The duplication still **exists** — this monitors it rather
+than removing it. The deeper Option B (auto-deserialize into one POCO, drop the manual mapping, retire the regex
+fallback) was deliberately not taken, per the standing "keep the two sides separate, just verify compatible"
+preference; revisit B only if the manual mapping starts costing more than the guard saves.
 
 #### A4 🟡 Two suspected baker bugs (flagged from reading — verify before fixing)
 - `UniversalBaker.MeasureLongestAxis` (animated path) encapsulates each child's `sharedMesh.bounds` in
@@ -241,7 +246,7 @@ strangers." Overlaps the deferred list's ENC-branding, Blender-PATH-discovery, a
 
 ## Recommended fix order
 
-**Architectural (2026-07-12):** ~~**A1**~~ ✅ done. Next: **A3** (collapse or type-guard the four-place schema) → **A2** (`ModelEntry` split) → **A4** (verify the two suspected baker bugs before fixing).
+**Architectural (2026-07-12):** ~~**A1**~~ ✅ · ~~**A3**~~ ✅ (guard strengthened, Option A). Next: **A2** (`ModelEntry` config/state split) → **A4** (verify the two suspected baker bugs before fixing).
 
 1. ~~**E1**~~ ✅ done · ~~**T1**~~ ✅ done · ~~**T2**~~ ✅ done — tier 1 complete.
 2. **E2** (Remove key + honest status) · **E4** (bound the pipe drain — completes the 07-05 timeout work).

@@ -363,6 +363,8 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   howitzer's throwaway bake exercises its skeleton path, not its texture packing — the multi-material atlas code is
   covered instead by the *static* multi-material AttackHelicopter, whose albedos `glbconv` does regenerate.
 - **Schema parity** — `bash Tools/check_schema_parity.sh`. The registry is written by the baker (`ModelDef`, JsonUtility)
-  and read by the plugin (`ModelEntry`, Newtonsoft) in two separate repos, kept in sync by hand. This verifies every key
-  the plugin reads is a field the baker writes (plugin ⊆ ModelDef), with an allowlist for deliberate plugin-only
-  overrides (`scale`). Catches a silent rename/drop that would otherwise make a feature quietly default-off.
+  and read by the plugin two ways (`ModelEntry` via Newtonsoft, plus a regex fallback) across two separate repos, kept in
+  sync by hand. The guard makes drift loud: it asserts (1) the Newtonsoft and regex read paths read the **same** key set,
+  (2) every read key is a field the baker writes (plugin ⊆ ModelDef, with an allowlist for deliberate plugin-only overrides
+  like `scale`), and (3) each read cast's type matches ModelDef's declared type; bake-time-only fields are listed as INFO.
+  Catches a silent rename/drop/type-change that would otherwise make a feature quietly default-off.
