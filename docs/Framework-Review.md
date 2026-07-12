@@ -49,6 +49,7 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-12 | **E2/E3/E4** editor hardening: Remove keys on the selected entry + honest status; static bake fails loud on 0 vertices (no silent invisible unit); `RunBounded` bounds the pipe drain so a grandchild-held pipe can't hang the editor. 12/12 smoke test |
 | 07-12 | **Bake Feature Test** (`Tools ▸ ENC ▸ Bake Feature Test`): new integration test proving each baker *feature knob* does what it claims — bakes a self-contained synthetic cube per-knob and asserts a feature-specific invariant (doubleSided 2× tris, Faceted unweld, atlasMaxDim cap, heightUV, size/position, brightness/saturation, …). Non-destructive; **Tier 1** 12/12 |
 | 07-12 | **Bake Feature Test — Tier 2** (`… Tier 2 — Blender + animated`): `targetTris` decimates a generated high-poly grid (5000→600), `stripParts` drops a generated named object (24→12 tris), and the animated pipeline (`BuildAnimated` → skeleton + clip) is exercised by borrowing ReconDrone + TowedGunHowitzers from the registry. **4/4** |
+| 07-12 | **A4**: `BuildMultiAtlasAndRemap` submesh→rect match now tries EXACT before the loose substring — an animated multi-material model with prefix-colliding material names (`Body`/`Body_Trim`) no longer maps the wrong texture. (`MeasureLongestAxis` half verified-and-dismissed: `rig_anim` joins to one mesh, so the per-node transform is moot.) |
 
 ---
 
@@ -223,14 +224,19 @@ than removing it. The deeper Option B (auto-deserialize into one POCO, drop the 
 fallback) was deliberately not taken, per the standing "keep the two sides separate, just verify compatible"
 preference; revisit B only if the manual mapping starts costing more than the guard saves.
 
-#### A4 🟡 Two suspected baker bugs (flagged from reading — verify before fixing)
-- `UniversalBaker.MeasureLongestAxis` (animated path) encapsulates each child's `sharedMesh.bounds` in
-  *mesh-local* space without applying the renderer's transform-relative-to-root; the static combine does
-  (`rootInv * localToWorldMatrix`). A multi-node animated FBX could mis-measure its extent → wrong scale factor.
-  Verify against the multi-part `TowedGunHowitzers`.
-- `BuildMultiAtlasAndRemap` matches submesh→atlas-rect via `SimplifyMat` `Contains` both ways after stripping
-  "mat"/"material"/"_"; two materials like `body`/`body_trim` can collide onto the same rect (first `FindIndex`
-  wins) → silent wrong texture. Verify on a multi-material model.
+#### A4 ✅ RESOLVED (2026-07-12) — one dismissed after verification, one fixed
+- `UniversalBaker.MeasureLongestAxis` (animated path) — **DISMISSED (not a bug).** It reads mesh-local
+  `sharedMesh.bounds` without a per-node transform, *but* `rig_anim.py` **joins all meshes into one** before the
+  animated path measures (there is only ever a single skinned mesh), and size is position-invariant. The asymmetry
+  with the static combine — which reads many *un-joined* `MeshFilter`s and so genuinely needs `rootInv *
+  localToWorldMatrix` — is therefore justified, not a defect. Deliberately **not** "defensively fixed": transforming
+  the single mesh's bounds by a non-identity SMR transform could rescale every current animated model for zero gain.
+- `BuildMultiAtlasAndRemap` submesh→atlas-rect name match — **FIXED.** The loose `Contains`-both-ways `SimplifyMat`
+  match collided: material `Body` (simplified `body`) matched `Body_Trim` (`bodytrim`) via `"bodytrim".Contains("body")`,
+  and if the longer name sorted first, `FindIndex` returned the wrong rect → wrong texture on that submesh. Now tries an
+  **exact** simplified-name match first, then substring, then the submesh index. Behaviour is identical for
+  non-colliding models (only the collision case changes). Affects only the animated multi-material path — the static
+  path matches by exact material *reference*.
 
 #### A5 🟢 Package-readiness (the stated goal) — not close yet
 ENC branding hardcoded (`enc_models.json`, `ENC.*` EditorPrefs); Blender discovery Windows/Program-Files-only;
@@ -268,7 +274,7 @@ strangers." Overlaps the deferred list's ENC-branding, Blender-PATH-discovery, a
 
 ## Recommended fix order
 
-**Architectural (2026-07-12):** ~~**A1**~~ ✅ · ~~**A3**~~ ✅ (guard strengthened, Option A). Next: **A2** (`ModelEntry` config/state split) → **A4** (verify the two suspected baker bugs before fixing).
+**Architectural (2026-07-12):** ~~**A1**~~ ✅ · ~~**A3**~~ ✅ · ~~**A4**~~ ✅ (SimplifyMat collision fixed; MeasureLongestAxis verified-and-dismissed). Next: **A2** (`ModelEntry` config/state split), when Option B is tackled.
 
 1. ~~**E1**~~ ✅ done · ~~**T1**~~ ✅ done · ~~**T2**~~ ✅ done — tier 1 complete.
 2. ~~**E2**~~ ✅ · ~~**E4**~~ ✅ done (Remove key + honest status; bounded pipe drain).
