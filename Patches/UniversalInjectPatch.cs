@@ -46,6 +46,7 @@ namespace ENCAccessProof
         public bool deployOnStop;             // hold the deployed pose when idle, undeploy (frame 0) while moving
         public float deployPoseTime = 1f;     // normalized clip time of the DEPLOYED pose (1 = a real deploy clip's end; 0.5 = the barrel-fire clip's raised plateau, used to prove the plumbing without a deploy clip)
         public float deploySpeed = 1f;        // multiplier on the gradual-deploy ramp speed (1 = the clip's authored speed; 2 = twice as fast). Only affects the forward deploy-on-stop; folding on move is always instant.
+        public float recoilSpeed = 1f;        // multiplier on the recoil-on-fire (kickback) playback speed (1 = the tail's authored speed; 3 = the kick plays 3x faster). Only affects deployOnStop+fireOnAttack models.
         // GRADUAL deploy: instead of snapping, ramp each unit's pose time toward its target (0 while moving, deployPoseTime
         // when stopped) at the clip's authored speed, so the legs visibly spread/fold. Progress is per-unit (stateful) so it
         // survives across polls and units entering/leaving view; the pose hook reads the ramped value matched by position.
@@ -107,6 +108,7 @@ namespace ENCAccessProof
                                 deployOnStop = (bool?)m["deployOnStop"] ?? false,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
+                                recoilSpeed = m["recoilSpeed"] != null ? (float)m["recoilSpeed"] : 1f,
                             });
                         }
                         Plugin.Log.LogInfo($"[Uni] parsed {entries.Count} entr(ies) via Newtonsoft [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -133,6 +135,7 @@ namespace ENCAccessProof
                 var dos = Regex.Matches(text, "\"deployOnStop\"\\s*:\\s*(true|false)");     // parity: hold deployed when idle, undeploy while moving
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
+                var rsp = Regex.Matches(text, "\"recoilSpeed\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: recoil-on-fire playback speed multiplier (default 1)
                 var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
@@ -154,6 +157,7 @@ namespace ENCAccessProof
                         deployOnStop = i < dos.Count && dos[i].Groups[1].Value == "true",
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
+                        recoilSpeed = i < rsp.Count && float.TryParse(rsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _rsp) ? _rsp : 1f,
                         scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
                     });
                 }
@@ -603,6 +607,7 @@ namespace ENCAccessProof
         static bool rescueLogged, posLogged, poseErrLogged, scaleLogged;
         static HashSet<string> poseHookSeen;   // dump the pose-hook + runtime transform once PER MODEL (so the howitzer logs even if the drone spawns first)
         static HashSet<int> freezeLogSkels;   // distinct skeleton ids we've logged a freeze for (so a second-instance "twin via descriptor" shows up in the log without spamming)
+        static float recoilLogStart = -1f;    // diagnostic: log once per fire when the deploy+recoil overlay actually sweeps
 
         // An entry the per-pawn hook acts on: an ANIMATED model (plays its own baked clip) OR a STATIC model that freezes
         // the donor's animation. Both share the same match (our skeleton id → learned descriptor) + skeleton force; only the
@@ -695,6 +700,33 @@ namespace ENCAccessProof
                             float d = (e.deploySamples[i].pos - dpos).sqrMagnitude;
                             if (d < bestSqD) { bestSqD = d; poseTime = e.deploySamples[i].poseTime; }
                         }
+                    // RECOIL-ON-FIRE overlay: when this howitzer is DEPLOYED (held near deployPoseTime) AND it just fired, sweep
+                    // the pose time up through the RECOIL TAIL [deployPoseTime, ~1) once, then fall back to the deployed hold.
+                    // The clip's tail after deployPoseTime is the extracted kickback; the deploy occupies [0, deployPoseTime].
+                    // Same per-instance fire match as the fireOnAttack branch (nearest active fire by render position).
+                    if (e.fireOnAttack && poseTime >= e.deployPoseTime * 0.9f)
+                    {
+                        float bestSqF = 4f * 4f, bestStartF = -1f;
+                        lock (e.activeFires)
+                            for (int i = 0; i < e.activeFires.Count; i++)
+                            {
+                                float d = (e.activeFires[i].pos - dpos).sqrMagnitude;
+                                if (d < bestSqF) { bestSqF = d; bestStartF = e.activeFires[i].startTime; }
+                            }
+                        if (bestStartF >= 0f)
+                        {
+                            const float recoilMax = 0.999f;   // stay below 1.0 (Mathf.Repeat wraps 1.0 -> frame 0 = folded)
+                            float rspd = e.recoilSpeed > 0f ? e.recoilSpeed : 1f;
+                            float recoilDur = dur * (recoilMax - e.deployPoseTime) / rspd;   // tail duration at authored speed, sped up by recoilSpeed
+                            float elapsedF = UnityEngine.Time.time - bestStartF;
+                            if (recoilDur > 0.0001f && elapsedF < recoilDur)
+                            {
+                                poseTime = e.deployPoseTime + (elapsedF / recoilDur) * (recoilMax - e.deployPoseTime);
+                                if (recoilLogStart != bestStartF)
+                                { recoilLogStart = bestStartF; Plugin.Log.LogInfo($"[Deploy-Fire] '{e.resourceName}' RECOIL sweep (dur={recoilDur:0.00}s, poseTime {e.deployPoseTime:0.00}->{recoilMax}, matchDist={UnityEngine.Mathf.Sqrt(bestSqF):0.0}u)"); }
+                            }
+                        }
+                    }
                 }
                 else if (e.fireOnAttack)
                 {

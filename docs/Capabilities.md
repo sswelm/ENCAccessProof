@@ -25,11 +25,20 @@ see the [Factory Manual](Factory-Manual.md).
   Maya/Sketchfab exports) into a bone-per-part skinned armature the bake can consume: strips soft-skinned crew (they collapse the
   bake), retargets the trail-leg spread (scale) and barrel elevation (amplify past the source's max), and — critically — **binds
   the mesh at the rest frame** so it isn't baked pre-posed and double-deformed. Args: `in out start end strip readyFrame legScale
-  barrelScale`. **Donor-aim override:** artillery donors aim their barrel via a procedural `PawnEntry.BoneRotation` layer that
-  twisted the injected barrel; the pose hook zeros it so only our clip drives the skeleton. Mutually exclusive with fire-on-attack
-  until multi-clip lands. *(Known limitation: the Factory's static **preview** shows the folded bind pose, not the deployed pose —
-  judge the result in-game, or via the deployed-preview attempt on the `howitzer-deploy-wip` branch once its duplicate-mesh issue
-  is fixed.)* See [Firing-On-Attack.md](Firing-On-Attack.md).
+  barrelScale [recoilSrcStart recoilSrcEnd step mag]`. **Donor-aim override:** artillery donors aim their barrel via a procedural
+  `PawnEntry.BoneRotation` layer that twisted the injected barrel; the pose hook zeros it so only our clip drives the skeleton.
+  *(Known limitation: the Factory's static **preview** shows the folded bind pose, not the deployed pose — judge the result
+  in-game.)* See [Firing-On-Attack.md](Firing-On-Attack.md).
+- **Deploy + recoil on ONE model (kickback-on-fire).** Deploy-when-stopped and Fire-on-attack now combine on a single clip — no
+  multi-clip system. Author the clip as `deploy [0 .. deployPoseTime]` + `recoil tail [deployPoseTime .. 1]`; at rest it holds the
+  deployed pose, and when the unit **bombards** the pose hook sweeps once through the recoil tail (per-instance — only the gun that
+  fired), then returns to the deployed hold. The **Recoil speed** slider (`recoilSpeed`, runtime) tunes how fast the kick plays.
+  **The hard limit you will hit:** the clip bake keeps per-bone **rotation only — it discards per-bone translation**, so a real
+  hydro-pneumatic *slide* cannot be baked directly (verified: animating a bone to slide left its baked position bbox unchanged).
+  `deploy_convert.py` works around it with an **FK-arc** — a hidden far-pivot `RecoilArm` bone the tube hangs off, rotated a few
+  degrees so the tube swings on a long arc that *reads* as a near-straight backward slide (the arm's rotation bakes; FK rebuilds
+  the motion). It keeps a slight swing — a perfectly straight glide is NOT reachable (counter-rotating to straighten it needs
+  translation → the bake drops it → the model explodes). A plain rotation muzzle-jolt is the simpler fallback. See [Firing-On-Attack.md](Firing-On-Attack.md).
 - **Fire-on-attack — a model that animates when the unit *fires*.** Tick **Fire on attack** and the baked clip plays
   **once, on the combat action**, instead of looping: the model rests, then plays a single pass the moment the unit
   attacks and returns to rest. Proven with a **howitzer whose barrel elevates only when it bombards**. The plugin
