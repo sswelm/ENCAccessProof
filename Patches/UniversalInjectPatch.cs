@@ -1095,6 +1095,48 @@ namespace ENCAccessProof
         static object MakeGuid(int a, int b, int c, int d)
         { var gt = AccessTools.TypeByName("Amplitude.Framework.Guid"); if (gt == null) return null; var g = Activator.CreateInstance(gt);
           gt.GetField("a", BF)?.SetValue(g, a); gt.GetField("b", BF)?.SetValue(g, b); gt.GetField("c", BF)?.SetValue(g, c); gt.GetField("d", BF)?.SetValue(g, d); return g; }
+
+        // Diagnostic: dump the LIVE GPU mesh-content buffer usage per content layer. Answers the real scaling question
+        // ("how many more models fit"): the Amplitude manager packs every registered skeleton/mesh-collection into a
+        // fixed buffer sized 100k verts / 250k indices / 256 meshes PER ContentLayer, tracked by running cursors. Reading
+        // those cursors tells us exactly how full each layer is and whether the mod's models are all resident at once or
+        // only the active unit types. Bound to a hotkey — press in-game with custom units on the map.
+        // Build the live budget readout as lines (shared by the F8 window and the Shift+F8 log dump).
+        internal static System.Collections.Generic.List<string> MeshBudgetLines()
+        {
+            var lines = new System.Collections.Generic.List<string>();
+            try
+            {
+                var amType = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
+                var inst = amType != null ? AccessTools.Property(amType, "Instance")?.GetValue(null) : null;
+                if (inst == null) { lines.Add("AnimationManager.Instance is null — load a game first."); return lines; }
+                var fxMgr = GetMember(inst, "FxComponentMeshContentManager");
+                if (fxMgr == null) { lines.Add("FxComponentMeshContentManager is null."); return lines; }
+                int pawnLayer = GetMember(inst, "FXMeshLayerIndex") is int pl ? pl : -1;
+                if (!(GetMember(fxMgr, "Layers") is Array layers)) { lines.Add("Layers array not found."); return lines; }
+                lines.Add($"GPU mesh buffer — {layers.Length} layer(s), pawn layer = {pawnLayer}:");
+                for (int i = 0; i < layers.Length; i++)
+                {
+                    var L = layers.GetValue(i);
+                    if (L == null) { lines.Add($"  layer {i}: <null>"); continue; }
+                    string nm = GetMember(L, "name") as string ?? "?";
+                    int v = ToInt(GetMember(L, "currentVertexIndex")),   vMax = ToInt(GetMember(L, "baseVertexBufferSize"));
+                    int x = ToInt(GetMember(L, "currentIndexIndex")),    xMax = ToInt(GetMember(L, "baseIndexBufferSize"));
+                    int m = ToInt(GetMember(L, "currentMeshAddedCount")), mMax = ToInt(GetMember(L, "maxMeshCount"));
+                    string tag = i == pawnLayer ? "  <-- your models" : "";
+                    lines.Add($"  L{i} '{nm}': verts {v:n0}/{vMax:n0} ({Pct(v, vMax)}%) | idx {Pct(x, xMax)}% | meshes {m}/{mMax}{tag}");
+                }
+            }
+            catch (Exception ex) { lines.Add("budget read failed: " + ex.Message); }
+            return lines;
+        }
+
+        internal static void DumpMeshBudget()   // Shift+F8: same readout, to the log
+        {
+            foreach (var l in MeshBudgetLines()) Plugin.Log.LogInfo("[Budget] " + l);
+        }
+        static int ToInt(object o) { try { return o == null ? -1 : Convert.ToInt32(o); } catch { return -1; } }
+        static int Pct(int a, int b) { return b > 0 ? (int)(100.0 * a / b) : 0; }
     }
 
     [HarmonyPatch]

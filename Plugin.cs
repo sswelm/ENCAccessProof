@@ -16,7 +16,7 @@ namespace ENCAccessProof
         internal static ManualLogSource Log;
         internal static ConfigEntry<string> TargetMod;       // which mod's assets to access
         internal static ConfigEntry<string> AssetNameFilter; // substring that identifies that mod's assets
-        internal static ConfigEntry<KeyCode> ToggleKey;      // open/close the feedback window
+        internal static ConfigEntry<KeyCode> ToggleKey;      // open/close the feedback window (Shift+ToggleKey = dump GPU mesh-buffer usage)
         internal static ConfigEntry<bool>   UniversalInjectOn; // registry-driven universal injector (Model Factory)
         internal static ConfigEntry<int>    RespawnDelayFrames; // frames to wait after a borrowed-rotor unit renders before re-spawning it (first-instance rotor fix)
 
@@ -34,7 +34,8 @@ namespace ENCAccessProof
             AssetNameFilter = Config.Bind("General", "AssetNameFilter", "Zeppelin",
                                   "Substring used to find that mod's assets in the loaded databases (proof of access).");
             ToggleKey       = Config.Bind("General", "ToggleWindowKey", KeyCode.F8,
-                                  "Key to toggle the in-game feedback window.");
+                                  "Key to toggle the in-game feedback window. Hold SHIFT + this key to instead dump the live " +
+                                  "GPU mesh-content buffer usage (verts/indices/meshes per layer vs the 100k/250k/256 ceiling) to the log.");
             UniversalInjectOn = Config.Bind("Factory", "UniversalInject", true,
                                   "Registry-driven universal model injector (the Model Factory). Reads the model registry JSON " +
                                   "from this config folder and repoints each listed pawn definition onto its baked skeleton.");
@@ -62,7 +63,13 @@ namespace ENCAccessProof
 
         private void Update()
         {
-            if (Input.GetKeyDown(ToggleKey.Value)) show = !show;
+            if (Input.GetKeyDown(ToggleKey.Value))
+            {
+                if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
+                    UniversalInject.DumpMeshBudget();   // Shift+F8 = dump GPU mesh-buffer usage (F9 collided with Humankind quick-load)
+                else
+                    show = !show;                       // F8 = toggle the feedback window
+            }
             if (UniversalInjectOn.Value)
             {
                 UniversalInject.TickTexture();          // keep registry-driven model atlases applied
@@ -93,6 +100,9 @@ namespace ENCAccessProof
                 if (GUILayout.Button("Dump UnitDef")) Prober.DumpUnitDef();
                 if (GUILayout.Button("Dump Formation")) Prober.DumpFormation();
             }
+            GUILayout.Space(4);
+            GUILayout.Label("GPU mesh buffer (live) — Shift+F8 also logs it:");
+            foreach (var l in UniversalInject.MeshBudgetLines()) GUILayout.Label(l);
             GUILayout.Space(4);
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.Height(320));
             if (Prober.Report.Count == 0)
