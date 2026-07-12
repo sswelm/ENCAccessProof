@@ -44,7 +44,7 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-12 | **A1**: `OnPawnAdded` decomposed from a ~190-line per-pawn-per-frame god-method into a dispatcher + one named handler per behavior (verified in-game + 12/12 bake smoke test) |
 | 07-12 | Registry kept **alphabetical** on load AND save (`ModelRegistry.SortByName`) — a stable Factory dropdown and no more meaningless reorder churn in the git-tracked backup on every bake |
 | 07-12 | **A3**: `check_schema_parity.sh` rewritten — Newtonsoft==regex read paths, read⊆written, and read-cast==declared-type; verified to fail on each drift type (Option A: verify, don't merge) |
-| 07-12 | **T3/T4** (`rig_anim.py`): albedo grab traces the Principled Base Color (not the first image node); join re-binds the armature modifier so a bone-parented-prop-first model can't export rigid. **T5** source-fixed (glbconv mirrored-node winding) — exe rebuild deferred (SharpGLTF UV-decode drift; no current model needs it), recipe + caveat in `Tools/glbconv/BUILD.md` |
+| 07-12 | **T3/T4** (`rig_anim.py`): albedo grab traces the Principled Base Color (not the first image node); join re-binds the armature modifier so a bone-parented-prop-first model can't export rigid. **T5** (glbconv mirrored-node winding): source + **exe rebuilt** (SharpGLTF pinned 1.0.6, verified geometry-identical across all 11 registry models); build now documented in `Tools/glbconv/BUILD.md` |
 
 ---
 
@@ -140,15 +140,16 @@ mesh exported with **no skin binding** — the whole model rigid/frozen, all gre
 > and — the real guarantee — after the join the code re-adds an armature modifier bound to `arm` if none survived.
 > The joined mesh keeps every source mesh's vertex groups regardless, so re-binding fully restores skinning.
 
-#### T5 🟡 glbconv: negative-scale (mirrored) nodes don't flip triangle winding — ⚠ SOURCE FIXED, exe rebuild pending (2026-07-12)
-Mirroring half a symmetric vehicle via scale (−1,1,1) is routine; those halves come out inside-out — invisible
+#### T5 🟡 glbconv: negative-scale (mirrored) nodes don't flip triangle winding — ✅ FIXED, source + exe (2026-07-12)
+Mirroring half a symmetric vehicle via scale (−1,1,1) is routine; those halves came out inside-out — invisible
 under backface culling, silently "fixed" by users reaching for Double-sided without knowing why.
-> **Source fixed** (`Program.cs.src`): when `node.WorldMatrix.GetDeterminant() < 0`, emit the triangle as `(A,C,B)`.
-> **The shipped `glbconv.exe` was NOT rebuilt**, so the fix is inert until a deliberate rebuild — because a rebuild
-> also pulls a SharpGLTF UV-decode change (raw tiled UVs → pre-folded `[0,1)`), which the baker's per-vertex fold makes
-> functionally equivalent *except* at tile seams (measured: **3 of 208,198** Cobra verts shift, 0.0014%). No current
-> model has a mirrored node, so nothing needs T5 today. See `Tools/glbconv/BUILD.md` for the rebuild recipe + the
-> pin-your-SharpGLTF-version reproducibility caveat (the original exe's version could not be reproduced — a real gap).
+> **Fixed:** `Program.cs.src` now emits the triangle as `(A,C,B)` when `node.WorldMatrix.GetDeterminant() < 0`, and
+> `glbconv.exe` was **rebuilt** (pinned SharpGLTF.Core 1.0.6, untrimmed + single-file-compressed so it stays ~35 MB;
+> trimming was rejected — it changed OBJ/MTL output on 4 of 11 models). The rebuild was verified **geometry-identical
+> across all 11 registry models**; its only other effect is a SharpGLTF UV-decode change (raw tiled UVs → pre-folded),
+> which the baker's per-vertex fold makes equivalent *except* at tile seams (**3 of 208,198** Cobra verts, 0.0014%).
+> The prior exe is backed up + in git. Build recipe + reproducibility note now in `Tools/glbconv/BUILD.md` (previously
+> there was **no** build documentation at all — that gap is closed). Recommend a one-time in-game Cobra glance.
 
 #### T6 🟢 Silent-empty outcomes in the Blender scripts
 - `rig_anim.py`: a typo'd bone-prefix filter strips **all** fcurves → a frozen 1-frame clip bakes and
