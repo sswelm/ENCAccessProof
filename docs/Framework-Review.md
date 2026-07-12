@@ -51,6 +51,8 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-12 | **Bake Feature Test — Tier 2** (`… Tier 2 — Blender + animated`): `targetTris` decimates a generated high-poly grid (5000→600), `stripParts` drops a generated named object (24→12 tris), and the animated pipeline (`BuildAnimated` → skeleton + clip) is exercised by borrowing ReconDrone + TowedGunHowitzers from the registry. **4/4** |
 | 07-12 | **A4**: `BuildMultiAtlasAndRemap` submesh→rect match now tries EXACT before the loose substring — an animated multi-material model with prefix-colliding material names (`Body`/`Body_Trim`) no longer maps the wrong texture. (`MeasureLongestAxis` half verified-and-dismissed: `rig_anim` joins to one mesh, so the per-node transform is moot.) |
 | 07-12 | **E6/E8** (🟢): backup restore parses in its own try/catch (a corrupt backup + missing registry no longer locks Save with a misleading error); both multi-material `PackTextures` sites free their source albedos so a bake no longer strands tens of MB until domain reload |
+| 07-13 | **E7** (🟢): the static re-bake's delete-first now clears the stale animated `_Preview.prefab`/`_PreviewMesh`/`_PreviewMat` from FactorySource, so the window preview shows the fresh static model instead of the old animated one |
+| 07-13 | **T6** (🟢): `rig_anim.py` hard-fails when a bone-prefix filter matches nothing (frozen-clip trap; lists the real bones); `prep_model.py` hard-fails when a strip/reduce leaves no mesh (empty-GLB trap). Both syntax-checked. **T7** lows reviewed + consciously deferred (each needs a glbconv rebuild or changes output for ~zero benefit) |
 
 ---
 
@@ -109,10 +111,14 @@ instructions that couldn't be followed.
 > warning that names the *backup* path, `lastLoadCorrupt` stays clear, Save is not locked — there's no live
 > registry to protect, and the next Save rewrites the backup).
 
-#### E7 🟢 Stale `_Preview.prefab` shadows a static re-bake in the window preview
-Bake animated → re-bake static: the static delete-first list omits `<name>/<name>_Preview.prefab`, and
-`LoadPreview` prefers the anim path whenever it exists — the preview forever shows the old animated model
-while the game gets the new static one.
+#### E7 🟢 Stale `_Preview.prefab` shadows a static re-bake in the window preview — ✅ FIXED (2026-07-13)
+Bake animated → re-bake static: the static delete-first list omitted `<name>/<name>_Preview.prefab`, and
+`LoadPreview` prefers the anim path whenever it exists — so the preview kept showing the old animated model
+while the game got the new static one.
+> **Fixed:** the static path's delete-first now also removes the stale animated-preview assets
+> (`_Preview.prefab` / `_PreviewMesh.asset` / `_PreviewMat.mat`) from FactorySource, so `LoadPreview` falls
+> through to the fresh `_Model.prefab`. (The reverse, static→animated, was already fine: the animated bake
+> regenerates `_Preview`, which `LoadPreview` then correctly prefers.)
 
 #### E8 🟢 Texture leak per multi-material bake — ✅ FIXED (2026-07-12)
 The per-material albedos loaded for `PackTextures` (up-to-4096² RGBA32 each) were never `DestroyImmediate`d;
@@ -168,19 +174,27 @@ under backface culling, silently "fixed" by users reaching for Double-sided with
 > The prior exe is backed up + in git. Build recipe + reproducibility note now in `Tools/glbconv/BUILD.md` (previously
 > there was **no** build documentation at all — that gap is closed). Recommend a one-time in-game Cobra glance.
 
-#### T6 🟢 Silent-empty outcomes in the Blender scripts
-- `rig_anim.py`: a typo'd bone-prefix filter strips **all** fcurves → a frozen 1-frame clip bakes and
-  ships with exit 0. Should hard-fail on `kept == 0`.
-- `prep_model.py`: strip-only config with an over-broad substring exports an **empty** GLB "successfully"
-  (the no-meshes guard only runs when reduce is on). Failure surfaces later with no pointer to the strip list.
+#### T6 🟢 Silent-empty outcomes in the Blender scripts — ✅ FIXED (2026-07-13)
+- `rig_anim.py`: a typo'd bone-prefix filter stripped **all** fcurves → a frozen 1-frame clip baked and shipped
+  with exit 0. **Fixed:** hard-fails on `kept == 0`, listing the model's actual animated bones so the prefix can
+  be corrected.
+- `prep_model.py`: a strip-only config with an over-broad substring exported an **empty** GLB "successfully" (the
+  no-meshes guard only ran when reduce was on). **Fixed:** a no-mesh guard now runs before *every* export, failing
+  loudly with a pointer to the strip list. Both Blender-syntax-checked.
 
-#### T7 🟢 Tool lows (recorded, not urgent)
-glbconv: normals not inverse-transpose under non-uniform scale; the legacy single-material texture path
-can overwrite on duplicate material names (no `mat{i}` prefix); TGA descriptor byte omits alpha-depth bits
-(Unity tolerates); whole-OBJ built in memory (~2× peak); skinned GLBs double-transform through the static
-path. `prep_model.py`: comma-containing object names can't be targeted (CSV split). `blend_export.py`:
-texture recovery is by basename only (can rebind a same-named wrong texture) and guesses `.png` for
-extension-less images.
+#### T7 🟢 Tool lows — reviewed 2026-07-13, consciously deferred
+Each was re-examined and left as-is: fixing any needs a glbconv rebuild and/or *changes output* on current models
+(regression risk), for negligible benefit — none is reachable or impactful in the current pipeline. Revisit only if
+one actually bites.
+- glbconv **normals not inverse-transpose under non-uniform scale** — would change shading output on any
+  non-uniform-scaled source (rebuild + regression risk); unreported, and the runtime flattens PBR anyway.
+- glbconv **legacy single-material dup-material-name overwrite** — effectively unreachable: multi-material models
+  take the *grouped* path (already `mat{i}`-prefixed); a single-material model has one material.
+- glbconv **TGA alpha-depth byte / ~2× peak memory / skinned double-transform** — Unity tolerates the TGA byte,
+  memory is fine for these small models, and skinned models take the *animated* path, not the static one.
+- `prep_model.py` **comma-in-object-name** — inherent to the CSV `stripParts` interface the baker relies on; rare,
+  and it fails *visibly* (the part just isn't stripped), not silently.
+- `blend_export.py` **basename texture recovery / `.png` guess** — only affects rare `.blend` inputs; minor.
 
 **Verified clean** (checked and explicitly cleared): glbconv's `mat_none` handling, TriMat/outTri
 bookkeeping, MatName collision-proofing (`mat{i}_` prefix), the UV V-flip (including repeat-wrapped UVs),
