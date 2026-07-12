@@ -98,6 +98,14 @@ Model files aren't committed — download each per its license, point the Factor
 converter extracts it into `Assets/FactorySource/<name>/`, which stays out of the shipped mod). Authors + licenses in
 [**CREDITS.md**](CREDITS.md) (CC-BY requires attribution).
 
+## License
+All code, scripts, and docs in this repo are **MIT** ([LICENSE](LICENSE)) — fork the plugin, vendor the injection
+path, build on it. Two things the MIT grant does *not* cover, because they aren't ours: the game internals the docs
+describe (decompiled `Amplitude.*` code remains Amplitude Studios' property; the required game DLLs are gitignored
+and must be copied from your own install), and any 3D model you bake (each stays under its own license — see
+[CREDITS.md](CREDITS.md)). The ENC mod's own game-data content lives in the
+[ENCReload](https://github.com/sswelm/ENCReload) repo and is all-rights-reserved there.
+
 ## Config
 The plugin reads one JSON file — `<Humankind>\BepInEx\config\enc_models.json` (one entry per model: pawn description,
 skeleton + atlas GUIDs, transform, shading flags; animated entries add `clip` + `animated`/`animClip`/`animateBones`). The
@@ -121,6 +129,7 @@ Goal: ship the Factory as a distributable Unity package. **Done:** zero-config p
 converter (no .NET dependency), one consolidated injection path, full multi-material GLB support, **one-click animated
 import** (own rig + clip, Pick-driven fields), bake-time skin controls (albedo brightness/saturation, keep-black),
 configurable atlas size + bundle slimming (source models kept out of the shipped mod, DXT1 atlases), a static-model
-**donor-animation freeze**, and **fire-on-attack** (a model's clip triggered once by the unit's combat action). **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`), package scaffolding
-(`package.json` / asmdef / LICENSE), single-DLL plugin packaging, and an install guide + quickstart. Editor scripts are
+**donor-animation freeze**, **fire-on-attack** (a model's clip triggered once by the unit's combat action), and an
+**MIT license** on all code. **Remaining:** neutral naming (drop "ENC" → `HumankindModelFactory`), package scaffolding
+(`package.json` / asmdef), single-DLL plugin packaging, and an install guide + quickstart. Editor scripts are
 mirrored in `baker/` (the ENCReload mod repo tracks only its `Databases`).
