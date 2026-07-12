@@ -1,13 +1,17 @@
 # Framework Review — Universal Model Factory
 
-Living hardening roadmap. Three review passes so far, most recent first:
+Living hardening roadmap. Four review passes so far, most recent first:
 
-1. **2026-07-07 — full critical re-review** (this document's body): the runtime plugin read line-by-line,
+1. **2026-07-12 — architectural / structural review** (see "Architectural findings" below): stepped back from
+   line-bugs to *system structure*, given the stated direction (many more models; eventual distributable
+   package). Surfaced the per-pawn god-method (**A1, now fixed**), the four-place registry-schema duplication
+   (A3), and the `ModelEntry` god-object (A2), plus two suspected baker bugs (A4) and the package-readiness gap (A5).
+2. **2026-07-07 — full critical re-review**: the runtime plugin read line-by-line,
    the editor pipeline and all tools swept by independent reviewers, and the two headline Blender findings
    **empirically verified on Blender 5.1.2** (the same install the pipeline auto-detects).
-2. **2026-07-07 — external review** (received by mail): five findings + three comment-drift items, all
+3. **2026-07-07 — external review** (received by mail): five findings + three comment-drift items, all
    verified against the code and fixed same day (see "Fixed to date").
-3. **2026-07-05 — self-review**: registry safety, process timeouts, dead code. Fixed or consciously deferred.
+4. **2026-07-05 — self-review**: registry safety, process timeouts, dead code. Fixed or consciously deferred.
 
 **Overall verdict (unchanged and reinforced):** disciplined code for what it is — a reflection-heavy
 BepInEx mod poking at a closed engine. Verified strengths: per-hook and per-model failure isolation,
@@ -37,6 +41,8 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-07 | Comment drift: `enc_models.txt`→`.json`; ModelRegistry header no longer claims JsonUtility works at game runtime (it silently returns empty there — the plugin **must** keep Newtonsoft); `ReadDonorFragments` header matches its whole-log-scan body |
 | 07-07 | *(this review)* `EnsureRegistered` latched `registered=true` on empty entries, permanently defeating the new load-retry (retry would succeed, registration never ran again → injection silently dead for the session). Now latches only when the load actually succeeded. |
 | 07-07 | csproj: `DefaultItemExcludes baker\**` — glbconv's .NET 8 publish output was being swept in as candidate assemblies, making the net471 build fail with 271 phantom type errors |
+| 07-12 | **A1**: `OnPawnAdded` decomposed from a ~190-line per-pawn-per-frame god-method into a dispatcher + one named handler per behavior (verified in-game + 12/12 bake smoke test) |
+| 07-12 | Registry kept **alphabetical** on load AND save (`ModelRegistry.SortByName`) — a stable Factory dropdown and no more meaningless reorder churn in the git-tracked backup on every bake |
 
 ---
 
@@ -156,6 +162,57 @@ defensively guarded throughout).
 
 ---
 
+## Architectural findings — 2026-07-12
+
+Where 07-07 hunted line-bugs, this pass treats *system structure* as the risk. The framework has the signature
+of software that grew one feature-flag at a time; at its current size that accretion — not any single bug — is
+the dominant risk, especially given the goal of many more models and an eventual shippable package.
+
+#### A1 🔴 `OnPawnAdded` was a ~190-line per-pawn-per-frame god-method — ✅ FIXED (2026-07-12, `9b956a7`)
+The hottest hook (runs per pawn-add per frame once any animated/freeze model is registered) inlined five
+behaviors — skeleton rescue, freeze, loop, fire-once, deploy + recoil overlay. Each feature bolted on another
+branch, and the branches interact (`deployOnStop && fireOnAttack`). Untestable as a unit; the interactions
+lived only in the author's head.
+> **Fixed:** decomposed into a thin dispatcher + one named handler per concern — `TryReadLastPawn`,
+> `ForceOurSkeleton`, `ApplyFreeze`, `ApplyAnimatedPose`, with the pose-time logic split into a strategy
+> dispatch (`ComputePoseTime` → `DeployPoseTime`/`RecoilOverlay`, `FireOncePoseTime`, loop) and the tail steps
+> (`ClearAimLayer`/`ApplyPositionOffset`/`ApplyScale`/`LogPoseHookOnce`). Strictly behavior-preserving: same
+> reflection reads, write-backs, ordering, thresholds, and log-gate fields; the boxed `PawnEntry` is threaded
+> through a small `PawnCtx` and shared by reference so every `SetMember` lands on the same box. **Adding a new
+> model behavior is now a new method, not another branch on the hot path.** Verified in-game across all three
+> behaviors (drones loop, howitzer deploy+recoil, zeppelins freeze), each with multiple instances, plus a
+> 12/12 bake smoke test.
+
+#### A2 🟡 `ModelEntry` is a ~35-field bag mixing four concerns
+Registry data, runtime-resolved handles (`skeleton`, `animId`, `skeletonId`), per-instance concurrent state
+(`fireGuidQueue`, `deployProgress`, `deploySamples`), and behavior config all live in one class — so every new
+feature touches the parser, the POCO, and the (now-decomposed) hot loop in lockstep. Natural next split, pairing
+with A3: a plain serialized config record vs. a runtime-state object.
+
+#### A3 🟡 The cross-repo registry schema is defined in FOUR places, guarded by a grep
+`ModelDef` (editor writer, JsonUtility) · `ModelEntry` (runtime) · the Newtonsoft parse · the regex-fallback
+parse — a new field is edited in all four. `check_schema_parity.sh` only checks *plugin-read keys ⊆ ModelDef
+fields*; it does **not** verify types, defaults, or that the regex fallback stayed in sync with the Newtonsoft
+path. Highest structural leverage, since the schema is touched on every new field. Options: one shared serialized
+POCO, or make the parity check type-aware and cover the regex path.
+
+#### A4 🟡 Two suspected baker bugs (flagged from reading — verify before fixing)
+- `UniversalBaker.MeasureLongestAxis` (animated path) encapsulates each child's `sharedMesh.bounds` in
+  *mesh-local* space without applying the renderer's transform-relative-to-root; the static combine does
+  (`rootInv * localToWorldMatrix`). A multi-node animated FBX could mis-measure its extent → wrong scale factor.
+  Verify against the multi-part `TowedGunHowitzers`.
+- `BuildMultiAtlasAndRemap` matches submesh→atlas-rect via `SimplifyMat` `Contains` both ways after stripping
+  "mat"/"material"/"_"; two materials like `body`/`body_trim` can collide onto the same rect (first `FindIndex`
+  wins) → silent wrong texture. Verify on a multi-material model.
+
+#### A5 🟢 Package-readiness (the stated goal) — not close yet
+ENC branding hardcoded (`enc_models.json`, `ENC.*` EditorPrefs); Blender discovery Windows/Program-Files-only;
+machine-specific paths (D: backup, `C:\GameData` junction); the ENCReload README sends a package consumer to a
+*different* repo for all docs. None are bugs — just the gap between "works on my machine" and "shippable to
+strangers." Overlaps the deferred list's ENC-branding, Blender-PATH-discovery, and Blender-free-static items.
+
+---
+
 ## Still deferred (from earlier passes — unchanged)
 
 - **#3 Blender discovery** is Program-Files-only and `BlenderAvailable()` never probes PATH — the biggest
@@ -183,6 +240,8 @@ defensively guarded throughout).
 ---
 
 ## Recommended fix order
+
+**Architectural (2026-07-12):** ~~**A1**~~ ✅ done. Next: **A3** (collapse or type-guard the four-place schema) → **A2** (`ModelEntry` split) → **A4** (verify the two suspected baker bugs before fixing).
 
 1. ~~**E1**~~ ✅ done · ~~**T1**~~ ✅ done · ~~**T2**~~ ✅ done — tier 1 complete.
 2. **E2** (Remove key + honest status) · **E4** (bound the pipe drain — completes the 07-05 timeout work).
