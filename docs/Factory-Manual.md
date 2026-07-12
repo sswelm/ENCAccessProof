@@ -362,15 +362,16 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   bake can't regenerate an *animated multi-material* model's per-material albedos (they're keyed to the real name), so the
   howitzer's throwaway bake exercises its skeleton path, not its texture packing — the multi-material atlas code is
   covered instead by the *static* multi-material AttackHelicopter, whose albedos `glbconv` does regenerate.
-- **Bake Feature Test** — `Tools ▸ ENC ▸ Bake Feature Test`. Complements the smoke test: where that proves models *bake*,
-  this proves each baker *feature knob* does what it claims. It bakes a self-contained synthetic cube (single- and
-  two-material) through `UniversalBaker.Build` with one knob toggled at a time and asserts a feature-specific invariant on
-  the baked mesh/atlas — `doubleSided` doubles the triangle count, Faceted unwelds (`vertexCount == triangles.Length`),
-  `heightUV` maps V to height, `atlasMaxDim` caps the atlas, `size`/`positionOffset` land where configured,
-  `albedoBrightness`/`albedoSaturation` change the atlas (best-effort pixel read — SKIP if the DXT1 atlas isn't
-  CPU-readable). Fully self-contained (no external model) and non-destructive (throwaway `__feat_*` names, cleaned up).
-  Tier 1 covers the static path; Blender-dependent (`targetTris`, `stripParts`) and animated (`animClip`/`animateBones`/
-  `animUnitFix`) knobs are a planned Tier 2 that needs a rigged fixture.
+- **Bake Feature Test** — `Tools ▸ ENC ▸ Bake Feature Test` (**Tier 1**) and `… (Tier 2 — Blender + animated)`. Complements
+  the smoke test: where that proves models *bake*, this proves each baker *feature knob* does what it claims, by baking a
+  fixture with one knob toggled at a time and asserting a feature-specific invariant on the baked mesh/atlas.
+  **Tier 1** (fast, self-contained synthetic cube): `doubleSided` doubles the triangle count, Faceted unwelds
+  (`vertexCount == triangles.Length`), `heightUV` maps V to height, `atlasMaxDim` caps the atlas, `size`/`positionOffset`
+  land where configured, `albedoBrightness`/`albedoSaturation` change the atlas (best-effort pixel read — SKIP if the DXT1
+  atlas isn't CPU-readable). **Tier 2** (slower, real Blender): `targetTris` decimates a *generated* high-poly grid,
+  `stripParts` drops a *generated* named object, and the animated pipeline (`BuildAnimated` → `_Skeleton` + `_Clips`) is
+  exercised by borrowing up to two rigged models from the registry (SKIP if none on disk — a rigged FBX can't be
+  synthesized). Both non-destructive (throwaway `__feat_*` names, cleaned up).
 - **Schema parity** — `bash Tools/check_schema_parity.sh`. The registry is written by the baker (`ModelDef`, JsonUtility)
   and read by the plugin two ways (`ModelEntry` via Newtonsoft, plus a regex fallback) across two separate repos, kept in
   sync by hand. The guard makes drift loud: it asserts (1) the Newtonsoft and regex read paths read the **same** key set,
