@@ -44,6 +44,7 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-12 | **A1**: `OnPawnAdded` decomposed from a ~190-line per-pawn-per-frame god-method into a dispatcher + one named handler per behavior (verified in-game + 12/12 bake smoke test) |
 | 07-12 | Registry kept **alphabetical** on load AND save (`ModelRegistry.SortByName`) — a stable Factory dropdown and no more meaningless reorder churn in the git-tracked backup on every bake |
 | 07-12 | **A3**: `check_schema_parity.sh` rewritten — Newtonsoft==regex read paths, read⊆written, and read-cast==declared-type; verified to fail on each drift type (Option A: verify, don't merge) |
+| 07-12 | **T3/T4** (`rig_anim.py`): albedo grab traces the Principled Base Color (not the first image node); join re-binds the armature modifier so a bone-parented-prop-first model can't export rigid. **T5** source-fixed (glbconv mirrored-node winding) — exe rebuild deferred (SharpGLTF UV-decode drift; no current model needs it), recipe + caveat in `Tools/glbconv/BUILD.md` |
 
 ---
 
@@ -125,20 +126,29 @@ also under-reported (counted polys, not tris).
 > computes ratio 0.25 and lands at 4,999 output triangles (independently re-imported and counted); the old
 > code would have produced ~10,000. Triangle inputs are byte-identical in behaviour (each tri counts 1).
 
-#### T3 🟡 `rig_anim.py` albedo grab takes the *first* `TEX_IMAGE` node, not Base Color
-Node order is creation order; a PBR material with normal/roughness maps can hand the Factory a **normal
+#### T3 🟡 `rig_anim.py` albedo grab takes the *first* `TEX_IMAGE` node, not Base Color — ✅ FIXED (2026-07-12)
+Node order is creation order; a PBR material with normal/roughness maps could hand the Factory a **normal
 map as the atlas albedo** — purple/garbled skin, no error.
-- **Fix:** trace the Principled BSDF's Base Color input link; fall back to any TEX_IMAGE only if unlinked.
+> **Fixed:** `base_color_image()` now traces the Principled BSDF's **Base Color** input upstream to the nearest
+> image node (through a mix/gamma node if present); falls back to any TEX_IMAGE only when there's no Principled or
+> the input is unlinked. Blender-syntax-checked.
 
-#### T4 🟡 `rig_anim.py` `join()` keeps only the active object's modifiers
-Active is `meshes[0]` (scene order). If that happens to be a bone-parented prop without an Armature
-modifier, the joined mesh exports with **no skin binding** — the whole model rigid/frozen, all green logs.
-- **Fix:** pick a mesh that has an `'ARMATURE'` modifier as the join target (or re-add one bound to the armature).
+#### T4 🟡 `rig_anim.py` `join()` keeps only the active object's modifiers — ✅ FIXED (2026-07-12)
+Active was `meshes[0]` (scene order); if that was a bone-parented prop without an Armature modifier, the joined
+mesh exported with **no skin binding** — the whole model rigid/frozen, all green logs.
+> **Fixed two ways:** the join target is now chosen as a mesh that *has* an armature modifier (fallback `meshes[0]`),
+> and — the real guarantee — after the join the code re-adds an armature modifier bound to `arm` if none survived.
+> The joined mesh keeps every source mesh's vertex groups regardless, so re-binding fully restores skinning.
 
-#### T5 🟡 glbconv: negative-scale (mirrored) nodes don't flip triangle winding
-Mirroring half a symmetric vehicle via scale (-1,1,1) is routine; those halves come out inside-out —
-invisible under backface culling, silently "fixed" by users reaching for Double-sided without knowing why.
-- **Fix:** if `M.GetDeterminant() < 0`, emit `(A,C,B)`.
+#### T5 🟡 glbconv: negative-scale (mirrored) nodes don't flip triangle winding — ⚠ SOURCE FIXED, exe rebuild pending (2026-07-12)
+Mirroring half a symmetric vehicle via scale (−1,1,1) is routine; those halves come out inside-out — invisible
+under backface culling, silently "fixed" by users reaching for Double-sided without knowing why.
+> **Source fixed** (`Program.cs.src`): when `node.WorldMatrix.GetDeterminant() < 0`, emit the triangle as `(A,C,B)`.
+> **The shipped `glbconv.exe` was NOT rebuilt**, so the fix is inert until a deliberate rebuild — because a rebuild
+> also pulls a SharpGLTF UV-decode change (raw tiled UVs → pre-folded `[0,1)`), which the baker's per-vertex fold makes
+> functionally equivalent *except* at tile seams (measured: **3 of 208,198** Cobra verts shift, 0.0014%). No current
+> model has a mirrored node, so nothing needs T5 today. See `Tools/glbconv/BUILD.md` for the rebuild recipe + the
+> pin-your-SharpGLTF-version reproducibility caveat (the original exe's version could not be reproduced — a real gap).
 
 #### T6 🟢 Silent-empty outcomes in the Blender scripts
 - `rig_anim.py`: a typo'd bone-prefix filter strips **all** fcurves → a frozen 1-frame clip bakes and
