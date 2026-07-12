@@ -620,9 +620,13 @@ namespace ENCAccessProof
             return null;
         }
 
-        // The game just wrote pawnEntries[pawnCount-1]. If it's one of our animated models, force Pose0 to OUR clip
-        // (weight 1, advancing time) and zero the other poses — so it plays our animation instead of the donor's.
-        // sumWeight stays 1 (never zero all — that divides by zero => NaN => invisible).
+        // Per-pawn state read once at the top of the hook and threaded through the behavior handlers. `entry` is the boxed
+        // PawnEntry struct — every SetMember mutates that one box, and the handler writes it back via pawnEntries.SetValue.
+        struct PawnCtx { public Array pawnEntries; public int idx; public object entry; public int skelId; public int descId; }
+
+        // The game just wrote pawnEntries[pawnCount-1]. Match it to one of our models and hand off to the behavior that model
+        // wants: FREEZE (pin the donor clip to frame 0) or an ANIMATED pose whose time is driven by loop / fire-once / deploy.
+        // Each behavior is its own method below, so adding a new one is a new handler — not another branch on this hot path.
         internal static void OnPawnAdded(object pawnManager)
         {
             try
@@ -630,189 +634,233 @@ namespace ENCAccessProof
                 if (anyAnimated == null) anyAnimated = entries != null && entries.Any(x => x.ca != 0 || x.cb != 0 || x.cc != 0 || x.cd != 0);
                 if (anyFreeze == null) anyFreeze = entries != null && entries.Any(x => x.freezeDonorAnim);
                 if ((anyAnimated != true && anyFreeze != true) || !Plugin.UniversalInjectOn.Value) return;
-                var pawnEntries = GetMember(pawnManager, "pawnEntries") as Array;
-                if (pawnEntries == null) return;
-                int pawnCount = Convert.ToInt32(GetMember(pawnManager, "pawnCount"));
-                if (pawnCount <= 0 || pawnCount > pawnEntries.Length) return;
-                int idx = pawnCount - 1;
-                var entry = pawnEntries.GetValue(idx);                 // boxed PawnEntry (struct)
-                int skelId = Convert.ToInt32(GetMember(entry, "SkeletonId"));
-                int descId = Convert.ToInt32(GetMember(entry, "PawnDescriptorId"));
+                if (!TryReadLastPawn(pawnManager, out var ctx)) return;
 
                 // Match this pawn to one of our entries (animated OR freeze-static) by OUR baked skeleton id (the correctly
                 // skinned pawn), else by the descriptor learned from that first correct pawn. The game spawns a unit's LATER
                 // instances on a different vanilla skeleton; without the descriptor fallback only the first instance is
                 // handled and the rest slip through (animating / rocking on the donor's rig).
-                var e = HookedEntryFor(skelId);
-                if (e != null) e.descId = descId;                      // learn our unit's descriptor from the correct pawn
-                else if (descId >= 0) e = entries.FirstOrDefault(x => Hooked(x) && x.descId >= 0 && x.descId == descId);
+                var e = HookedEntryFor(ctx.skelId);
+                if (e != null) e.descId = ctx.descId;                  // learn our unit's descriptor from the correct pawn
+                else if (ctx.descId >= 0) e = entries.FirstOrDefault(x => Hooked(x) && x.descId >= 0 && x.descId == ctx.descId);
                 if (e == null) return;
 
-                // FORCE our skeleton so this pawn skins by OUR rig. A LATER instance the game spawned on a vanilla skeleton
-                // would otherwise draw mis-skinned (animated) or WARP when we pin a foreign skeleton's frame 0 (freeze — the
-                // vertical, "shape-shifting" airship). Shared by both paths, so every instance ends up on our skeleton.
-                if (skelId != e.skeletonId)
-                {
-                    SetMember(entry, "SkeletonId", e.skeletonId);
-                    if (!rescueLogged) { rescueLogged = true; Plugin.Log.LogInfo($"[Uni] rescued wrong-skeleton pawn: skelId {skelId} -> {e.skeletonId} (descId {descId})"); }
-                }
+                ForceOurSkeleton(ctx, e);
 
-                // FREEZE (static): pin every pose's Time to frame 0 so the donor clip can't advance — the borrowed mesh holds
-                // rigid instead of inheriting the donor's hover/drive bob. Weights untouched (keep the pose SHAPE, stop the
-                // MOTION); the pawn still glides tile-to-tile (transform-driven, not in the pose). Re-applied every frame (this
-                // Postfix runs per pawn-add per frame), so it holds. No clip of our own to play, so it returns early.
-                if (e.freezeDonorAnim && e.animId < 0)
-                {
-                    for (int i = 0; i < 9; i++)
-                    {
-                        var pose = GetMember(entry, "Pose" + i);
-                        if (pose == null) continue;
-                        SetMember(pose, "Time", 0f);
-                        SetMember(entry, "Pose" + i, pose);
-                    }
-                    pawnEntries.SetValue(entry, idx);
-                    if (freezeLogSkels == null) freezeLogSkels = new HashSet<int>();
-                    if (freezeLogSkels.Add(skelId) && freezeLogSkels.Count <= 6)
-                        Plugin.Log.LogInfo($"[Uni] freeze: '{e.resourceName}' pinned (skelId {skelId} -> {e.skeletonId}, descId {descId})");
-                    return;
-                }
-
-                // Play OUR clip on Pose0 (weight 1, advancing time); zero the others. Never all-zero (=> NaN => invisible).
-                var pose0 = GetMember(entry, "Pose0");                 // boxed PawnEntryPose (struct)
-                SetMember(pose0, "AnimationId", (uint)e.animId);
-                SetMember(pose0, "Weight", 1f);
-                // PawnEntryPose.Time is NORMALIZED (sampler does Mathf.Repeat(Time,1) = one loop). Divide by the clip
-                // duration so it plays at REAL speed and hits every frame; raw Time.time = duration× too fast + frame-skipping.
-                float dur = e.animDuration > 0.001f ? e.animDuration : 1f;
-                float poseTime;
-                if (e.deployOnStop)
-                {
-                    // DEPLOY-ON-STOP (gradual): hold the pose time Plugin.Update has ramped for THIS pawn's unit — it plays the
-                    // deploy clip forward (legs spread) after the unit stops and rewinds (fold) while it moves. Match by nearest
-                    // recorded pawn position (Unity render coords). Default deployPoseTime if unmatched (idle -> deployed).
-                    var osD = GetMember(entry, "ObjectSpace");
-                    UnityEngine.Vector3 dpos = (UnityEngine.Vector3)GetMember(osD, "Translation");
-                    poseTime = e.deployPoseTime;
-                    float bestSqD = 3f * 3f;
-                    lock (e.deploySamples)
-                        for (int i = 0; i < e.deploySamples.Count; i++)
-                        {
-                            float d = (e.deploySamples[i].pos - dpos).sqrMagnitude;
-                            if (d < bestSqD) { bestSqD = d; poseTime = e.deploySamples[i].poseTime; }
-                        }
-                    // RECOIL-ON-FIRE overlay: when this howitzer is DEPLOYED (held near deployPoseTime) AND it just fired, sweep
-                    // the pose time up through the RECOIL TAIL [deployPoseTime, ~1) once, then fall back to the deployed hold.
-                    // The clip's tail after deployPoseTime is the extracted kickback; the deploy occupies [0, deployPoseTime].
-                    // Same per-instance fire match as the fireOnAttack branch (nearest active fire by render position).
-                    if (e.fireOnAttack && poseTime >= e.deployPoseTime * 0.9f)
-                    {
-                        float bestSqF = 4f * 4f, bestStartF = -1f;
-                        lock (e.activeFires)
-                            for (int i = 0; i < e.activeFires.Count; i++)
-                            {
-                                float d = (e.activeFires[i].pos - dpos).sqrMagnitude;
-                                if (d < bestSqF) { bestSqF = d; bestStartF = e.activeFires[i].startTime; }
-                            }
-                        if (bestStartF >= 0f)
-                        {
-                            const float recoilMax = 0.999f;   // stay below 1.0 (Mathf.Repeat wraps 1.0 -> frame 0 = folded)
-                            float rspd = e.recoilSpeed > 0f ? e.recoilSpeed : 1f;
-                            float recoilDur = dur * (recoilMax - e.deployPoseTime) / rspd;   // tail duration at authored speed, sped up by recoilSpeed
-                            float elapsedF = UnityEngine.Time.time - bestStartF;
-                            if (recoilDur > 0.0001f && elapsedF < recoilDur)
-                            {
-                                poseTime = e.deployPoseTime + (elapsedF / recoilDur) * (recoilMax - e.deployPoseTime);
-                                if (recoilLogStart != bestStartF)
-                                { recoilLogStart = bestStartF; Plugin.Log.LogInfo($"[Deploy-Fire] '{e.resourceName}' RECOIL sweep (dur={recoilDur:0.00}s, poseTime {e.deployPoseTime:0.00}->{recoilMax}, matchDist={UnityEngine.Mathf.Sqrt(bestSqF):0.0}u)"); }
-                            }
-                        }
-                    }
-                }
-                else if (e.fireOnAttack)
-                {
-                    // FIRE-ONCE, PER-INSTANCE: rest at frame 0 unless THIS pawn is the one that bombarded. The combat hook
-                    // records the firing pawn's render position (via its PresentationUnit); we match this pawn to the nearest
-                    // active fire by ObjectSpace position (both Unity render coords) and play one 0->1 pass from that fire's
-                    // start time. Only the firer animates — every other howitzer of the type stays at rest.
-                    poseTime = 0f;
-                    var osT = GetMember(entry, "ObjectSpace");
-                    UnityEngine.Vector3 tpos = (UnityEngine.Vector3)GetMember(osT, "Translation");
-                    float bestSq = float.MaxValue, bestStart = -1f;
-                    lock (e.activeFires)
-                    {
-                        for (int i = 0; i < e.activeFires.Count; i++)
-                        {
-                            float d = (e.activeFires[i].pos - tpos).sqrMagnitude;
-                            if (d < bestSq) { bestSq = d; bestStart = e.activeFires[i].startTime; }
-                        }
-                    }
-                    const float matchRadiusSq = 4f * 4f;   // a pawn within 4u of a fire is the firer (tiles are spaced wider)
-                    if (bestStart >= 0f && bestSq <= matchRadiusSq)
-                    {
-                        float elapsed = UnityEngine.Time.time - bestStart;
-                        poseTime = elapsed >= dur ? 0f : elapsed / dur;   // one pass, then rest (Update prunes finished fires)
-                    }
-                }
-                else
-                {
-                    poseTime = UnityEngine.Time.time / dur;   // default: continuous loop (a drone's spinning prop)
-                }
-                SetMember(pose0, "Time", poseTime);
-                SetMember(entry, "Pose0", pose0);
-                for (int i = 1; i < 9; i++)
-                {
-                    var pose = GetMember(entry, "Pose" + i);
-                    if (pose == null) continue;
-                    SetMember(pose, "Weight", 0f);
-                    SetMember(entry, "Pose" + i, pose);
-                }
-                // Clear the procedural AIM layer (PawnEntry.BoneRotation0-3 = SkeletonBoneIndex/AxisIndex/Angle): the game aims
-                // an artillery barrel by layering a bone rotation ON TOP of the pose, which twists our barrel (most visible while
-                // moving, as the aim swings). Zero the angles so ONLY our baked clip drives the skeleton. No-op for un-aimed models.
-                for (int i = 0; i < 4; i++)
-                {
-                    var br = GetMember(entry, "BoneRotation" + i);
-                    if (br == null) continue;
-                    SetMember(br, "Angle", 0f);
-                    SetMember(entry, "BoneRotation" + i, br);
-                }
-                // Runtime position offset. Static models bake position into the mesh; the animated path can't, so we
-                // apply it to the pawn's world ObjectSpace here. z = height -> world up (Y); x/y -> world plane. Re-applied
-                // each frame on the game's fresh world position, so it never accumulates. Logged once to confirm the axis.
-                if (e.position != UnityEngine.Vector3.zero)
-                {
-                    var os = GetMember(entry, "ObjectSpace");                        // boxed TRS
-                    var tr = (UnityEngine.Vector3)GetMember(os, "Translation");
-                    if (!posLogged) { posLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} pawn world pos {tr} + registry position {e.position} (z->up Y)"); }
-                    tr.x += e.position.x; tr.y += e.position.z; tr.z += e.position.y;   // registry z (height) -> world Y (up)
-                    SetMember(os, "Translation", tr);
-                    SetMember(entry, "ObjectSpace", os);
-                }
-                // Runtime scale multiplier: fix an animated model baked at the wrong scale WITHOUT a re-bake (the howitzer's
-                // 100x FBX unit-conversion oversize -> scale 0.01). Multiplies the pawn's ObjectSpace.Scale each frame.
-                if (e.scale != 1f && e.scale > 0f)
-                {
-                    var oss = GetMember(entry, "ObjectSpace");
-                    var scObj = GetMember(oss, "Scale");
-                    if (scObj is float sf) SetMember(oss, "Scale", sf * e.scale);
-                    else if (scObj is UnityEngine.Vector3 sv) SetMember(oss, "Scale", sv * e.scale);
-                    else if (scObj != null) { try { SetMember(oss, "Scale", Convert.ToSingle(scObj) * e.scale); } catch { } }
-                    SetMember(entry, "ObjectSpace", oss);
-                    if (!scaleLogged) { scaleLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} runtime scale x{e.scale} (ObjectSpace.Scale was {scObj})"); }
-                }
-                pawnEntries.SetValue(entry, idx);
-                if (poseHookSeen == null) poseHookSeen = new HashSet<string>();
-                if (poseHookSeen.Add(e.resourceName))
-                {
-                    var osd = GetMember(entry, "ObjectSpace");
-                    // Diagnostic: dump the pawn's runtime transform — a zero/huge Scale or an off Translation explains an
-                    // animated model that's fine in the editor preview but invisible in-game (docs/Firing-On-Attack.md).
-                    Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {skelId} -> {e.skeletonId}, desc {descId}); " +
-                        $"ObjectSpace T={GetMember(osd, "Translation")} S={GetMember(osd, "Scale")} R={GetMember(osd, "Rotation")} poseW={GetMember(pose0, "Weight")}");
-                }
+                // FREEZE (static): no clip of our own — pin the donor pose to frame 0 and stop. ANIMATED: play our clip on Pose0.
+                if (e.freezeDonorAnim && e.animId < 0) ApplyFreeze(ctx, e);
+                else ApplyAnimatedPose(ctx, e);
             }
             // one-shot log: a bare catch here hid member renames after a game update (models just stopped animating, no clue why).
             catch (Exception ex) { if (!poseErrLogged) { poseErrLogged = true; Plugin.Log.LogError("[Uni] OnPawnAdded (pose hook disabled this pawn): " + ex); } }
+        }
+
+        // Read the just-written PawnEntry (pawnCount-1) + its skeleton/descriptor ids, or false if there's nothing to act on.
+        static bool TryReadLastPawn(object pawnManager, out PawnCtx ctx)
+        {
+            ctx = default;
+            var pawnEntries = GetMember(pawnManager, "pawnEntries") as Array;
+            if (pawnEntries == null) return false;
+            int pawnCount = Convert.ToInt32(GetMember(pawnManager, "pawnCount"));
+            if (pawnCount <= 0 || pawnCount > pawnEntries.Length) return false;
+            int idx = pawnCount - 1;
+            var entry = pawnEntries.GetValue(idx);                     // boxed PawnEntry (struct)
+            ctx = new PawnCtx
+            {
+                pawnEntries = pawnEntries, idx = idx, entry = entry,
+                skelId = Convert.ToInt32(GetMember(entry, "SkeletonId")),
+                descId = Convert.ToInt32(GetMember(entry, "PawnDescriptorId")),
+            };
+            return true;
+        }
+
+        // FORCE our skeleton so this pawn skins by OUR rig. A LATER instance the game spawned on a vanilla skeleton would
+        // otherwise draw mis-skinned (animated) or WARP when we pin a foreign skeleton's frame 0 (freeze — the vertical,
+        // "shape-shifting" airship). Shared by both paths, so every instance ends up on our skeleton.
+        static void ForceOurSkeleton(PawnCtx ctx, ModelEntry e)
+        {
+            if (ctx.skelId == e.skeletonId) return;
+            SetMember(ctx.entry, "SkeletonId", e.skeletonId);
+            if (!rescueLogged) { rescueLogged = true; Plugin.Log.LogInfo($"[Uni] rescued wrong-skeleton pawn: skelId {ctx.skelId} -> {e.skeletonId} (descId {ctx.descId})"); }
+        }
+
+        // FREEZE (static): pin every pose's Time to frame 0 so the donor clip can't advance — the borrowed mesh holds rigid
+        // instead of inheriting the donor's hover/drive bob. Weights untouched (keep the pose SHAPE, stop the MOTION); the
+        // pawn still glides tile-to-tile (transform-driven, not in the pose). Re-applied every frame (per pawn-add), so it holds.
+        static void ApplyFreeze(PawnCtx ctx, ModelEntry e)
+        {
+            for (int i = 0; i < 9; i++)
+            {
+                var pose = GetMember(ctx.entry, "Pose" + i);
+                if (pose == null) continue;
+                SetMember(pose, "Time", 0f);
+                SetMember(ctx.entry, "Pose" + i, pose);
+            }
+            ctx.pawnEntries.SetValue(ctx.entry, ctx.idx);
+            if (freezeLogSkels == null) freezeLogSkels = new HashSet<int>();
+            if (freezeLogSkels.Add(ctx.skelId) && freezeLogSkels.Count <= 6)
+                Plugin.Log.LogInfo($"[Uni] freeze: '{e.resourceName}' pinned (skelId {ctx.skelId} -> {e.skeletonId}, descId {ctx.descId})");
+        }
+
+        // ANIMATED: play OUR clip on Pose0 (weight 1, advancing time); zero the others (never all-zero => NaN => invisible),
+        // clear the aim layer, and apply the runtime position/scale. The pose Time comes from the model's behavior below.
+        static void ApplyAnimatedPose(PawnCtx ctx, ModelEntry e)
+        {
+            var entry = ctx.entry;
+            var pose0 = GetMember(entry, "Pose0");                     // boxed PawnEntryPose (struct)
+            SetMember(pose0, "AnimationId", (uint)e.animId);
+            SetMember(pose0, "Weight", 1f);
+            // PawnEntryPose.Time is NORMALIZED (sampler does Mathf.Repeat(Time,1) = one loop). ComputePoseTime divides by the
+            // clip duration so it plays at REAL speed and hits every frame; raw Time.time = duration× too fast + frame-skipping.
+            float dur = e.animDuration > 0.001f ? e.animDuration : 1f;
+            SetMember(pose0, "Time", ComputePoseTime(e, entry, dur));
+            SetMember(entry, "Pose0", pose0);
+            for (int i = 1; i < 9; i++)
+            {
+                var pose = GetMember(entry, "Pose" + i);
+                if (pose == null) continue;
+                SetMember(pose, "Weight", 0f);
+                SetMember(entry, "Pose" + i, pose);
+            }
+            ClearAimLayer(entry);
+            ApplyPositionOffset(e, entry);
+            ApplyScale(e, entry);
+            ctx.pawnEntries.SetValue(entry, ctx.idx);
+            LogPoseHookOnce(ctx, e, pose0);
+        }
+
+        // The normalized pose time for one animated pawn, per the model's behavior: continuous loop (a spinning prop),
+        // fire-once (rest at 0, one pass when this instance bombards), or deploy-on-stop (+ recoil overlay).
+        static float ComputePoseTime(ModelEntry e, object entry, float dur)
+        {
+            if (e.deployOnStop) return DeployPoseTime(e, entry, dur);
+            if (e.fireOnAttack) return FireOncePoseTime(e, entry, dur);
+            return UnityEngine.Time.time / dur;                        // default: continuous loop (a drone's spinning prop)
+        }
+
+        // DEPLOY-ON-STOP (gradual): hold the pose time Plugin.Update ramped for THIS pawn's unit — the deploy clip plays
+        // forward (legs spread) after the unit stops and rewinds (fold) while it moves. Match by nearest recorded pawn
+        // position (Unity render coords); default deployPoseTime if unmatched (idle -> deployed).
+        static float DeployPoseTime(ModelEntry e, object entry, float dur)
+        {
+            var osD = GetMember(entry, "ObjectSpace");
+            UnityEngine.Vector3 dpos = (UnityEngine.Vector3)GetMember(osD, "Translation");
+            float poseTime = e.deployPoseTime;
+            float bestSqD = 3f * 3f;
+            lock (e.deploySamples)
+                for (int i = 0; i < e.deploySamples.Count; i++)
+                {
+                    float d = (e.deploySamples[i].pos - dpos).sqrMagnitude;
+                    if (d < bestSqD) { bestSqD = d; poseTime = e.deploySamples[i].poseTime; }
+                }
+            // RECOIL-ON-FIRE overlay: when this howitzer is DEPLOYED (held near deployPoseTime) AND it just fired, sweep the
+            // pose time up through the recoil tail once. The clip's tail after deployPoseTime is the extracted kickback.
+            if (e.fireOnAttack && poseTime >= e.deployPoseTime * 0.9f) poseTime = RecoilOverlay(e, dpos, dur, poseTime);
+            return poseTime;
+        }
+
+        // Sweep the pose time up through the RECOIL TAIL [deployPoseTime, ~1) once from this pawn's nearest active fire, then
+        // fall back to the deployed hold. Same per-instance fire match as fire-once (nearest active fire by render position).
+        static float RecoilOverlay(ModelEntry e, UnityEngine.Vector3 dpos, float dur, float poseTime)
+        {
+            float bestSqF = 4f * 4f, bestStartF = -1f;
+            lock (e.activeFires)
+                for (int i = 0; i < e.activeFires.Count; i++)
+                {
+                    float d = (e.activeFires[i].pos - dpos).sqrMagnitude;
+                    if (d < bestSqF) { bestSqF = d; bestStartF = e.activeFires[i].startTime; }
+                }
+            if (bestStartF < 0f) return poseTime;
+            const float recoilMax = 0.999f;                            // stay below 1.0 (Mathf.Repeat wraps 1.0 -> frame 0 = folded)
+            float rspd = e.recoilSpeed > 0f ? e.recoilSpeed : 1f;
+            float recoilDur = dur * (recoilMax - e.deployPoseTime) / rspd;   // tail duration at authored speed, sped up by recoilSpeed
+            float elapsedF = UnityEngine.Time.time - bestStartF;
+            if (recoilDur > 0.0001f && elapsedF < recoilDur)
+            {
+                poseTime = e.deployPoseTime + (elapsedF / recoilDur) * (recoilMax - e.deployPoseTime);
+                if (recoilLogStart != bestStartF)
+                { recoilLogStart = bestStartF; Plugin.Log.LogInfo($"[Deploy-Fire] '{e.resourceName}' RECOIL sweep (dur={recoilDur:0.00}s, poseTime {e.deployPoseTime:0.00}->{recoilMax}, matchDist={UnityEngine.Mathf.Sqrt(bestSqF):0.0}u)"); }
+            }
+            return poseTime;
+        }
+
+        // FIRE-ONCE, PER-INSTANCE: rest at frame 0 unless THIS pawn is the one that bombarded. Match this pawn to the nearest
+        // active fire by ObjectSpace position (both Unity render coords) and play one 0->1 pass from that fire's start time.
+        // Only the firer animates — every other howitzer of the type stays at rest.
+        static float FireOncePoseTime(ModelEntry e, object entry, float dur)
+        {
+            float poseTime = 0f;
+            var osT = GetMember(entry, "ObjectSpace");
+            UnityEngine.Vector3 tpos = (UnityEngine.Vector3)GetMember(osT, "Translation");
+            float bestSq = float.MaxValue, bestStart = -1f;
+            lock (e.activeFires)
+            {
+                for (int i = 0; i < e.activeFires.Count; i++)
+                {
+                    float d = (e.activeFires[i].pos - tpos).sqrMagnitude;
+                    if (d < bestSq) { bestSq = d; bestStart = e.activeFires[i].startTime; }
+                }
+            }
+            const float matchRadiusSq = 4f * 4f;                       // a pawn within 4u of a fire is the firer (tiles are spaced wider)
+            if (bestStart >= 0f && bestSq <= matchRadiusSq)
+            {
+                float elapsed = UnityEngine.Time.time - bestStart;
+                poseTime = elapsed >= dur ? 0f : elapsed / dur;        // one pass, then rest (Update prunes finished fires)
+            }
+            return poseTime;
+        }
+
+        // Clear the procedural AIM layer (PawnEntry.BoneRotation0-3 = SkeletonBoneIndex/AxisIndex/Angle): the game aims an
+        // artillery barrel by layering a bone rotation ON TOP of the pose, which twists our barrel (most visible while moving,
+        // as the aim swings). Zero the angles so ONLY our baked clip drives the skeleton. No-op for un-aimed models.
+        static void ClearAimLayer(object entry)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                var br = GetMember(entry, "BoneRotation" + i);
+                if (br == null) continue;
+                SetMember(br, "Angle", 0f);
+                SetMember(entry, "BoneRotation" + i, br);
+            }
+        }
+
+        // Runtime position offset. Static models bake position into the mesh; the animated path can't, so apply it to the
+        // pawn's world ObjectSpace here. z = height -> world up (Y); x/y -> world plane. Re-applied each frame on the game's
+        // fresh world position, so it never accumulates. Logged once to confirm the axis.
+        static void ApplyPositionOffset(ModelEntry e, object entry)
+        {
+            if (e.position == UnityEngine.Vector3.zero) return;
+            var os = GetMember(entry, "ObjectSpace");                  // boxed TRS
+            var tr = (UnityEngine.Vector3)GetMember(os, "Translation");
+            if (!posLogged) { posLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} pawn world pos {tr} + registry position {e.position} (z->up Y)"); }
+            tr.x += e.position.x; tr.y += e.position.z; tr.z += e.position.y;   // registry z (height) -> world Y (up)
+            SetMember(os, "Translation", tr);
+            SetMember(entry, "ObjectSpace", os);
+        }
+
+        // Runtime scale multiplier: fix an animated model baked at the wrong scale WITHOUT a re-bake (the howitzer's 100x FBX
+        // unit-conversion oversize -> scale 0.01). Multiplies the pawn's ObjectSpace.Scale each frame.
+        static void ApplyScale(ModelEntry e, object entry)
+        {
+            if (e.scale == 1f || e.scale <= 0f) return;
+            var oss = GetMember(entry, "ObjectSpace");
+            var scObj = GetMember(oss, "Scale");
+            if (scObj is float sf) SetMember(oss, "Scale", sf * e.scale);
+            else if (scObj is UnityEngine.Vector3 sv) SetMember(oss, "Scale", sv * e.scale);
+            else if (scObj != null) { try { SetMember(oss, "Scale", Convert.ToSingle(scObj) * e.scale); } catch { } }
+            SetMember(entry, "ObjectSpace", oss);
+            if (!scaleLogged) { scaleLogged = true; Plugin.Log.LogInfo($"[Uni] {e.resourceName} runtime scale x{e.scale} (ObjectSpace.Scale was {scObj})"); }
+        }
+
+        // Diagnostic: dump the pawn's runtime transform once per model — a zero/huge Scale or an off Translation explains a
+        // model that's fine in the editor preview but invisible in-game (docs/Firing-On-Attack.md).
+        static void LogPoseHookOnce(PawnCtx ctx, ModelEntry e, object pose0)
+        {
+            if (poseHookSeen == null) poseHookSeen = new HashSet<string>();
+            if (!poseHookSeen.Add(e.resourceName)) return;
+            var osd = GetMember(ctx.entry, "ObjectSpace");
+            Plugin.Log.LogInfo($"[Uni] pose hook: '{e.resourceName}' -> Pose0 anim {e.animId} (skelId {ctx.skelId} -> {e.skeletonId}, desc {ctx.descId}); " +
+                $"ObjectSpace T={GetMember(osd, "Translation")} S={GetMember(osd, "Scale")} R={GetMember(osd, "Rotation")} poseW={GetMember(pose0, "Weight")}");
         }
 
         // ---- RE-SPAWN NEWLY-CREATED INJECTED UNITS: fix the first-instance rotor race ----
