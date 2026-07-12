@@ -73,13 +73,18 @@ see the [Factory Manual](Factory-Manual.md).
   hovercraft skirt); a **double-sided** toggle is the heavier fallback for genuinely non-convex thin shells (a mixed
   model — convex hull + non-convex fans — can use both). And **height-based UVs** map a simple vertical-gradient albedo by
   height (black skirt low, grey hull high) so an untextured CAD model gets a usable skin without UV-unwrapping.
-- **Know the ceiling.** Custom meshes share **one GPU buffer — ~100k vertices / ~250k indices (~83k triangles), 32-bit
-  indices — across ALL injected models *and* the game's own fx meshes** (from the decompiled
-  `FxComponentMeshContentManager`). Overflow is silently dropped (missing/see-through geometry); the reducer exists to
-  stay under it, and double-sided counts twice. **Proven symptom** (AH-1, 2026-07-07): the overflow truncates the
-  **tail of the last-registered model's mesh** — its body renders, its late-order small parts (rotor mast) silently
-  vanish, while the editor preview (no shared buffer) looks perfect. Watch the bake log's `verts=` line; UV-seam
-  splitting makes verts ≈ 2× tris on textured models, so budget tris accordingly (~12k tris ≈ ~24k verts).
+- **Know the ceiling — it's vertices, not megabytes, and it's per-layer.** Custom meshes pack into a shared GPU buffer
+  sized **100,000 vertices / 250,000 indices, up to 256 distinct meshes — PER content layer** (verified in the decompiled
+  `FxComponentMeshContentManager`: `baseVertexBufferSize=100000`, `baseIndexBufferSize=250000`, `maxMeshCount=256`, a
+  running `currentVertexIndex` cursor). Each **unique mesh is stored once** and drawn for every pawn of that type via GPU
+  **instancing** (`DrawMeshInstancedIndirect`) — so **instances are free**: 100 of the same unit cost one mesh. The budget
+  is the **sum of *distinct* model types' vertices within a layer**, not units on screen. Overflow doesn't crash — the
+  manager logs `"Unable to store mesh … vertex buffer is not large enough"` and **silently drops the mesh** (missing/
+  see-through geometry). **Proven symptom** (AH-1, 2026-07-07): it truncates the **tail of the last-registered model** —
+  body renders, late-order small parts (rotor mast) vanish, while the editor preview (no shared buffer) looks perfect.
+  Because file size compresses (~5:1 in the shipped bundle) but vertices don't, **lean meshes are how you fit more model
+  types**, not smaller files. Watch the bake log's `verts=` line; UV-seam + tangent splitting inflates verts on textured
+  models, so budget by verts (a 42k-vert unit is ~40% of one layer; aim ~12–20k so many types coexist).
 - **Any format in:** GLB / glTF / OBJ / FBX, and **`.blend`** (auto-converted via an auto-detected Blender install).
 - **Correct textures out of the box:** custom skins land right-side-up — the bug that put the Zumwalt's markings on the
   superstructure (a glTF-V-top vs OBJ/Unity-V-bottom mismatch) is fixed in `glbconv` by flipping V (`1 - v`) on OBJ
