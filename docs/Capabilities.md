@@ -98,6 +98,12 @@ see the [Factory Manual](Factory-Manual.md).
   a tile edge smears. Genuine *repeat*-tiling (a small texture spanning [0,N]) remains outside what an atlas can do.
 - **Texture isolation:** each model gets a private `FxOutputLayer` clone, so its skin never bleeds onto the vanilla donor
   unit — proven on screen with a custom cruiser and its donor corvette side-by-side, each keeping its own skin.
+- **Texture-only reskins (no bake).** Two registry-only overrides ride that same layer isolation, keeping the vanilla
+  mesh: **`desaturate`** paints a desaturated copy of the unit's *own* atlas with the civ-colour tint neutralised (a
+  bland grey Common copy of an emblematic unit — proven on GreyStealthCorvette), and **`textureFile`** hot-loads a
+  hand-painted PNG from `BepInEx\config\enc_skins\` (paint over the unit's own atlas dump from the in-game F8 ▸ Dump
+  Atlases tool). Managed by the **Unit Retexture** editor window; no bake, no mod rebuild, original unit untouched.
+  See the manual's §12.
 - **Skin controls at bake time.** The injection ships a *flat* albedo (donor PBR — normal/metallic/roughness —
   neutralized so the donor's camo can't bleed through), which reads muddy for a source that leaned on shine or a dark
   texture. **Albedo brightness** and **Albedo saturation** sliders correct that into the baked atlas; a **Keep black**

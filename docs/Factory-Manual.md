@@ -378,3 +378,31 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   (2) every read key is a field the baker writes (plugin ⊆ ModelDef, with an allowlist for deliberate plugin-only overrides
   like `scale`), and (3) each read cast's type matches ModelDef's declared type; bake-time-only fields are listed as INFO.
   Catches a silent rename/drop/type-change that would otherwise make a feature quietly default-off.
+
+## 12. Texture-only reskins — the Unit Retexture window (no bake)
+
+Sometimes the vanilla model is fine and only the *skin* is wrong — a Common copy that should look distinct from its
+emblematic original, a colour test, a themed variant. For that there's a separate window — **Tools ▸ ENC ▸ Unit
+Retexture** — that reskins an existing unit **without baking a model**: the vanilla mesh is kept, and the runtime plugin
+paints your texture onto an **isolated clone** of the unit's output layer, so the original unit (and every other unit
+sharing that layer) is untouched.
+
+Two modes, both plain registry entries (no assets, no mod rebuild):
+
+- **Custom skin** — `textureFile`: a PNG filename in `BepInEx\config\enc_skins\`. The plugin hot-loads it at runtime.
+- **Grey variant** — `desaturate` (0–1): no PNG at all; the plugin paints a desaturated copy of the unit's OWN atlas
+  and neutralises the civ-colour tint (1 = full grey). Proven on GreyStealthCorvette. If both are set, `textureFile`
+  wins.
+
+Workflow:
+
+1. **Pawn** — pick the pawn descriptor (use the `_Common_..._01` copy, **not** the emblematic original — the isolation
+   clone is what leaves the original untouched; they share an output layer). The entry name defaults to `Retex_<pawn>`.
+2. **Download the skin to paint** — dump the unit atlases in-game first (**F8 window ▸ Dump Atlases**; files land in
+   `BepInEx\config\enc_atlas_dump\`), then paint over the unit's PNG in any editor. It's the unit's real UV layout, so
+   what you paint is what wraps.
+3. **Replace** — point the window at your painted PNG and Apply: it copies the PNG into `config\enc_skins\` and writes
+   the registry entry (or tick **Grey** for the desaturate mode). Relaunch/reload the game to see it.
+
+Because the mesh is untouched this can't fix silhouettes — it's for palettes, markings, camo. And since the plugin
+hot-loads from the game's config folder, iterating is repaint → overwrite the PNG → reload; no editor round-trip at all.

@@ -27,6 +27,7 @@ namespace ENCAccessProof
         public UnityEngine.Vector3 position;  // ANIMATED models: applied as a runtime world offset in the pose hook (z = height/up). Static models bake position into the mesh at Bake time instead, so this is only read for animated entries.
         public float scale = 1f;              // ANIMATED models: runtime multiplier on the pawn's ObjectSpace.Scale (default 1 = unchanged). Lets us fix an animated model baked at the wrong scale WITHOUT a re-bake (e.g. the howitzer's 100x FBX unit-conversion oversize -> set 0.01). Config-only field; absent = 1.
         public float desaturate = 0f;         // TEXTURE-ONLY GREY variant: 0 = off. >0 = DON'T repoint the mesh; isolate this unit's output layer and paint a DESATURATED copy of its OWN atlas (1 = full grey) while the civ-colour tint is neutralised. Makes a Common copy read as a bland grey version of an emblematic unit; the original is untouched (they share the layer, so the isolation clone is essential). No bake / no custom model needed.
+        public string textureFile = "";       // TEXTURE-ONLY RETEXTURE: a PNG filename in BepInEx/config/enc_skins/. When set, the plugin loads that PNG and paints it onto the unit's ISOLATED output layer (same isolation as desaturate — original untouched, vanilla mesh kept). Hot-loaded at runtime, no bake/rebuild. Takes precedence over desaturate. Painted on a dump of the unit's own atlas (round-trips via PNG). Managed by the Unit Retexture editor window.
         public int ca, cb, cc, cd;       // ANIMATED models: our baked ClipCollection Amplitude guid (its own clip, e.g. a drone's spinning-prop 'hover'). 0,0,0,0 = static model (no pose override).
         public object clipColl;          // loaded ClipCollection asset
         public int animId = -1;          // resolved animation id of our clip (after it's registered in AnimationManager.Apply)
@@ -104,6 +105,7 @@ namespace ENCAccessProof
                                 position = new UnityEngine.Vector3(Fp(p, "x"), Fp(p, "y"), Fp(p, "z")),
                                 scale = m["scale"] != null ? (float)m["scale"] : 1f,
                                 desaturate = m["desaturate"] != null ? (float)m["desaturate"] : 0f,
+                                textureFile = (string)m["textureFile"] ?? "",
                                 respawnAfterLoad = (bool?)m["respawnAfterLoad"] ?? false,
                                 freezeDonorAnim = (bool?)m["freezeDonorAnim"] ?? false,
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
@@ -140,6 +142,7 @@ namespace ENCAccessProof
                 var rsp = Regex.Matches(text, "\"recoilSpeed\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: recoil-on-fire playback speed multiplier (default 1)
                 var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
                 var des = Regex.Matches(text, "\"desaturate\"\\s*:\\s*(-?[\\d.eE+]+)");     // texture-only grey strength (default 0 = off)
+                var txf = Regex.Matches(text, "\"textureFile\"\\s*:\\s*\"([^\"]*)\"");      // texture-only retexture: PNG filename in enc_skins/
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
@@ -163,6 +166,7 @@ namespace ENCAccessProof
                         recoilSpeed = i < rsp.Count && float.TryParse(rsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _rsp) ? _rsp : 1f,
                         scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
                         desaturate = i < des.Count && float.TryParse(des[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _des) ? _des : 0f,
+                        textureFile = i < txf.Count ? txf[i].Groups[1].Value : "",
                     });
                 }
                 loaded = true;   // regex fallback also succeeded — latch so we don't re-parse every pawn
@@ -265,10 +269,10 @@ namespace ENCAccessProof
                 if (e == null) return;
                 Plugin.Log.LogInfo($"[Uni] MATCH addon='{name}' -> {e.resourceName} (skel {e.sa},{e.sb},{e.sc},{e.sd})");
 
-                // TEXTURE-ONLY GREY variant: keep the vanilla mesh, just isolate this unit's output layer and paint a
-                // desaturated copy of its OWN atlas (see ApplyGrey). Returns before any skeleton repoint. The isolation
-                // is what leaves the emblematic original untouched — the Common copy and it share the same output layer.
-                if (e.desaturate > 0f) { ApplyGrey(addon, animMgr, e, name); return; }
+                // TEXTURE-ONLY override: keep the vanilla mesh, just isolate this unit's output layer and repaint its skin
+                // — either a hot-loaded PNG (textureFile) or a desaturated copy of its own atlas (desaturate). Returns
+                // before any skeleton repoint. The isolation leaves the emblematic original untouched (shared layer).
+                if (e.desaturate > 0f || !string.IsNullOrEmpty(e.textureFile)) { ApplyTextureOnly(addon, animMgr, e, name); return; }
 
                 // One-shot diagnostic (BEFORE we swap): dump the DONOR skeleton / mesh-collection sub-meshes, so we can
                 // find parts that aren't separate fragments (e.g. a helicopter rotor baked as its own skinned sub-mesh).
@@ -534,19 +538,36 @@ namespace ENCAccessProof
             catch (Exception ex) { Plugin.Log.LogError("[Uni] texture: " + ex); }
         }
 
-        // ---- TEXTURE-ONLY GREY variant (desaturate>0): keep the vanilla mesh, grey the isolated skin ----
+        // ---- TEXTURE-ONLY override: keep the vanilla mesh, repaint the isolated skin (custom PNG or desaturate) ----
 
-        static void ApplyGrey(object addon, object animMgr, ModelEntry e, string name)
+        static void ApplyTextureOnly(object addon, object animMgr, ModelEntry e, string name)
         {
             try
             {
                 var bodyName = DiscoverBodyMeshName(addon);
                 if (!string.IsNullOrEmpty(bodyName)) e.layerHint = bodyName;
-                GreyIsolate(addon, animMgr, e);   // clone the body fragment's output layer + build the desaturated atlas into e.tex
+                // Custom skin PNG takes precedence; otherwise the desaturated original is built in GreyIsolate/TickOne.
+                if (!string.IsNullOrEmpty(e.textureFile) && e.tex == null) e.tex = LoadSkinPng(e.textureFile, e.resourceName);
+                GreyIsolate(addon, animMgr, e);    // clone the body fragment's output layer (+ build the desaturated atlas if desaturate>0)
                 ApplyTexture(e, animMgr);          // paint e.tex on the isolated clone + neutralise the civ-colour/overlay maps (TickOne)
-                if (!e.repointed) { e.repointed = true; Plugin.Log.LogInfo($"[Grey] '{name}' -> {e.resourceName}: greyed (layer '{e.layerHint}', desaturate {e.desaturate:0.00}, atlas={(e.tex != null ? e.tex.width + "x" + e.tex.height : "NONE — will retry")})"); }
+                if (!e.repointed) { e.repointed = true; Plugin.Log.LogInfo($"[Skin] '{name}' -> {e.resourceName}: {(string.IsNullOrEmpty(e.textureFile) ? $"greyed (desaturate {e.desaturate:0.00})" : $"retextured ('{e.textureFile}')")}, layer '{e.layerHint}', atlas={(e.tex != null ? e.tex.width + "x" + e.tex.height : "NONE — will retry")}"); }
             }
-            catch (Exception ex) { Plugin.Log.LogError("[Grey] " + ex); }
+            catch (Exception ex) { Plugin.Log.LogError("[Skin] " + ex); }
+        }
+
+        // Load a retexture PNG from BepInEx/config/enc_skins/<file> into a Texture2D (needs ImageConversionModule.LoadImage).
+        static UnityEngine.Texture2D LoadSkinPng(string file, string tag)
+        {
+            try
+            {
+                var path = Path.Combine(Paths.ConfigPath, "enc_skins", file);
+                if (!File.Exists(path)) { Plugin.Log.LogWarning($"[Skin] {tag}: retexture file not found: {path}"); return null; }
+                var t = new UnityEngine.Texture2D(2, 2, UnityEngine.TextureFormat.RGBA32, false) { name = tag + "_Skin" };
+                if (!UnityEngine.ImageConversion.LoadImage(t, File.ReadAllBytes(path))) { Plugin.Log.LogWarning($"[Skin] {tag}: LoadImage failed for {file} (not a PNG/JPG?)"); UnityEngine.Object.DestroyImmediate(t); return null; }
+                Plugin.Log.LogInfo($"[Skin] {tag}: loaded retexture '{file}' ({t.width}x{t.height})");
+                return t;
+            }
+            catch (Exception e) { Plugin.Log.LogError($"[Skin] {tag}: retexture load failed: " + e); return null; }
         }
 
         // Isolate the copy's body-fragment output layer (a private clone, so the shared emblematic original is untouched)
@@ -575,7 +596,7 @@ namespace ENCAccessProof
                     var mn = mnField?.GetValue(item) as string;
                     if (string.IsNullOrEmpty(e.layerHint) || mn != e.layerHint) continue;   // only the body layer
                     var host = folField.GetValue(item);
-                    if (e.tex == null && host != null) e.tex = BuildDesaturatedAtlas(host, e.desaturate, e.resourceName);   // grey the ORIGINAL skin, once
+                    if (e.tex == null && host != null && e.desaturate > 0f) e.tex = BuildDesaturatedAtlas(host, e.desaturate, e.resourceName);   // grey the ORIGINAL skin, once (skipped when a custom PNG already set e.tex)
                     if (e.isolatedLayer == null && host is UnityEngine.Object ho && ho != null)
                     {
                         var clone = UnityEngine.Object.Instantiate(ho); clone.name = e.resourceName + "_GreyLayer"; e.isolatedLayer = clone;
@@ -1334,21 +1355,21 @@ namespace ENCAccessProof
                             if (tex != null) break;
                         }
                     if (tex == null) continue;
-                    var tga = ToReadableTga(tex);
-                    if (tga == null) continue;
-                    File.WriteAllBytes(Path.Combine(dir, SanitizeFile(layer) + ".tga"), tga);
+                    var png = ToReadablePng(tex);
+                    if (png == null) continue;
+                    File.WriteAllBytes(Path.Combine(dir, SanitizeFile(layer) + ".png"), png);
                     n++;
-                    Plugin.Log.LogInfo($"[AtlasDump] {layer} -> {SanitizeFile(layer)}.tga ({tex.width}x{tex.height}, {tex.name})");
+                    Plugin.Log.LogInfo($"[AtlasDump] {layer} -> {SanitizeFile(layer)}.png ({tex.width}x{tex.height}, {tex.name})");
                 }
                 Plugin.Log.LogInfo($"[AtlasDump] wrote {n} atlas PNG(s) to {dir}");
             }
             catch (Exception e) { Plugin.Log.LogError("[AtlasDump] " + e); }
         }
 
-        // Blit any (possibly non-readable / compressed) texture through a RenderTexture into a readable Texture2D, then
-        // encode an uncompressed 32-bit TGA (BGRA). TGA avoids a UnityEngine.ImageConversionModule (EncodeToPNG) reference
-        // the plugin doesn't carry, and any image editor opens it. Bottom-left origin matches Unity's bottom-up GetPixels32.
-        static byte[] ToReadableTga(UnityEngine.Texture src)
+        // Blit any (possibly non-readable / compressed) texture through a RenderTexture into a readable Texture2D and
+        // PNG-encode it. PNG (vs TGA) round-trips cleanly with LoadImage — paint on the dumped canvas and the retexture
+        // maps back exactly. Uses UnityEngine.ImageConversionModule (also referenced for the retexture skin-load).
+        static byte[] ToReadablePng(UnityEngine.Texture src)
         {
             try
             {
@@ -1360,17 +1381,9 @@ namespace ENCAccessProof
                 var t = new UnityEngine.Texture2D(w, h, UnityEngine.TextureFormat.RGBA32, false);
                 t.ReadPixels(new UnityEngine.Rect(0, 0, w, h), 0, 0); t.Apply();
                 UnityEngine.RenderTexture.active = prev; UnityEngine.RenderTexture.ReleaseTemporary(rt);
-                var px = t.GetPixels32();
+                var png = UnityEngine.ImageConversion.EncodeToPNG(t);   // static form: no `using UnityEngine;` in this file
                 UnityEngine.Object.DestroyImmediate(t);
-                var buf = new byte[18 + w * h * 4];
-                buf[2] = 2;                                                     // uncompressed true-colour
-                buf[12] = (byte)(w & 0xFF); buf[13] = (byte)((w >> 8) & 0xFF);
-                buf[14] = (byte)(h & 0xFF); buf[15] = (byte)((h >> 8) & 0xFF);
-                buf[16] = 32;                                                   // bits per pixel
-                buf[17] = 0x08;                                                 // 8 alpha bits, bottom-left origin
-                int o = 18;
-                for (int i = 0; i < px.Length; i++) { buf[o++] = px[i].b; buf[o++] = px[i].g; buf[o++] = px[i].r; buf[o++] = px[i].a; }
-                return buf;
+                return png;
             }
             catch (Exception e) { Plugin.Log.LogWarning("[AtlasDump] readable copy failed for '" + (src != null ? src.name : "?") + "': " + e.Message); return null; }
         }
