@@ -53,6 +53,7 @@ Severity key: 🔴 fix soon (silent data loss / silent no-inject) · 🟡 worth 
 | 07-12 | **E6/E8** (🟢): backup restore parses in its own try/catch (a corrupt backup + missing registry no longer locks Save with a misleading error); both multi-material `PackTextures` sites free their source albedos so a bake no longer strands tens of MB until domain reload |
 | 07-13 | **E7** (🟢): the static re-bake's delete-first now clears the stale animated `_Preview.prefab`/`_PreviewMesh`/`_PreviewMat` from FactorySource, so the window preview shows the fresh static model instead of the old animated one |
 | 07-13 | **T6** (🟢): `rig_anim.py` hard-fails when a bone-prefix filter matches nothing (frozen-clip trap; lists the real bones); `prep_model.py` hard-fails when a strip/reduce leaves no mesh (empty-GLB trap). Both syntax-checked. **T7** lows reviewed + consciously deferred (each needs a glbconv rebuild or changes output for ~zero benefit) |
+| 07-13 | **2nd critical review** (independent adversarial pass, 3 reviewers): confirmed the `OnPawnAdded` refactor faithful and E5's core sound. Fixed a `heightUV` feature-test **false-green** (now asserts V *tracks vertex height*, not merely spans [0,1]); added an **E5-rollback test** that forces a failed re-bake and proves the assets restore with original GUIDs + content. Feature Test Tier 1 now **13/13**. |
 
 ---
 
@@ -100,8 +101,11 @@ stale-skeleton fix — the gap was only the missing rollback.)
 > GUIDs survive) to a temp dir **outside** the project before the bake, and on any failure (exception or
 > `ok:false`) restore them — wiping any partial new outputs first. Fail-safe by construction: the success path
 > is unchanged (backup → bake → discard) and restore runs **only** on an already-failed bake, so it can't harm a
-> good bake. Backing up outside `Assets/` avoids a duplicate-GUID import. Verified: **12/12 bake smoke test**
-> after the change (success path); the restore path is code-reviewed and logs "restored the previous N asset(s)".
+> good bake. Backing up outside `Assets/` avoids a duplicate-GUID import.
+> **Runtime-verified (2026-07-13):** a dedicated Bake Feature Test case now bakes a cube, captures the `_Skeleton`/
+> `_Atlas` Unity GUIDs + mesh content, forces a failed re-bake of the same resource (missing model file), and asserts
+> the assets return with their **original GUIDs and content** — closing the earlier "restore path never triggered"
+> gap and catching a non-atomic/GUID-losing restore. Passed (`skelGuidKept=True, atlasGuidKept=True, verts 24→24`).
 
 #### E6 🟢 Corrupt project backup + missing registry = permanent Save lockout — ✅ FIXED (2026-07-12)
 `ModelRegistry.Load` parsed the backup restore inside the same `try` whose catch set `lastLoadCorrupt`
