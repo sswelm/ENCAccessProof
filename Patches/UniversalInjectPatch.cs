@@ -1185,6 +1185,91 @@ namespace ENCAccessProof
         }
         static int ToInt(object o) { try { return o == null ? -1 : Convert.ToInt32(o); } catch { return -1; } }
         static int Pct(int a, int b) { return b > 0 ? (int)(100.0 * a / b) : 0; }
+
+        // ---- ATLAS DUMP (retexture aid) ------------------------------------------------------------------------------
+        // Dump every currently-loaded unit output-layer atlas (its material's _MainTex) to
+        // BepInEx/config/enc_atlas_dump/<layer>.png, so a unit's skin can be found by its layer name and used as a
+        // paint canvas (e.g. to make a desaturated "grey" variant of a Common copy). Reuses ApplyTexture's Content walk
+        // (Content -> OutputLayerEntries -> OutputLayerInstance) and TickOne's material fields; the host atlas isn't
+        // CPU-readable, so each is blitted through a RenderTexture first. One PNG per layer. Bound to the F8 window's
+        // "Dump Atlases" button — load a game with the target units visible, then click.
+        internal static void DumpOutputLayerAtlases()
+        {
+            try
+            {
+                var amType = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
+                var mgr = amType != null ? AccessTools.Property(amType, "Instance")?.GetValue(null) : null;
+                if (mgr == null) { Plugin.Log.LogWarning("[AtlasDump] AnimationManager.Instance is null — load a game first."); return; }
+                var content = GetMember(mgr, "Content");
+                var list = content != null ? GetMember(content, "OutputLayerEntries") as Array : null;
+                if (list == null) { Plugin.Log.LogWarning("[AtlasDump] no OutputLayerEntries found."); return; }
+                string dir = Path.Combine(Paths.ConfigPath, "enc_atlas_dump");
+                Directory.CreateDirectory(dir);
+                var seen = new HashSet<string>();
+                int n = 0;
+                foreach (var entry in list)
+                {
+                    var ol = GetMember(entry, "OutputLayerInstance");
+                    if (ol == null) continue;
+                    string layer = (ol as UnityEngine.Object)?.name ?? "layer";
+                    if (!seen.Add(layer)) continue;   // one dump per layer
+                    UnityEngine.Texture tex = null;
+                    if (GetMember(ol, "RenderOutputs") is Array ros)
+                        foreach (var ro in ros)
+                        {
+                            foreach (var fld in new[] { "currentRenderMaterial", "runTimeRenderMaterial" })
+                                if (GetMember(ro, fld) is UnityEngine.Material mat && mat.GetTexture("_MainTex") is UnityEngine.Texture mt) { tex = mt; break; }
+                            if (tex != null) break;
+                        }
+                    if (tex == null) continue;
+                    var tga = ToReadableTga(tex);
+                    if (tga == null) continue;
+                    File.WriteAllBytes(Path.Combine(dir, SanitizeFile(layer) + ".tga"), tga);
+                    n++;
+                    Plugin.Log.LogInfo($"[AtlasDump] {layer} -> {SanitizeFile(layer)}.tga ({tex.width}x{tex.height}, {tex.name})");
+                }
+                Plugin.Log.LogInfo($"[AtlasDump] wrote {n} atlas PNG(s) to {dir}");
+            }
+            catch (Exception e) { Plugin.Log.LogError("[AtlasDump] " + e); }
+        }
+
+        // Blit any (possibly non-readable / compressed) texture through a RenderTexture into a readable Texture2D, then
+        // encode an uncompressed 32-bit TGA (BGRA). TGA avoids a UnityEngine.ImageConversionModule (EncodeToPNG) reference
+        // the plugin doesn't carry, and any image editor opens it. Bottom-left origin matches Unity's bottom-up GetPixels32.
+        static byte[] ToReadableTga(UnityEngine.Texture src)
+        {
+            try
+            {
+                int w = src.width, h = src.height;
+                var rt = UnityEngine.RenderTexture.GetTemporary(w, h, 0, UnityEngine.RenderTextureFormat.ARGB32, UnityEngine.RenderTextureReadWrite.sRGB);
+                var prev = UnityEngine.RenderTexture.active;
+                UnityEngine.Graphics.Blit(src, rt);
+                UnityEngine.RenderTexture.active = rt;
+                var t = new UnityEngine.Texture2D(w, h, UnityEngine.TextureFormat.RGBA32, false);
+                t.ReadPixels(new UnityEngine.Rect(0, 0, w, h), 0, 0); t.Apply();
+                UnityEngine.RenderTexture.active = prev; UnityEngine.RenderTexture.ReleaseTemporary(rt);
+                var px = t.GetPixels32();
+                UnityEngine.Object.DestroyImmediate(t);
+                var buf = new byte[18 + w * h * 4];
+                buf[2] = 2;                                                     // uncompressed true-colour
+                buf[12] = (byte)(w & 0xFF); buf[13] = (byte)((w >> 8) & 0xFF);
+                buf[14] = (byte)(h & 0xFF); buf[15] = (byte)((h >> 8) & 0xFF);
+                buf[16] = 32;                                                   // bits per pixel
+                buf[17] = 0x08;                                                 // 8 alpha bits, bottom-left origin
+                int o = 18;
+                for (int i = 0; i < px.Length; i++) { buf[o++] = px[i].b; buf[o++] = px[i].g; buf[o++] = px[i].r; buf[o++] = px[i].a; }
+                return buf;
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("[AtlasDump] readable copy failed for '" + (src != null ? src.name : "?") + "': " + e.Message); return null; }
+        }
+
+        static string SanitizeFile(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "layer";
+            var sb = new System.Text.StringBuilder();
+            foreach (var ch in s) sb.Append(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' ? ch : '_');
+            return sb.ToString();
+        }
     }
 
     [HarmonyPatch]

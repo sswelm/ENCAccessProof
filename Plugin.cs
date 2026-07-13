@@ -99,6 +99,7 @@ namespace ENCAccessProof
             {
                 if (GUILayout.Button("Dump UnitDef")) Prober.DumpUnitDef();
                 if (GUILayout.Button("Dump Formation")) Prober.DumpFormation();
+                if (GUILayout.Button("Dump Atlases")) UniversalInject.DumpOutputLayerAtlases();
             }
             GUILayout.Space(4);
             GUILayout.Label("GPU mesh buffer (live) — Shift+F8 also logs it:");
