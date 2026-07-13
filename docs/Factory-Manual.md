@@ -406,3 +406,11 @@ Workflow:
 
 Because the mesh is untouched this can't fix silhouettes — it's for palettes, markings, camo. And since the plugin
 hot-loads from the game's config folder, iterating is repaint → overwrite the PNG → reload; no editor round-trip at all.
+
+**Cost — essentially free on the vertex budget.** A reskin keeps the unit's existing mesh, so it adds **no vertices,
+indices, or meshes** to the GPU pawn-layer buffer — that buffer is budgeted per distinct mesh *type* (instances are free;
+see `Vertex-Budget.md`), and a reskin introduces no new type. It costs only an output-layer clone (a render slot) and one
+texture. So unlike a **baked custom model** — which *does* add its own distinct mesh's verts — you can stack many reskinned
+variants without approaching the mesh ceiling. (Applying this to *custom* models — one baked mesh, many textured variants
+sharing it — is a natural extension: the plugin already dedups a shared skeleton's mesh on upload, but reusing one custom
+skeleton across *different* base units still needs work on the per-donor rename; not built yet.)
