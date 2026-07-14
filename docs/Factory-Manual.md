@@ -483,6 +483,10 @@ same window covers the §13 game-sound path.)
 linear amplitude stored (hearing is logarithmic, so e.g. slider 0.4 ≈ amplitude 0.16). **Seamless loops:** if a raw Travel
 clip clicks at its wrap, crossfade a copy first (blend ~0.1–0.3 s of the tail into the head).
 
+**Audition in the editor:** each clip row has a **▶** preview button that plays it at its set volume (with **■ Stop**), and
+**Edit** on a unit in the "Units with audio" list loads its current Start/Travel/Stop files + volumes — so you can pick and
+tune a sound without launching the game.
+
 **Performance note:** the runtime audio driver polls only *our* units' sub-pawns and refreshes its scene lookup on a ~2 s
 cache — never a per-frame `FindObjectsOfType` (an early version did, and it visibly cut FPS). If you extend it, keep any
 full scene scan off the hot path.

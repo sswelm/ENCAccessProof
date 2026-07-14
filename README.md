@@ -46,6 +46,13 @@ Humankind.
   compression keep each shipped skin ~0.1–2 MB. Bake *inputs* live in `Assets/FactorySource/` — out of the shipped mod, so
   the licensed source models are never redistributed.
 - **Add a model = bake it.** The Factory writes the JSON registry; the plugin picks it up on next launch — no per-model code.
+- **Unit movement audio — engine sounds & custom WAVs.** Injected/retextured units are silent on move (the game's per-ship
+  engine sound rides an audio-service path our re-loaded units never fire). The plugin restores it — playing the game's own
+  sound **by name** (works from the *first* unit, no capture; F8 **Dump Sound Catalog** lists all ~845 event names) — or
+  **any custom WAV you drop in**, as a **Start (spool-up) → Travel (loop) → Stop (spool-down)** sequence with per-clip
+  volume, driven by a dedicated **Unit Sound** editor window (with in-editor ▶ preview). Runtime-only, no bake.
+- **Retexture / recolour without a bake.** A separate **Unit Retexture** window reskins an existing unit at runtime —
+  a hot-loaded PNG or a live Desaturate + RGB adjust on its own atlas — isolated per unit, free on the vertex budget.
 
 Full detail — the shared-buffer ceiling, texture flip, per-model isolation, limitations — in
 [**Capabilities.md**](docs/Capabilities.md).
