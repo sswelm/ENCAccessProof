@@ -8,7 +8,7 @@ namespace ENCAccessProof
 {
     // First BepInEx mod: prove we can (1) load, (2) hook the game, (3) read the live registry
     // AND the configured target mod's own assets — with a config file + an in-game feedback window.
-    [BepInPlugin(GUID, "ENC Access Proof", "0.1.0")]
+    [BepInPlugin(GUID, "Humankind Asset Framework", "0.1.0")]
     public class Plugin : BaseUnityPlugin
     {
         public const string GUID = "community.humankind.encaccessproof";
@@ -85,7 +85,7 @@ namespace ENCAccessProof
         private void OnGUI()
         {
             if (!show) return;
-            winRect = GUILayout.Window(GUID.GetHashCode(), winRect, DrawWindow, "ENC Access Proof");
+            winRect = GUILayout.Window(GUID.GetHashCode(), winRect, DrawWindow, "Humankind Asset Framework");
         }
 
         private void DrawWindow(int id)

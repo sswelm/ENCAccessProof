@@ -63,7 +63,7 @@ they all share the pawn layer's ~1M budget simultaneously. So:
 
 The plugin exposes the live buffer usage:
 
-- **F8** opens the ENC Access Proof window — the pawn-layer usage is shown live and updates as units
+- **F8** opens the Humankind Asset Framework window — the pawn-layer usage is shown live and updates as units
   load/spawn.
 - **Shift+F8** logs the same readout to `BepInEx/LogOutput.log` (`[Budget]` lines).
 

@@ -1,4 +1,7 @@
-# ENC Access Proof — Universal custom-3D-model injection for Humankind
+# Humankind Asset Framework (HAF) — universal custom-asset injection for Humankind
+
+> *Formerly **ENC Access Proof**.* The runtime is a **Humankind Asset Framework** host: it loads asset **packs** from many
+> mods (ENC is the reference pack), each adding a custom 3D model, texture, and sound to its units. See [Multi-Mod.md](docs/Multi-Mod.md).
 
 Inject **any** custom 3D model onto **any** live Humankind unit — correct geometry, correct texture, **its own
 animation**, no executable patching, and **zero per-model code**. Bake a model in the Unity editor tool; a data-driven
