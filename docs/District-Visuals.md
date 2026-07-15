@@ -70,7 +70,9 @@ touch terrain. The selector lives in `Amplitude.Mercury.Terrain.Fx` (Amplitude.M
   `channels[]` (`PerChannelData` struct) with public `EvolverMaterialGuid`. The public seam
   `PresentationLevelBuildComponent.SetChannel(int, Guid, RenderMode, bool)` works.
 - **Diagnostics** — `[District] saw district '<name>'` dumps every district's `ConstructibleDefinitionName`;
-  `[DistrictMat] <name> -> material a,b,c,d` dumps each district's resolved channel-0 material GUID. Both invaluable.
+  `[DistrictMat] <name> -> material a,b,c,d` dumps each district's resolved channel-0 material GUID;
+  `[DistrictSub]` dumps the selector's `pairs` table (the culture→material map) + `defaultMaterial`/`deferredName`.
+  All three were essential to mapping the mechanism.
 - **The FxMesh baker** — `DistrictBaker.cs` "Bake District FxMesh" wraps a static-baked `_ModelMesh` into an
   `Amplitude.Graphics.Fx.FxMesh` ScriptableObject and logs its GUID. **Works** (baked an 18,984-vert reactor FxMesh).
 - **The material swaps** — pointing a district's channel at a different material GUID demonstrably changes what it
@@ -112,20 +114,31 @@ Forcing one of those culture material GUIDs onto a district via `SetChannel` mad
 writes its per-instance GPU data (`FxLevelBuildSelectorGPUData` = culture/era/level context). A material arriving via
 `SetChannel` has no such context, so it loads but draws nothing.
 
-**This blocks every runtime injection path** — foreign-material `SetChannel` and the mesh-swap alike (the leaf drawer is
-nested culture→era→level deep and picked live). The data-driven affinity idea keeps the game's pipeline (so it would
-render a *vanilla* mapped building), but rendering a **custom** mesh still needs a selector-pipeline-compatible material
-authored the way Amplitude authors building materials — deep DCC/SDK work we cannot replicate from a mod. **Verdict:
-district building replacement is an architectural wall, much deeper than units. Banked as a research spike.**
+**What this rules out (proven):** every path that hands the game a *foreign material* — `SetChannel(guid)` with a
+selector, a culture material, or an authored material of our own. Without the selector's own GPU context, it draws
+nothing. So the "author/clone a material + `SetChannel` to it" approaches (modes 1–2, and the data-driven affinity idea
+for a *custom* mesh) are dead: a mod cannot reproduce the selector-pipeline material authoring Amplitude does.
+
+**What is NOT ruled out (untested — the one remaining candidate):** *reusing the game's own live sub-drawer and swapping
+only its mesh GUID.* That drawer already has the selector's context/GPU data, so replacing the mesh it points at should
+draw our mesh *with* that context. We never actually reached it — mode 3 hit the top-level selector (no `mesh` field) and
+we spent the budget mapping the structure. The concrete next attempt is in "The remaining path" below.
+
+**Verdict:** foreign-material injection is a hard wall; district building replacement is far deeper than units. **Banked
+as a research spike** pending the one untested live-sub-drawer path — not proven impossible, but real engine surgery.
 
 ## The remaining path (NOT built — the next deep chunk)
 
-Reach the selector's async-loaded sub-drawers and rewrite their mesh:
+Reuse the game's own selected drawer (which HAS the context) and rewrite only its mesh — the one approach the
+context-gated wall does *not* rule out:
 
-1. On the target district's channel-0 material (the selector), read `fxMaterialCacheEntries.Entries[]` (each a
-   `FxMaterialCacheEntry { Guid, FxMaterial }`) plus the loaded `defaultMaterial` / `invalidNameMaterial` drawers.
-2. For each `.FxMaterial` that is an `FxEvolverMaterialDrawer` (has the `mesh` field), set `mesh` → our FxMesh GUID and
-   reset `meshIndex` = 0.
+1. On the target district's channel-0 material (the selector), recurse to the **leaf** `FxEvolverMaterialDrawer` the
+   game actually selected. Note the nesting is deep: the top selector's `pairs`/`fxMaterialCacheEntries` are keyed by
+   **culture** (`BuildingVisualAffinity_*`), and each entry points at *another* selector (by era/level), so the leaf may
+   be 2–3 levels down. `DistrictDumpSubMaterials` (`[DistrictSub]`) dumps the first level; a future pass must follow the
+   live selection (`fxMaterialCacheEntries` + the selected index / `deferredName`) to the actual leaf drawer.
+2. On that leaf drawer (an `FxEvolverMaterialDrawer` with the `mesh` field), set `mesh` → our FxMesh GUID and reset
+   `meshIndex` = 0. Because it is the game's own drawer, it keeps the selector's GPU context — so our mesh should draw.
 3. Do this **continuously (per-frame, from `Plugin.Update`)**, not just in the `UpdateLevelBuild` postfix — the
    sub-materials load *asynchronously after* the hook returns, and the selector's `Refresh` re-resolves them.
 
@@ -138,10 +151,11 @@ Caveats that make this genuine engine-surgery, not a quick fix:
   up-axis is still unknown. Expect to tune Rotation / FxMesh `importAngles` once something draws.
 - **Budget** — district meshes share the GPU mesh manager; measure with Shift+F8 before shipping many.
 
-An alternative to the runtime surgery: author a **plain** `FxEvolverMaterialDrawer` (not a selector) that references our
-FxMesh, and `SetChannel(ourDrawerGuid)` — a plain drawer renders its mesh directly, bypassing selection. The open
-question is producing a valid drawer asset (its output-layer/subshader wiring); `DistrictBaker.cs` "Clone District
-Material" attempts this by cloning a donor drawer, but a suitable donor drawer asset was never located in-project.
+The tempting alternative — author/clone a **plain** `FxEvolverMaterialDrawer` referencing our FxMesh and
+`SetChannel(ourDrawerGuid)` — is **ruled out by the context-gated wall above**: a drawer handed to the channel from
+outside draws nothing without the selector's GPU context. `DistrictBaker.cs` "Clone District Material" was built for
+this route; it is kept but is not expected to render on its own (no donor drawer asset was locatable in-project either).
+The live-sub-drawer mesh swap is the only remaining candidate because it *keeps* the game's context.
 
 ---
 
