@@ -24,6 +24,7 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> DistrictName;        // which district's on-map visual to replace (ConstructibleDefinitionName), e.g. Villages_StoneQuarry
         internal static ConfigEntry<string> DistrictAffinity;    // ZERO-BAKE proof: swap the district's visualAffinity to another vanilla one (renders an existing building; no custom asset needed)
         internal static ConfigEntry<string> DistrictEvolverGuid; // CUSTOM MODEL: an FxEvolverMaterial GUID (our baked quarry) as 4 ints "a,b,c,d"; SetChannel points the district's mesh channel at it
+        internal static ConfigEntry<string> DistrictFxMeshGuid;  // MESH-SWAP: our baked FxMesh GUID; keep the district's own working material, swap only its mesh to ours (best render odds)
 
         private bool show;
         private Rect winRect = new Rect(60, 60, 480, 420);
@@ -64,6 +65,11 @@ namespace ENCAccessProof
                                   "CUSTOM-MODEL mode: an FxEvolverMaterial asset GUID (our baked quarry material) as four ints \"a,b,c,d\". " +
                                   "The hook calls the game's public SetChannel(layer, guid) so the district draws our custom static mesh. Blank = off. " +
                                   "Takes precedence over DistrictAffinityOverride when both are set.");
+            DistrictFxMeshGuid  = Config.Bind("District", "DistrictFxMeshGuid", "",
+                                  "MESH-SWAP mode (best render odds): our baked FxMesh GUID as four ints \"a,b,c,d\". Instead of loading a whole " +
+                                  "foreign material, the hook keeps the district's OWN working material and swaps just its mesh to ours — so our model " +
+                                  "renders in the context that already works. Only needs an FxMesh (District step 1), no cloned material. " +
+                                  "Takes precedence over the other two modes. Blank = off.");
 
             // Patch each hook independently so a single missing Amplitude target (a game update renaming one type) only
             // disables THAT hook -- instead of a null TargetMethod throwing out of PatchAll and failing the whole plugin.

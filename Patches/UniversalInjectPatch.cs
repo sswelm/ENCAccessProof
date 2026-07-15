@@ -1847,8 +1847,17 @@ namespace ENCAccessProof
 
         // ---- EXPERIMENTAL district-visual repoint (docs/District-Visuals.md) ----
         // Parsed once from config: the target district name + the two override modes. dGuid is a boxed Amplitude Guid or null.
-        static bool distParsed, distOn; static string distName, distAffinity; static object distGuid;
-        static bool distSwapLogged, distGuidLogged;
+        static bool distParsed, distOn; static string distName, distAffinity; static object distGuid, distFxMeshGuid;
+        static bool distSwapLogged, distGuidLogged, distMeshLogged;
+        static object ParseGuidCsv(string gs)
+        {
+            if (string.IsNullOrEmpty(gs)) return null;
+            var p = gs.Split(new[] { ',', ' ', '\t', ';', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length == 4 && int.TryParse(p[0], out var a) && int.TryParse(p[1], out var b) && int.TryParse(p[2], out var c) && int.TryParse(p[3], out var d))
+                return MakeGuid(a, b, c, d);
+            Plugin.Log.LogError($"[District] GUID must be four ints \"a,b,c,d\" (got '{gs}').");
+            return null;
+        }
         static void EnsureDistrictConfig()
         {
             if (distParsed) return; distParsed = true;
@@ -1857,19 +1866,56 @@ namespace ENCAccessProof
                 distOn = Plugin.DistrictRepointOn != null && Plugin.DistrictRepointOn.Value;
                 distName = Plugin.DistrictName?.Value?.Trim() ?? "";
                 distAffinity = Plugin.DistrictAffinity?.Value?.Trim() ?? "";
-                var gs = Plugin.DistrictEvolverGuid?.Value?.Trim() ?? "";
-                if (gs.Length > 0)
-                {
-                    var parts = gs.Split(new[] { ',', ' ', '\t', ';', '-' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 4 && int.TryParse(parts[0], out var a) && int.TryParse(parts[1], out var b)
-                        && int.TryParse(parts[2], out var c) && int.TryParse(parts[3], out var d))
-                        distGuid = MakeGuid(a, b, c, d);
-                    else
-                        Plugin.Log.LogError($"[District] DistrictEvolverGuid must be four ints \"a,b,c,d\" (got '{gs}') — GUID mode off.");
-                }
-                if (distOn) Plugin.Log.LogInfo($"[District] repoint ACTIVE: name='{distName}' affinity='{distAffinity}' guid={(distGuid != null ? "set" : "none")}");
+                distGuid = ParseGuidCsv(Plugin.DistrictEvolverGuid?.Value?.Trim() ?? "");
+                distFxMeshGuid = ParseGuidCsv(Plugin.DistrictFxMeshGuid?.Value?.Trim() ?? "");
+                if (distOn) Plugin.Log.LogInfo($"[District] repoint ACTIVE: name='{distName}' affinity='{distAffinity}' evolverGuid={(distGuid != null ? "set" : "none")} fxMeshGuid={(distFxMeshGuid != null ? "set" : "none")}");
             }
             catch (Exception ex) { Plugin.Log.LogError("[District] config parse: " + ex); }
+        }
+
+        static readonly HashSet<string> distSeen = new HashSet<string>();
+        // Diagnostic: log every distinct district name UpdateLevelBuild fires for, so we can see the ACTUAL
+        // ConstructibleDefinitionName to target (an Extension_Base_* reactor may present under its host district's name).
+        internal static void DistrictDiag(object district)
+        {
+            try
+            {
+                EnsureDistrictConfig();
+                if (!distOn) return;
+                var name = GetMember(district, "ConstructibleDefinitionName")?.ToString() ?? "<null>";
+                if (distSeen.Add(name))
+                    Plugin.Log.LogInfo($"[District] saw district '{name}'{(name == distName ? "  <-- MATCHES DistrictName" : "")}");
+            }
+            catch { }
+        }
+
+        static readonly HashSet<string> distMatDumped = new HashSet<string>();
+        // Diagnostic: after a district builds, read the FxEvolverMaterial GUID its main channel resolved to and log it as
+        // "a,b,c,d" — ready to paste into another district's DistrictEvolverGuid (the clean SetChannel path), and the way to
+        // grab a donor material for the bake. plbc.channels[layer].EvolverMaterialGuid (PerChannelData is a private struct).
+        internal static void DistrictDumpMaterial(object district)
+        {
+            try
+            {
+                EnsureDistrictConfig();
+                if (!distOn) return;
+                var name = GetMember(district, "ConstructibleDefinitionName")?.ToString() ?? "<null>";
+                if (!distMatDumped.Add(name)) return;
+                var plbc = AccessTools.Field(district.GetType(), "presentationLevelBuildComponent")?.GetValue(district);
+                if (plbc == null) return;
+                int layer = 0;
+                var lf = district.GetType().GetField("mainLevelBuildComponantLayer", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.FlattenHierarchy);
+                if (lf?.GetValue(null) is int li) layer = li;
+                if (!(AccessTools.Field(plbc.GetType(), "channels")?.GetValue(plbc) is Array channels) || layer >= channels.Length) return;
+                var box = channels.GetValue(layer);
+                var guid = box.GetType().GetProperty("EvolverMaterialGuid")?.GetValue(box);
+                if (guid == null) return;
+                var gt = guid.GetType();
+                object a = gt.GetField("a", BF)?.GetValue(guid), b = gt.GetField("b", BF)?.GetValue(guid),
+                       c = gt.GetField("c", BF)?.GetValue(guid), d = gt.GetField("d", BF)?.GetValue(guid);
+                Plugin.Log.LogInfo($"[DistrictMat] {name} -> material {a},{b},{c},{d}");
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[DistrictMat] dump: " + ex); }
         }
 
         static bool DistrictMatches(object district, out object plbc)
@@ -1879,7 +1925,7 @@ namespace ENCAccessProof
             if (!distOn || string.IsNullOrEmpty(distName)) return false;
             var name = GetMember(district, "ConstructibleDefinitionName")?.ToString();
             if (name != distName) return false;
-            plbc = GetMember(district, "presentationLevelBuildComponent");
+            plbc = AccessTools.Field(district.GetType(), "presentationLevelBuildComponent")?.GetValue(district);
             return true;
         }
 
@@ -1891,14 +1937,42 @@ namespace ENCAccessProof
             {
                 if (!DistrictMatches(district, out _)) return;
                 if (string.IsNullOrEmpty(distAffinity) || distGuid != null) return;  // GUID mode (if set) supersedes the affinity swap
-                var ssType = AccessTools.TypeByName("Amplitude.Framework.StaticString");
-                if (ssType == null) return;
-                var ss = Activator.CreateInstance(ssType, new object[] { distAffinity });
+                // Derive the StaticString type from the field itself (it's Amplitude.StaticString, not Amplitude.Framework.*).
+                var vf = AccessTools.Field(district.GetType(), "visualAffinityName");
+                if (vf == null) { Plugin.Log.LogError("[District] visualAffinityName field not found."); return; }
+                var ss = Activator.CreateInstance(vf.FieldType, new object[] { distAffinity });
                 SetMember(district, "visualAffinityName", ss);
                 SetMember(district, "initialVisualAffinityName", ss);
                 if (!distSwapLogged) { distSwapLogged = true; Plugin.Log.LogInfo($"[District] '{distName}' affinity -> '{distAffinity}' (zero-bake swap)"); }
             }
             catch (Exception ex) { Plugin.Log.LogError("[District] affinity swap: " + ex); }
+        }
+
+        // MODE 3 (best render odds): keep the district's OWN loaded material (which already renders correctly in this
+        // context) and swap only its mesh GUID to our baked FxMesh. Avoids the "foreign material doesn't render here"
+        // problem — our model draws through the exact material/shader/output-layer the vanilla building already uses.
+        internal static void DistrictMeshSwap(object district)
+        {
+            try
+            {
+                if (distFxMeshGuid == null) return;                       // cheap bail when mesh-swap mode is off
+                if (!DistrictMatches(district, out var plbc) || plbc == null) return;
+                int layer = 0;
+                var lf = district.GetType().GetField("mainLevelBuildComponantLayer", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.FlattenHierarchy);
+                if (lf?.GetValue(null) is int li) layer = li;
+                if (!(AccessTools.Field(plbc.GetType(), "channels")?.GetValue(plbc) is Array channels) || layer >= channels.Length) return;
+                var box = channels.GetValue(layer);
+                // evolverMaterial is a reference type, so the copy from the boxed struct IS the live drawer — mutating it sticks.
+                var drawer = AccessTools.Field(box.GetType(), "evolverMaterial")?.GetValue(box);
+                if (drawer == null) { if (!distMeshLogged) { distMeshLogged = true; Plugin.Log.LogWarning($"[District] '{distName}': channel {layer} has no loaded material yet to mesh-swap."); } return; }
+                var mf = AccessTools.Field(drawer.GetType(), "mesh");
+                if (mf == null) { if (!distMeshLogged) { distMeshLogged = true; Plugin.Log.LogError($"[District] drawer '{drawer.GetType().Name}' has no 'mesh' field (not a drawer material?)."); } return; }
+                mf.SetValue(drawer, distFxMeshGuid);
+                // reset the cached mesh index so the drawer re-resolves our GUID on its next render (AsynchEnsureMeshLoaded).
+                AccessTools.Field(drawer.GetType(), "meshIndex")?.SetValue(drawer, (uint)0);
+                if (!distMeshLogged) { distMeshLogged = true; Plugin.Log.LogInfo($"[District] '{distName}' mesh-swap: drawer '{drawer.GetType().Name}' mesh -> our FxMesh (layer {layer})"); }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[District] mesh swap: " + ex); }
         }
 
         // MODE 2 (custom model): after UpdateLevelBuild loaded the vanilla material, override the main mesh channel with our
@@ -2137,8 +2211,8 @@ namespace ENCAccessProof
                     .FirstOrDefault(m => m.Name == "UpdateLevelBuild" && m.GetParameters().Length == 1);
         }
         // Prefix runs before the request is built, so the affinity swap feeds FillRequest.
-        static void Prefix(object __instance) => UniversalInject.DistrictAffinitySwap(__instance);
+        static void Prefix(object __instance) { UniversalInject.DistrictDiag(__instance); UniversalInject.DistrictAffinitySwap(__instance); }
         // Postfix runs after SetChannel loaded the vanilla material, so our GUID override wins.
-        static void Postfix(object __instance) => UniversalInject.DistrictGuidOverride(__instance);
+        static void Postfix(object __instance) { UniversalInject.DistrictDumpMaterial(__instance); UniversalInject.DistrictMeshSwap(__instance); UniversalInject.DistrictGuidOverride(__instance); }
     }
 }
