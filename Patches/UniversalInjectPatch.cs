@@ -1845,6 +1845,85 @@ namespace ENCAccessProof
         { var gt = AccessTools.TypeByName("Amplitude.Framework.Guid"); if (gt == null) return null; var g = Activator.CreateInstance(gt);
           gt.GetField("a", BF)?.SetValue(g, a); gt.GetField("b", BF)?.SetValue(g, b); gt.GetField("c", BF)?.SetValue(g, c); gt.GetField("d", BF)?.SetValue(g, d); return g; }
 
+        // ---- EXPERIMENTAL district-visual repoint (docs/District-Visuals.md) ----
+        // Parsed once from config: the target district name + the two override modes. dGuid is a boxed Amplitude Guid or null.
+        static bool distParsed, distOn; static string distName, distAffinity; static object distGuid;
+        static bool distSwapLogged, distGuidLogged;
+        static void EnsureDistrictConfig()
+        {
+            if (distParsed) return; distParsed = true;
+            try
+            {
+                distOn = Plugin.DistrictRepointOn != null && Plugin.DistrictRepointOn.Value;
+                distName = Plugin.DistrictName?.Value?.Trim() ?? "";
+                distAffinity = Plugin.DistrictAffinity?.Value?.Trim() ?? "";
+                var gs = Plugin.DistrictEvolverGuid?.Value?.Trim() ?? "";
+                if (gs.Length > 0)
+                {
+                    var parts = gs.Split(new[] { ',', ' ', '\t', ';', '-' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 4 && int.TryParse(parts[0], out var a) && int.TryParse(parts[1], out var b)
+                        && int.TryParse(parts[2], out var c) && int.TryParse(parts[3], out var d))
+                        distGuid = MakeGuid(a, b, c, d);
+                    else
+                        Plugin.Log.LogError($"[District] DistrictEvolverGuid must be four ints \"a,b,c,d\" (got '{gs}') — GUID mode off.");
+                }
+                if (distOn) Plugin.Log.LogInfo($"[District] repoint ACTIVE: name='{distName}' affinity='{distAffinity}' guid={(distGuid != null ? "set" : "none")}");
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[District] config parse: " + ex); }
+        }
+
+        static bool DistrictMatches(object district, out object plbc)
+        {
+            plbc = null;
+            EnsureDistrictConfig();
+            if (!distOn || string.IsNullOrEmpty(distName)) return false;
+            var name = GetMember(district, "ConstructibleDefinitionName")?.ToString();
+            if (name != distName) return false;
+            plbc = GetMember(district, "presentationLevelBuildComponent");
+            return true;
+        }
+
+        // MODE 1 (zero-bake): before the request is built, swap the district's visualAffinity to another vanilla one so it
+        // resolves to an existing building. Pure config, no custom asset — proves the hook + per-district scoping in-game.
+        internal static void DistrictAffinitySwap(object district)
+        {
+            try
+            {
+                if (!DistrictMatches(district, out _)) return;
+                if (string.IsNullOrEmpty(distAffinity) || distGuid != null) return;  // GUID mode (if set) supersedes the affinity swap
+                var ssType = AccessTools.TypeByName("Amplitude.Framework.StaticString");
+                if (ssType == null) return;
+                var ss = Activator.CreateInstance(ssType, new object[] { distAffinity });
+                SetMember(district, "visualAffinityName", ss);
+                SetMember(district, "initialVisualAffinityName", ss);
+                if (!distSwapLogged) { distSwapLogged = true; Plugin.Log.LogInfo($"[District] '{distName}' affinity -> '{distAffinity}' (zero-bake swap)"); }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[District] affinity swap: " + ex); }
+        }
+
+        // MODE 2 (custom model): after UpdateLevelBuild loaded the vanilla material, override the main mesh channel with our
+        // own baked FxEvolverMaterial via the game's public SetChannel(int layer, Guid, RenderMode, forceRefresh).
+        internal static void DistrictGuidOverride(object district)
+        {
+            try
+            {
+                if (distGuid == null) return;                          // cheap bail when GUID mode is off
+                if (!DistrictMatches(district, out var plbc) || plbc == null) return;
+                // main level-build layer is a private static int on PresentationDistrict (= 0); read it, fall back to 0.
+                int layer = 0;
+                var lf = district.GetType().GetField("mainLevelBuildComponantLayer", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.FlattenHierarchy);
+                if (lf?.GetValue(null) is int li) layer = li;
+                var renderMode = GetMember(district, "RenderMode");    // boxed HgFxAnchorComponent.RenderModeEnum
+                var setChannel = plbc.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                    .FirstOrDefault(m => m.Name == "SetChannel" && m.GetParameters().Length == 4
+                        && m.GetParameters()[1].ParameterType.Name == "Guid");
+                if (setChannel == null) { Plugin.Log.LogError("[District] SetChannel(int,Guid,...) overload not found (game update?)."); distGuid = null; return; }
+                setChannel.Invoke(plbc, new object[] { layer, distGuid, renderMode, true });
+                if (!distGuidLogged) { distGuidLogged = true; Plugin.Log.LogInfo($"[District] '{distName}' mesh channel -> our FxEvolverMaterial (layer {layer})"); }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[District] guid override: " + ex); }
+        }
+
         // Diagnostic: dump the LIVE GPU mesh-content buffer usage per content layer. Answers the real scaling question
         // ("how many more models fit"): the Amplitude manager packs every registered skeleton/mesh-collection into a
         // fixed buffer sized 100k verts / 250k indices / 256 meshes PER ContentLayer, tracked by running cursors. Reading
@@ -2039,5 +2118,27 @@ namespace ENCAccessProof
             if (!UniversalInject.AudioTraceOn) return;
             if (UniversalInject.SeenEvents.Add(en)) Plugin.Log.LogInfo($"[AudioTrace] NEW event: '{en}'");
         }
+    }
+
+    // EXPERIMENTAL — the DISTRICT injection axis (docs/District-Visuals.md). A district's on-map building is chosen by a
+    // named visual-affinity slot (the district-side analogue of a unit's pawnDescription) resolved to a static FxMesh via
+    // FxEvolverMaterial. We patch PresentationDistrict.UpdateLevelBuild (the moment the district builds its asset request
+    // and calls SetChannel) and, ONLY for the one district named in config, either swap its affinity to another vanilla
+    // one (zero-bake proof) or override the resolved mesh channel with our own baked FxEvolverMaterial GUID (custom model).
+    // Scoped by ConstructibleDefinitionName, so the shared affinity every other district borrows is never touched.
+    [HarmonyPatch]
+    internal static class Hk_DistrictRepoint
+    {
+        static MethodBase TargetMethod()
+        {
+            var t = AccessTools.TypeByName("Amplitude.Mercury.Presentation.PresentationDistrict");
+            // UpdateLevelBuild(HgFxAnchorComponent.EventNameEnum) — the district's own override (fires only for districts).
+            return t?.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                    .FirstOrDefault(m => m.Name == "UpdateLevelBuild" && m.GetParameters().Length == 1);
+        }
+        // Prefix runs before the request is built, so the affinity swap feeds FillRequest.
+        static void Prefix(object __instance) => UniversalInject.DistrictAffinitySwap(__instance);
+        // Postfix runs after SetChannel loaded the vanilla material, so our GUID override wins.
+        static void Postfix(object __instance) => UniversalInject.DistrictGuidOverride(__instance);
     }
 }

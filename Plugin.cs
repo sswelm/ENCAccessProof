@@ -19,6 +19,11 @@ namespace ENCAccessProof
         internal static ConfigEntry<KeyCode> ToggleKey;      // open/close the feedback window (Shift+ToggleKey = dump GPU mesh-buffer usage)
         internal static ConfigEntry<bool>   UniversalInjectOn; // registry-driven universal injector (Model Factory)
         internal static ConfigEntry<int>    RespawnDelayFrames; // frames to wait after a borrowed-rotor unit renders before re-spawning it (first-instance rotor fix)
+        // --- EXPERIMENTAL: district visual repoint (the second injection axis; see docs/District-Visuals.md) ---
+        internal static ConfigEntry<bool>   DistrictRepointOn;   // master enable for the district-visual repoint hook
+        internal static ConfigEntry<string> DistrictName;        // which district's on-map visual to replace (ConstructibleDefinitionName), e.g. Villages_StoneQuarry
+        internal static ConfigEntry<string> DistrictAffinity;    // ZERO-BAKE proof: swap the district's visualAffinity to another vanilla one (renders an existing building; no custom asset needed)
+        internal static ConfigEntry<string> DistrictEvolverGuid; // CUSTOM MODEL: an FxEvolverMaterial GUID (our baked quarry) as 4 ints "a,b,c,d"; SetChannel points the district's mesh channel at it
 
         private bool show;
         private Rect winRect = new Rect(60, 60, 480, 420);
@@ -45,6 +50,21 @@ namespace ENCAccessProof
                                   "the plugin re-spawns it to clear the first-instance low-rotor bug. 1 = near-instant (default). " +
                                   "Increase (e.g. 30 = ~0.5s at 60fps) only if a slower machine briefly shows the low rotor before it corrects.");
 
+            // --- EXPERIMENTAL district-visual repoint (docs/District-Visuals.md). Off by default; scoped to ONE district by
+            //     name so the shared visual affinity other districts borrow is never touched. Two independent modes below. ---
+            DistrictRepointOn   = Config.Bind("District", "DistrictRepoint", false,
+                                  "EXPERIMENTAL: enable replacing a single district's on-map visual (the second injection axis). " +
+                                  "Scoped to the DistrictName below only — other districts sharing the same visual affinity are unaffected.");
+            DistrictName        = Config.Bind("District", "DistrictName", "Villages_StoneQuarry",
+                                  "The ConstructibleDefinitionName of the district whose on-map building to replace (e.g. ENC's Villages_StoneQuarry).");
+            DistrictAffinity    = Config.Bind("District", "DistrictAffinityOverride", "",
+                                  "ZERO-BAKE proof mode: set to another vanilla visual-affinity name (e.g. DistrictVisualAffinity_Base_Industry) to make the " +
+                                  "district render that existing building instead — no custom asset needed. Proves the hook + scoping in-game. Blank = off.");
+            DistrictEvolverGuid = Config.Bind("District", "DistrictEvolverGuid", "",
+                                  "CUSTOM-MODEL mode: an FxEvolverMaterial asset GUID (our baked quarry material) as four ints \"a,b,c,d\". " +
+                                  "The hook calls the game's public SetChannel(layer, guid) so the district draws our custom static mesh. Blank = off. " +
+                                  "Takes precedence over DistrictAffinityOverride when both are set.");
+
             // Patch each hook independently so a single missing Amplitude target (a game update renaming one type) only
             // disables THAT hook -- instead of a null TargetMethod throwing out of PatchAll and failing the whole plugin.
             var harmony = new Harmony(GUID);
@@ -53,6 +73,7 @@ namespace ENCAccessProof
                 typeof(UniRegisterHook), typeof(UniRepointHook), typeof(UniPawnPoseHook),
                 typeof(Hk_ArtilleryStrike),   // firing-on-attack: bombard -> play the model's clip once (docs/Firing-On-Attack.md)
                 typeof(Hk_AudioTrace),        // diagnostic: live-trace Wwise PostEvent (gated behind the F8 Audio Trace toggle)
+                typeof(Hk_DistrictRepoint),   // EXPERIMENTAL: replace one district's on-map visual (docs/District-Visuals.md)
             };
             foreach (var t in hooks)
             {
