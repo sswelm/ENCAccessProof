@@ -154,6 +154,8 @@ The plugin's own cfg (`…\community.humankind.encaccessproof.cfg`) — press **
   (prioritized) and the hardening order toward package-readiness.
 - **Fire-on-attack:** [Firing-On-Attack.md](docs/Firing-On-Attack.md) — how a model plays its clip on the unit's combat
   action (Humankind's `SimulationEvent` bus), the one-shot pose trigger, and the per-model animated-bake scale toggle. **Built.**
+- **District visuals:** [District-Visuals.md](docs/District-Visuals.md) — the second injection axis: replacing a
+  district's on-map building with a custom static model (pipeline, Harmony seam, feasibility). **Investigating.**
 - **Learn from others:** [Ecosystem-Survey.md](docs/Ecosystem-Survey.md) — every Humankind BepInEx plugin on GitHub, what
   problem each solves, and the techniques worth borrowing (lifecycle anchors, order-bus sequencing, save extensions, …).
 
