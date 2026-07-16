@@ -26,6 +26,7 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> DistrictEvolverGuid; // CUSTOM MODEL: an FxEvolverMaterial GUID (our baked quarry) as 4 ints "a,b,c,d"; SetChannel points the district's mesh channel at it
         internal static ConfigEntry<string> DistrictFxMeshGuid;  // MESH-SWAP: our baked FxMesh GUID; keep the district's own working material, swap only its mesh to ours (best render odds)
         internal static ConfigEntry<int>    DistrictBufferHeadroom; // extra vertices to add to the big (Visual) GPU mesh buffer at init, so custom district meshes fit even in a full late-game city. 0 = off (leave the buffer as the game sizes it).
+        internal static ConfigEntry<bool>   DistrictIsolate;         // scope the mesh-swap to only the target district's own tile (private per-instance leaf) instead of the shared-global swap
 
         private bool show;
         private Rect winRect = new Rect(60, 60, 480, 420);
@@ -71,6 +72,10 @@ namespace ENCAccessProof
                                   "foreign material, the hook keeps the district's OWN working material and swaps just its mesh to ours — so our model " +
                                   "renders in the context that already works. Only needs an FxMesh (District step 1), no cloned material. " +
                                   "Takes precedence over the other two modes. Blank = off.");
+            DistrictIsolate     = Config.Bind("District", "DistrictIsolate", false,
+                                  "SCOPE the mesh-swap to ONLY the DistrictName tile(s), instead of mutating the shared building leaves globally. " +
+                                  "Builds ONE private (Instantiated) leaf material pointing at our FxMesh and points just this district's own " +
+                                  "channel + particle at it — so other cities' buildings are untouched. Needs DistrictFxMeshGuid set. EXPERIMENTAL.");
             DistrictBufferHeadroom = Config.Bind("District", "DistrictBufferHeadroom", 0,
                                   "Extra VERTICES to add to the game's big 'Visual' GPU mesh buffer (the shared building buffer, ~3,000,000 by default) " +
                                   "at startup, so custom district meshes fit even when a built-up late-game city has nearly filled it. 0 = off. " +
