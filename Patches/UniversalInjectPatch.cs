@@ -1863,7 +1863,7 @@ namespace ENCAccessProof
         internal static readonly List<DistrictModel> distModels = new List<DistrictModel>();
 
         static bool distParsed, distOn; static string distName, distAffinity; static object distGuid, distFxMeshGuid;
-        static bool distSwapLogged, distGuidLogged, distMeshLogged;
+        static bool distSwapLogged, distGuidLogged;
         static object ParseGuidCsv(string gs)
         {
             if (string.IsNullOrEmpty(gs)) return null;
@@ -1923,7 +1923,7 @@ namespace ENCAccessProof
             try
             {
                 EnsureDistrictConfig();
-                if (!distOn) return;
+                if (!distOn || Plugin.DistrictDebug == null || !Plugin.DistrictDebug.Value) return;   // investigation aid — off unless DistrictDebug
                 var name = GetMember(district, "ConstructibleDefinitionName")?.ToString() ?? "<null>";
                 if (distSeen.Add(name))
                     Plugin.Log.LogInfo($"[District] saw district '{name}'{(name == distName ? "  <-- MATCHES DistrictName" : "")}");
@@ -1940,7 +1940,7 @@ namespace ENCAccessProof
             try
             {
                 EnsureDistrictConfig();
-                if (!distOn) return;
+                if (!distOn || Plugin.DistrictDebug == null || !Plugin.DistrictDebug.Value) return;   // investigation aid — off unless DistrictDebug
                 var name = GetMember(district, "ConstructibleDefinitionName")?.ToString() ?? "<null>";
                 if (!distMatDumped.Add(name)) return;
                 var plbc = AccessTools.Field(district.GetType(), "presentationLevelBuildComponent")?.GetValue(district);
@@ -1969,7 +1969,7 @@ namespace ENCAccessProof
             try
             {
                 EnsureDistrictConfig();
-                if (!distOn) return;
+                if (!distOn || Plugin.DistrictDebug == null || !Plugin.DistrictDebug.Value) return;   // investigation aid — off unless DistrictDebug
                 var name = GetMember(district, "ConstructibleDefinitionName")?.ToString() ?? "<null>";
                 if (name != distName) return;                       // only the targeted district, to avoid spam
                 if (!distSubDumped.Add(name)) return;
@@ -2023,8 +2023,9 @@ namespace ENCAccessProof
         {
             try
             {
+                EnsureDistrictConfig();
+                if (string.IsNullOrEmpty(distAffinity) || distGuid != null) return;  // cheap bail BEFORE any reflection — this legacy mode is usually off
                 if (!DistrictMatches(district, out _)) return;
-                if (string.IsNullOrEmpty(distAffinity) || distGuid != null) return;  // GUID mode (if set) supersedes the affinity swap
                 // Derive the StaticString type from the field itself (it's Amplitude.StaticString, not Amplitude.Framework.*).
                 var vf = AccessTools.Field(district.GetType(), "visualAffinityName");
                 if (vf == null) { Plugin.Log.LogError("[District] visualAffinityName field not found."); return; }
@@ -2039,7 +2040,6 @@ namespace ENCAccessProof
         // MODE 3 (best render odds): keep the district's OWN loaded material (which already renders correctly in this
         // context) and swap only its mesh GUID to our baked FxMesh. Avoids the "foreign material doesn't render here"
         // problem — our model draws through the exact material/shader/output-layer the vanilla building already uses.
-        static object distSwapMaterial;   // cached channel-0 material of the target district, re-swapped each frame
         // Recursively rewrite the `mesh` GUID of every LEAF drawer reachable from a material: a plain drawer has a `mesh`
         // Guid field (swap it); a SELECTOR/EMITTER holds its loaded sub-materials in `fxMaterialCacheEntries.Entries[].FxMaterial`
         // (+ InvalidNameEntry) — recurse into those. Reuses the game's OWN loaded drawers, so they keep the selector's context.
@@ -2133,27 +2133,9 @@ namespace ENCAccessProof
             return n;
         }
 
-        // (The old single-district MODE 3 cache was replaced by the registry-driven DistrictApplyEntries/Tick below.)
-        static void DumpOurFxMesh()
-        {
-            try
-            {
-                var fxMeshType = AccessTools.TypeByName("Amplitude.Graphics.Fx.FxMesh");
-                var adb = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
-                if (fxMeshType == null || adb == null || distFxMeshGuid == null) return;
-                var load = adb.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => (m.Name == "LoadAsset" || m.Name == "TryLoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length >= 1);
-                var g = load?.MakeGenericMethod(fxMeshType);
-                if (g == null) return;
-                var fx = g.Invoke(null, g.GetParameters().Length == 1 ? new[] { distFxMeshGuid } : new[] { distFxMeshGuid, null });
-                if (fx == null) { Plugin.Log.LogError("[District] our FxMesh loaded NULL by GUID — not shipped in the bundle or wrong GUID."); return; }
-                var meshObj = fxMeshType.GetProperty("Mesh", BF)?.GetValue(fx) ?? AccessTools.Field(fxMeshType, "mesh")?.GetValue(fx);
-                var um = meshObj as UnityEngine.Mesh;
-                var ia = AccessTools.Field(fxMeshType, "importAngles")?.GetValue(fx);
-                Plugin.Log.LogInfo($"[District] our FxMesh '{(fx as UnityEngine.Object)?.name}': Mesh={(um == null ? "NULL — the mesh reference didn't ship" : um.vertexCount + " verts, bounds=" + um.bounds.size)} importAngles={ia}");
-            }
-            catch (Exception ex) { Plugin.Log.LogError("[District] FxMesh dump: " + ex); }
-        }
+        // (The old single-district MODE 3 cache was replaced by the registry-driven DistrictApplyEntries/Tick below.
+        // Two dead investigation dumps — DumpOurFxMesh and DumpMaterialTree ([DistrictTree]) — were removed in the
+        // post-breakthrough cleanup; recover from git history if a new district material chain ever needs mapping.)
 
         // Full district diagnostic for the F8 window: our FxMesh, the collected leaves, their resolved meshIndex, and the
         // DISTRICT mesh manager's per-layer buffer FILL (verts used / buffer size) — so we can SEE if our mesh doesn't fit.
@@ -2424,58 +2406,6 @@ namespace ENCAccessProof
             }
             // The manager exists but its internals aren't built yet (Register throws before its Load) — retry next frame.
             catch (Exception ex) { if (++propWait % 600 == 0) Plugin.Log.LogWarning("[Props] tick (retrying): " + ex.Message); }
-        }
-
-        // Diagnostic: log a material's instance fields — flagging any that hold an FxEvolverMaterial (a loaded sub-material),
-        // an array, or a Guid — and recurse into loaded sub-materials, so we can map where the leaf drawer's mesh actually is.
-        static void DumpMaterialTree(object mat, int depth)
-        {
-            if (mat == null || depth > 4) return;
-            var t = mat.GetType();
-            string pad = new string(' ', depth * 2);
-            Plugin.Log.LogInfo($"[DistrictTree]{pad}{t.Name}  hasMeshField={(AccessTools.Field(t, "mesh") != null)}");
-            var fmType = AccessTools.TypeByName("Amplitude.Graphics.Fx.FxEvolverMaterial");
-            foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-            {
-                object v; try { v = f.GetValue(mat); } catch { continue; }
-                if (v == null) continue;
-                var ft = v.GetType();
-                if (fmType != null && fmType.IsInstanceOfType(v))
-                { Plugin.Log.LogInfo($"[DistrictTree]{pad}  .{f.Name} = FxEvolverMaterial({ft.Name}) -> recurse"); DumpMaterialTree(v, depth + 1); }
-                else if (v is Array arr && arr.Length > 0)
-                {
-                    Plugin.Log.LogInfo($"[DistrictTree]{pad}  .{f.Name} = {ft.Name}[{arr.Length}]");
-                    // peek the first few elements for nested FxMaterial fields (struct entries like FxMaterialCacheEntry)
-                    for (int i = 0; i < Math.Min(arr.Length, 3); i++)
-                    {
-                        var el = arr.GetValue(i); if (el == null) continue;
-                        foreach (var ef in el.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
-                        {
-                            object ev; try { ev = ef.GetValue(el); } catch { continue; }
-                            if (ev != null && fmType != null && fmType.IsInstanceOfType(ev))
-                            { Plugin.Log.LogInfo($"[DistrictTree]{pad}    [{i}].{ef.Name} = FxEvolverMaterial({ev.GetType().Name}) -> recurse"); DumpMaterialTree(ev, depth + 2); }
-                        }
-                    }
-                }
-                else if (ft.Name == "Guid")
-                { var g = v; var gt = g.GetType(); Plugin.Log.LogInfo($"[DistrictTree]{pad}  .{f.Name} = Guid {gt.GetField("a", BF)?.GetValue(g)},{gt.GetField("b", BF)?.GetValue(g)},{gt.GetField("c", BF)?.GetValue(g)},{gt.GetField("d", BF)?.GetValue(g)}"); }
-            }
-            // if it's a selector, LOAD its distinct pairs sub-materials (synchronously) and show what they are — this is
-            // where the mesh-bearing leaf drawer should surface.
-            if (AccessTools.Field(t, "pairs")?.GetValue(mat) is Array prs)
-            {
-                var seen = new HashSet<string>(); int shown = 0;
-                foreach (var pr in prs)
-                {
-                    if (pr == null || shown >= 6) continue;
-                    var g = PairGuid(pr); if (GuidIsNull(g)) continue;
-                    var gt = g.GetType(); string key = $"{gt.GetField("a", BF)?.GetValue(g)},{gt.GetField("b", BF)?.GetValue(g)},{gt.GetField("c", BF)?.GetValue(g)},{gt.GetField("d", BF)?.GetValue(g)}";
-                    if (!seen.Add(key)) continue; shown++;
-                    var sub = TryLoadMaterial(g);
-                    Plugin.Log.LogInfo($"[DistrictTree]{pad}  pair[{key}] -> {(sub == null ? "TryLoad returned NULL" : sub.GetType().Name + " hasMesh=" + (AccessTools.Field(sub.GetType(), "mesh") != null))}");
-                    if (sub != null && depth < 2) DumpMaterialTree(sub, depth + 2);
-                }
-            }
         }
 
         // MODE 2 (custom model): after UpdateLevelBuild loaded the vanilla material, override the main mesh channel with our

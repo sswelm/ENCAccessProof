@@ -27,6 +27,7 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> DistrictFxMeshGuid;  // MESH-SWAP: our baked FxMesh GUID; keep the district's own working material, swap only its mesh to ours (best render odds)
         internal static ConfigEntry<int>    DistrictBufferHeadroom; // extra vertices to add to the big (Visual) GPU mesh buffer at init, so custom district meshes fit even in a full late-game city. 0 = off (leave the buffer as the game sizes it).
         internal static ConfigEntry<bool>   DistrictIsolate;         // scope the mesh-swap to only the target district's own tile (private per-instance leaf) instead of the shared-global swap
+        internal static ConfigEntry<bool>   DistrictDebug;           // investigation diagnostics ([District] saw / [DistrictMat] / [DistrictSub] dumps) — off in normal play, they reflect on every district update
         // --- EXPERIMENTAL: generic GPU mesh-buffer overrides (units, districts, any content layer) ---
         internal static ConfigEntry<string> BufferOverrides;     // per-layer overrides "<nameSubstr>:verts=+N,idx=+N,meshes=+N,maxtris=N;..." applied at layer creation
         // --- EXPERIMENTAL: pawn prop/attachment axis (custom weapons & gear; see the sling experiment) ---
@@ -82,6 +83,10 @@ namespace ENCAccessProof
                                   "SCOPE the mesh-swap to ONLY the DistrictName tile(s), instead of mutating the shared building leaves globally. " +
                                   "Builds ONE private (Instantiated) leaf material pointing at our FxMesh and points just this district's own " +
                                   "channel + particle at it — so other cities' buildings are untouched. Needs DistrictFxMeshGuid set. EXPERIMENTAL.");
+            DistrictDebug       = Config.Bind("District", "DistrictDebug", false,
+                                  "Verbose district-investigation diagnostics: log every district name seen ([District] saw), each district's " +
+                                  "resolved material GUID ([DistrictMat]) and the target's sub-material table ([DistrictSub]). These reflect on " +
+                                  "every district update — leave OFF in normal play; turn on only when mapping a new district's material chain.");
             DistrictBufferHeadroom = Config.Bind("District", "DistrictBufferHeadroom", 0,
                                   "Extra VERTICES to add to the game's big 'Visual' GPU mesh buffer (the shared building buffer, ~3,000,000 by default) " +
                                   "at startup, so custom district meshes fit even when a built-up late-game city has nearly filled it. 0 = off. " +
