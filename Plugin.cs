@@ -27,6 +27,8 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> DistrictFxMeshGuid;  // MESH-SWAP: our baked FxMesh GUID; keep the district's own working material, swap only its mesh to ours (best render odds)
         internal static ConfigEntry<int>    DistrictBufferHeadroom; // extra vertices to add to the big (Visual) GPU mesh buffer at init, so custom district meshes fit even in a full late-game city. 0 = off (leave the buffer as the game sizes it).
         internal static ConfigEntry<bool>   DistrictIsolate;         // scope the mesh-swap to only the target district's own tile (private per-instance leaf) instead of the shared-global swap
+        // --- EXPERIMENTAL: generic GPU mesh-buffer overrides (units, districts, any content layer) ---
+        internal static ConfigEntry<string> BufferOverrides;     // per-layer overrides "<nameSubstr>:verts=+N,idx=+N,meshes=+N,maxtris=N;..." applied at layer creation
         // --- EXPERIMENTAL: pawn prop/attachment axis (custom weapons & gear; see the sling experiment) ---
         internal static ConfigEntry<bool>   PropRegisterOn;      // register our baked MeshCollections with the AnimationManager (the fragment render gate)
         internal static ConfigEntry<string> PropCollectionGuids; // semicolon-separated "a,b,c,d" GUIDs of MeshCollection/Skeleton assets to register
@@ -84,6 +86,17 @@ namespace ENCAccessProof
                                   "Extra VERTICES to add to the game's big 'Visual' GPU mesh buffer (the shared building buffer, ~3,000,000 by default) " +
                                   "at startup, so custom district meshes fit even when a built-up late-game city has nearly filled it. 0 = off. " +
                                   "e.g. 1000000 = +~48MB VRAM. Applied once at buffer creation; takes effect on the next launch.");
+
+            // --- EXPERIMENTAL: generic GPU mesh-buffer overrides. Every mesh family (pawns, districts, effects) uploads
+            //     into per-layer GPU buffers created with serialized sizes AND a per-mesh triangle cap that silently
+            //     TRUNCATES any mesh above it (holes in the model, no log). This lifts any of them, per layer. ---
+            BufferOverrides     = Config.Bind("Buffers", "BufferOverrides", "",
+                                  "Per-layer GPU mesh-buffer overrides, applied once at layer creation. Format: " +
+                                  "\"<layerNameSubstring>:verts=+N,idx=+N,meshes=+N,maxtris=N\" — semicolon-separated for several layers. " +
+                                  "verts/idx/meshes ADD to the layer's buffer sizes (vertex buffer / index buffer / mesh table); " +
+                                  "maxtris SETS the per-mesh triangle cap absolutely (0 = unlimited — quads beyond the cap are otherwise " +
+                                  "silently dropped, leaving holes in a detailed model). Layer names: Shift+F8 mesh-budget dump. " +
+                                  "e.g. \"MeshWithSkeleton:verts=+200000,idx=+500000,maxtris=0\". Blank = off.");
 
             // --- EXPERIMENTAL pawn PROP/attachment axis (custom weapons & gear on pawn attachment slots). A
             //     PresentationPawnFragmentMesh (the EQ_* asset a pawn's Attachements slot references) hard-gates on its
@@ -166,6 +179,7 @@ namespace ENCAccessProof
                 if (GUILayout.Button("Dump Atlases")) UniversalInject.DumpOutputLayerAtlases(atlasFilter);
                 if (GUILayout.Button("Dump Audio")) UniversalInject.DumpAudioState(atlasFilter);
                 if (GUILayout.Button("Dump District")) { Prober.Report.Clear(); foreach (var l in UniversalInject.DumpDistrictState()) Prober.Report.Add(l); }
+                if (GUILayout.Button("Mesh Budget")) { Prober.Report.Clear(); foreach (var l in UniversalInject.MeshBudgetLines()) { Prober.Report.Add(l); Plugin.Log.LogInfo("[Budget] " + l); } }
             }
             using (new GUILayout.HorizontalScope())
             {

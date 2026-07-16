@@ -2528,8 +2528,10 @@ namespace ENCAccessProof
                     int v = ToInt(GetMember(L, "currentVertexIndex")),   vMax = ToInt(GetMember(L, "baseVertexBufferSize"));
                     int x = ToInt(GetMember(L, "currentIndexIndex")),    xMax = ToInt(GetMember(L, "baseIndexBufferSize"));
                     int m = ToInt(GetMember(L, "currentMeshAddedCount")), mMax = ToInt(GetMember(L, "maxMeshCount"));
+                    // the PER-MESH ceiling: quads beyond this are SILENTLY dropped at encode (holes in the model). 0 = unlimited.
+                    int mt = ToInt(GetMember(L, "maxMeshTriangleCount"));
                     string tag = i == pawnLayer ? "  <-- your models" : "";
-                    lines.Add($"  L{i} '{nm}': verts {v:n0}/{vMax:n0} ({Pct(v, vMax)}%) | idx {Pct(x, xMax)}% | meshes {m}/{mMax}{tag}");
+                    lines.Add($"  L{i} '{nm}': verts {v:n0}/{vMax:n0} ({Pct(v, vMax)}%) | idx {Pct(x, xMax)}% | meshes {m}/{mMax} | maxTris/mesh {(mt == 0 ? "unlimited" : mt.ToString("n0"))}{tag}");
                 }
             }
             catch (Exception ex) { lines.Add("budget read failed: " + ex.Message); }
@@ -2734,20 +2736,59 @@ namespace ENCAccessProof
         {
             try
             {
+                var t = __instance.GetType();
+                var nm = (t.GetProperty("Name", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(__instance)
+                          ?? t.GetField("name", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(__instance)) as string ?? "";
+
+                // legacy single-purpose knob: enlarge only the building 'Visual' layer (where district meshes go)
                 int extra = Plugin.DistrictBufferHeadroom != null ? Plugin.DistrictBufferHeadroom.Value : 0;
-                if (extra <= 0) return;
-                var f = __instance.GetType().GetField("baseVertexBufferSize", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                if (f == null || f.FieldType != typeof(int)) return;
-                // Only enlarge the building 'Visual' layer (where district meshes go). Skip the pawn
-                // (MeshWithSkeleton, units already have headroom) and Emitter layers so we don't waste VRAM.
-                var nm = (__instance.GetType().GetProperty("Name", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(__instance)
-                          ?? __instance.GetType().GetField("name", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)?.GetValue(__instance)) as string ?? "";
-                if (nm.IndexOf("Visual", StringComparison.OrdinalIgnoreCase) < 0) return;
-                int cur = (int)f.GetValue(__instance);
-                f.SetValue(__instance, cur + extra);
-                Plugin.Log.LogInfo($"[District] enlarged '{nm}' mesh buffer: {cur} -> {cur + extra} verts (+{extra} headroom).");
+                if (extra > 0 && nm.IndexOf("Visual", StringComparison.OrdinalIgnoreCase) >= 0)
+                    BumpIntField(__instance, "baseVertexBufferSize", extra, nm, "[District]");
+
+                // generic per-layer overrides: "<nameSubstr>:verts=+N,idx=+N,meshes=+N,maxtris=N;..."
+                // verts/idx/meshes ADD to buffer sizes; maxtris SETS the per-mesh triangle cap (0 = unlimited —
+                // otherwise quads beyond it are SILENTLY dropped at encode, leaving holes in detailed models).
+                var spec = Plugin.BufferOverrides?.Value?.Trim() ?? "";
+                if (spec.Length == 0) return;
+                foreach (var part in spec.Split(';'))
+                {
+                    int colon = part.IndexOf(':');
+                    if (colon <= 0) continue;
+                    string match = part.Substring(0, colon).Trim();
+                    if (match.Length == 0 || nm.IndexOf(match, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    foreach (var kv in part.Substring(colon + 1).Split(','))
+                    {
+                        var p = kv.Split('=');
+                        if (p.Length != 2 || !int.TryParse(p[1].Trim().TrimStart('+'), out int val)) continue;
+                        switch (p[0].Trim().ToLowerInvariant())
+                        {
+                            case "verts":   BumpIntField(__instance, "baseVertexBufferSize", val, nm, "[Buffers]"); break;
+                            case "idx":     BumpIntField(__instance, "baseIndexBufferSize", val, nm, "[Buffers]"); break;
+                            case "meshes":  BumpIntField(__instance, "maxMeshCount", val, nm, "[Buffers]"); break;
+                            case "maxtris": SetIntField(__instance, "maxMeshTriangleCount", val, nm, "[Buffers]"); break;
+                        }
+                    }
+                }
             }
-            catch (System.Exception ex) { Plugin.Log.LogError("[District] buffer headroom: " + ex); }
+            catch (System.Exception ex) { Plugin.Log.LogError("[Buffers] layer override: " + ex); }
+        }
+
+        static void BumpIntField(object o, string field, int extra, string layer, string tag)
+        {
+            var f = o.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (f == null || f.FieldType != typeof(int)) { Plugin.Log.LogWarning($"{tag} field '{field}' not found on ContentLayer."); return; }
+            int cur = (int)f.GetValue(o);
+            f.SetValue(o, cur + extra);
+            Plugin.Log.LogInfo($"{tag} '{layer}' {field}: {cur} -> {cur + extra} (+{extra}).");
+        }
+
+        static void SetIntField(object o, string field, int val, string layer, string tag)
+        {
+            var f = o.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (f == null || f.FieldType != typeof(int)) { Plugin.Log.LogWarning($"{tag} field '{field}' not found on ContentLayer."); return; }
+            int cur = (int)f.GetValue(o);
+            f.SetValue(o, val);
+            Plugin.Log.LogInfo($"{tag} '{layer}' {field}: {cur} -> {val}{(field == "maxMeshTriangleCount" && val == 0 ? " (unlimited)" : "")}.");
         }
     }
 
