@@ -2328,6 +2328,91 @@ namespace ENCAccessProof
         // a postfix on AnimationManager.AnimationLoad, which rebuilds the manager's collection list and registers the
         // game's own collections; we append ours right there, before any pawn resolves. The Update tick stays as a
         // late-repair safety net only.
+        // ---- EXPERIMENTAL projectile axis (docs/Projectiles.md) ----
+        // A unit's PresentationPawnDefinition.Projectile (a ProjectileAssetReference) is read at attack time to spawn the
+        // flying FX. We load the pawn def AND our baked ProjectileAsset by GUID and re-point the reference's inner guid —
+        // the same AssetReference-guid swap the prop axis uses for a fragment's ModelPrefab. Applied at AnimationLoad (data
+        // is up, before combat); idempotent, so re-running each session just re-asserts it.
+        static bool projParsed;
+        static readonly List<(object pawnGuid, object projGuid, string raw)> projOverrides = new List<(object, object, string)>();
+        internal static void RearmProjectileOverrides() { projParsed = false; projOverrides.Clear(); }
+
+        // Comma-ONLY 4-int parser. (ParseGuidCsv splits on '-' too, which would corrupt the negative ints a projectile
+        // GUID routinely has, e.g. -839228096.)
+        static object ParseGuid4(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            var p = s.Split(',');
+            if (p.Length == 4 && int.TryParse(p[0].Trim(), out var a) && int.TryParse(p[1].Trim(), out var b)
+                && int.TryParse(p[2].Trim(), out var c) && int.TryParse(p[3].Trim(), out var d))
+                return MakeGuid(a, b, c, d);
+            return null;
+        }
+
+        static MethodInfo adbLoadAsset;
+        static object LoadAmpliAsset(Type assetType, object guid)
+        {
+            if (adbLoadAsset == null)
+            {
+                var adb = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
+                adbLoadAsset = adb?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => (m.Name == "TryLoadAsset" || m.Name == "LoadAsset") && m.IsGenericMethodDefinition && m.GetParameters().Length == 1);
+            }
+            try { return adbLoadAsset?.MakeGenericMethod(assetType).Invoke(null, new[] { guid }); } catch { return null; }
+        }
+
+        // AssetReference<T> hides its guid on a private base — walk the chain (mirrors PropBaker.FindFieldDeep).
+        static FieldInfo FindGuidField(Type t)
+        {
+            for (; t != null; t = t.BaseType)
+                foreach (var n in new[] { "guid", "Guid" })
+                {
+                    var f = t.GetField(n, BF | BindingFlags.DeclaredOnly);
+                    if (f != null && f.FieldType.Name == "Guid") return f;
+                }
+            return null;
+        }
+
+        internal static void ApplyProjectileOverrides(string cfg)
+        {
+            if (!projParsed)
+            {
+                projParsed = true;
+                foreach (var entry in (cfg ?? "").Split(';'))
+                {
+                    var e = entry.Trim(); if (e.Length == 0) continue;
+                    int eq = e.IndexOf('=');
+                    if (eq < 0) { Plugin.Log.LogError($"[Projectile] override needs '<pawnDefGuid>=<projectileGuid>' (got '{e}')"); continue; }
+                    var pawnGuid = ParseGuid4(e.Substring(0, eq));
+                    var projGuid = ParseGuid4(e.Substring(eq + 1));
+                    if (pawnGuid == null || projGuid == null) { Plugin.Log.LogError($"[Projectile] both sides must be four ints \"a,b,c,d\" (got '{e}')"); continue; }
+                    projOverrides.Add((pawnGuid, projGuid, e));
+                }
+                if (projOverrides.Count > 0) Plugin.Log.LogInfo($"[Projectile] {projOverrides.Count} override(s) to apply");
+            }
+            if (projOverrides.Count == 0) return;
+
+            var pawnType = AccessTools.TypeByName("Amplitude.Mercury.Data.World.PresentationPawnDefinition");
+            var projType = AccessTools.TypeByName("Amplitude.Mercury.Data.World.ProjectileAsset");
+            if (pawnType == null || projType == null) { Plugin.Log.LogError("[Projectile] ProjectileAsset/PresentationPawnDefinition type not found (game update?)"); return; }
+            var projField = AccessTools.Field(pawnType, "Projectile");   // ProjectileAssetReference (declared on the base; AccessTools walks it)
+            if (projField == null) { Plugin.Log.LogError("[Projectile] pawn def has no 'Projectile' field (game update?)"); return; }
+
+            foreach (var (pawnGuid, projGuid, raw) in projOverrides)
+            {
+                var pawnDef = LoadAmpliAsset(pawnType, pawnGuid) as UnityEngine.Object;
+                if (pawnDef == null) { Plugin.Log.LogWarning($"[Projectile] pawn def GUID didn't resolve ('{raw}') — check the GUID / that its bundle is loaded."); continue; }
+                var proj = LoadAmpliAsset(projType, projGuid) as UnityEngine.Object;
+                if (proj == null) { Plugin.Log.LogWarning($"[Projectile] projectile GUID didn't resolve for '{pawnDef.name}' — is Projectile_KamikazeDrone in a BUILT, loaded bundle?"); continue; }
+                var pref = projField.GetValue(pawnDef);
+                if (pref == null) { pref = Activator.CreateInstance(projField.FieldType); projField.SetValue(pawnDef, pref); }
+                var gf = FindGuidField(pref.GetType());
+                if (gf == null) { Plugin.Log.LogError("[Projectile] ProjectileAssetReference has no guid field (layout changed?)"); continue; }
+                gf.SetValue(pref, projGuid);
+                Plugin.Log.LogInfo($"[Projectile] '{pawnDef.name}'.Projectile -> '{proj.name}'  ({raw})");
+            }
+        }
+
         static readonly List<object> propPending = new List<object>();   // parsed GUIDs not yet registered (per-session)
         static bool propParsed; static int propWait;
         internal static void RearmPropRegistration() { propParsed = false; propPending.Clear(); }   // AnimationLoad cleared the manager's list — register ours again
@@ -2744,6 +2829,30 @@ namespace ENCAccessProof
                 UniversalInject.RegisterPropCollections(__instance, loud: true);
             }
             catch (System.Exception ex) { Plugin.Log.LogError("[Props] AnimationLoad postfix: " + ex); }
+        }
+    }
+
+    // EXPERIMENTAL (opt-in, [Projectiles]) — projectile axis. Postfix on AnimationManager.AnimationLoad (same per-session
+    // seam as props, after data is up and before combat spawns a projectile): re-point the configured units' Projectile at
+    // our baked ProjectileAsset. Re-armed each session so the swap re-asserts if the game reloads its data.
+    [HarmonyPatch]
+    internal static class Hk_ProjectileOverride
+    {
+        static MethodBase TargetMethod()
+        {
+            var am = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
+            return am?.GetMethod("AnimationLoad", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+        }
+        static void Postfix()
+        {
+            try
+            {
+                var cfg = Plugin.ProjectileOverrides?.Value;
+                if (string.IsNullOrWhiteSpace(cfg)) return;
+                UniversalInject.RearmProjectileOverrides();
+                UniversalInject.ApplyProjectileOverrides(cfg);
+            }
+            catch (System.Exception ex) { Plugin.Log.LogError("[Projectile] AnimationLoad postfix: " + ex); }
         }
     }
 }

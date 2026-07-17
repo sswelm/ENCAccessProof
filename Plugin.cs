@@ -35,6 +35,8 @@ namespace ENCAccessProof
         internal static ConfigEntry<string> PropCollectionGuids; // semicolon-separated "a,b,c,d" GUIDs of MeshCollection/Skeleton assets to register
         internal static ConfigEntry<string> PropCollectionNames; // semicolon-separated asset NAMES (same order as the GUIDs) — fallback loader when the Amplitude catalog misses the GUID
 
+        internal static ConfigEntry<string> ProjectileOverrides;  // EXPERIMENTAL projectile axis: "<pawnDefGuid>=<projectileGuid>;..." — point a unit's fired projectile at our baked ProjectileAsset (the kamikaze drone)
+
         private bool show;
         private Rect winRect = new Rect(60, 60, 480, 420);
         private Vector2 scroll;
@@ -118,6 +120,15 @@ namespace ENCAccessProof
                                   "fallback loader: Amplitude's asset catalog misses mod-bundle MeshCollections by GUID, so the plugin pulls " +
                                   "the asset by name from the game's already-loaded Unity bundles instead.");
 
+            // --- EXPERIMENTAL projectile axis (docs/Projectiles.md): a unit's PresentationPawnDefinition.Projectile (a
+            //     ProjectileAssetReference, read at attack time to spawn the flying FX) is re-pointed at our baked
+            //     ProjectileAsset — whose trail is a cloned mesh-drawer rendering our FxMesh (the kamikaze drone). ---
+            ProjectileOverrides = Config.Bind("Projectiles", "ProjectileOverrides", "",
+                                  "EXPERIMENTAL: point a unit's fired projectile at our baked ProjectileAsset. Format: " +
+                                  "\"<pawnDefGuid>=<projectileGuid>;...\" — each side four ints \"a,b,c,d\". For the PresentationPawnDefinition " +
+                                  "with that GUID, set its Projectile to the ProjectileAsset with that GUID (both from Projectile Lab; the pawn " +
+                                  "def GUID is the Guid line of the unit in the SDK Asset Picker). Applied at AnimationLoad. Blank = off.");
+
             // Patch each hook independently so a single missing Amplitude target (a game update renaming one type) only
             // disables THAT hook -- instead of a null TargetMethod throwing out of PatchAll and failing the whole plugin.
             var harmony = new Harmony(GUID);
@@ -129,6 +140,7 @@ namespace ENCAccessProof
                 typeof(Hk_DistrictRepoint),   // EXPERIMENTAL: replace one district's on-map visual (docs/District-Visuals.md)
                 typeof(Hk_DistrictBufferHeadroom), // EXPERIMENTAL: enlarge the shared 'Visual' mesh buffer so custom district meshes fit (opt-in)
                 typeof(Hk_PropRegister),           // EXPERIMENTAL: register our prop MeshCollections at AnimationLoad, before pawn resolution (opt-in)
+                typeof(Hk_ProjectileOverride),     // EXPERIMENTAL: re-point a unit's Projectile at our baked ProjectileAsset (kamikaze drone) at AnimationLoad (opt-in)
             };
             foreach (var t in hooks)
             {
