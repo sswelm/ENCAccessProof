@@ -535,15 +535,23 @@ zero that layer on every animated model (added so artillery aiming couldn't twis
 pinned the soldier to one compass facing forever. It now clears the layer **only for models with the artillery
 behaviors** (fire-on-attack / deploy-on-stop); everything else keeps the game's layers and turns normally.
 
-**OPEN (2026-07-18, one subsystem — procedural pawn state vs our pose override):**
-1. **Drone visual lost on attack** — with the soldier visual injected on the DroneSquadFPV unit, the attack still
-   resolves (sim kill + audio) but the kamikaze-drone projectile no longer displays. The `FireProjectile` spawn rides
-   the pawn's throw ANIMATION, and our pose hook stomps `Pose0` every frame. Designed fix: read what the game wrote to
-   Pose0 before overriding; when it isn't the ordinary idle/move clip, pass the game's pose through (attack window).
-2. **Soldier's head/neck torn** — three mechanisms tested and RULED OUT via the `[Uni][facing]` diagnostic: (a) full
-   layer clear (froze facing), (b) wrapping the runaway angles into 0..360 (no change), (c) zeroing the axis-0
-   "wheel-spin" slots while keeping the axis-1 heading slot (facing kept — this sanitize STAYS in as correct hygiene —
-   but head still torn **with the entire layer flat**). Conclusion: the tear is NOT the BoneRotation layer; it's in
-   the baked skeleton/clip or our Pose0 playback (the earliest upright bake looked intact — suspect one of the later
-   rotation re-bakes or the clip's head-bone curves). Next: decompile the pose/skinning consumer.
-3. The temporary `[Uni][facing]` periodic log stays in until (1)+(2) are resolved.
+**The raw-rig conversion (2026-07-18/19 — how the soldier's "torn head" was actually solved).** A Sketchfab/auto-rigged
+model can ship a **scrambled rest pose that the clip's location keys ASSEMBLE into the body every frame** (the Combine
+soldier's frame-0 posed bones sat up to 91 units from their rests on a 73-unit rig — 129 location curves were
+structural, not decorative). Amplitude plays rotation-only clips, so such a rig can never work as-is. `rig_anim.py`
+now performs, on the rotation-set path: **(a) REST NORMALIZATION** — snapshot every bone's visual matrix on every
+frame, apply the armature modifier at frame 0 (the assembled body becomes the bind mesh), Apply-Pose-As-Rest (the
+assembled pose becomes the rest), re-bind, then **re-derive the whole clip as pure rotations** against the new rest
+(verified in-bake: `frame-0 residual = 0.000167`); **(b)** strip residual location curves; **(c)** collapse no-op root
+bones; **(d)** topological bone rename (Amplitude sorts alphabetically, parents must precede children); **(e)** fold
+rotation+scale into the data and export unit-clean (`global_scale=0.01`, no ×100 root `Lcl Scaling`, skeleton bakes
+all-Scale-1). Verified end-to-end with a **litmus rig** (`Tools/make_litmus.py`: a 12-deep bone chain of colored
+cubes — renders straight in-game, exonerating the runtime for clean rigs). Raw-FBX inspectors used for the diagnosis:
+`Tools/fbx_binddump.py`, `Tools/fbx_lclscale.py`. Quirk until the gates are refactored: the conversion triggers on a
+NON-ZERO Rotation — for a rig needing conversion but no net rotation, enter **360,0,0** (identity, keeps the
+pipeline; the soldier ships with exactly that). `0,0,0` remains the byte-identical legacy path.
+
+**RESOLVED with the clean rig (2026-07-19):** the "drone projectile invisible on attack" symptom disappeared once the
+soldier's rig was properly converted — the corrupted skeleton state was evidently disrupting the attack presentation
+too (mechanism not separately traced; if it regresses, the designed fix was a Pose0 pass-through window during the
+attack). The temporary `[Uni][facing]` periodic log can be removed on the next plugin change.

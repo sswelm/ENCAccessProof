@@ -26,15 +26,18 @@ model *types* loaded, not units on screen.
 - **Animated custom models — a first, one-click.** A quadcopter drone injected onto a land unit renders full-size,
   textured, and **spins its own propellers from its own baked animation** — for any number of instances. Tick
   **Animated**, press Bake.
-- **A HUMANOID character — a full 62-bone rigged soldier (2026-07-18).** The Combine soldier replaces a vehicle unit:
-  right-sized, standing, **turning with its movement**, breathing through its own baked idle clip — the first true
-  *character* through the pipeline (props and machines came first). Two systemic features shipped with him:
-  a **bake-time rig rotation** for raw glTF rigs that round-trip lying down (folded into vertices + bone rests;
-  `0,0,0` = the untouched legacy path, so working models can never regress), and the discovery that the game turns
-  pawns through a procedural **bone-rotation layer** — the plugin now clears it only for artillery models and
-  sanitizes junk "phantom wheel-spin" slots on vehicle donors. *(Known issues on the soldier, one subsystem, under
-  investigation: a head/neck deformation and the unit's fired-drone visual — see Factory-Manual §"Cross-window
-  safety" open items.)*
+- **A HUMANOID character — a full 62-bone rigged soldier (2026-07-18/19).** The Combine soldier replaces a vehicle
+  unit: right-sized, standing, head on his shoulders, **turning with its movement**, idling on his own baked clip —
+  the first true *character* through the pipeline (props and machines came first). Getting him there built the
+  **raw-rig conversion**: auto-rigged models whose clips *assemble the body from a scrambled rest via location keys*
+  (which Amplitude, rotation-only, can never play) are now **rest-normalized and visually re-baked** at bake time —
+  the assembled pose becomes the rest, the whole clip is re-derived as pure rotations (in-bake verified to ~1e-4),
+  the export folds units/rotation/scale into the data, collapses no-op roots, and renames bones topologically
+  (Amplitude sorts alphabetically and requires parents before children). A **litmus rig** (12-deep chain of cubes,
+  `Tools/make_litmus.py`) proved the runtime renders clean rigs perfectly. Also discovered en route: the game turns
+  pawns through a procedural **bone-rotation layer** — the plugin clears it only for artillery models and ignores
+  vehicle donors' phantom wheel-spin slots. *(With the clean rig, the unit's fired-drone
+  projectile also displays again during attacks — the fully working unit: stand, turn, idle, launch.)*
 - **The Animation Lab — animation authoring in its own dialog (2026-07-18).** `Tools ▸ ENC ▸ Animation Lab` docks as
   a tab beside the Factory: the Factory owns the *model* (file, transform, size, shading), the Lab owns the
   *animation* (clip + bone-filter pickers, fire-on-attack, deploy-on-stop + recoil, and **Save (no bake)** for

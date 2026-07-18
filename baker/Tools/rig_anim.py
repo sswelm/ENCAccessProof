@@ -125,28 +125,82 @@ try:
             _b = _dp.split('["', 1)[1].split('"]', 1)[0]
             _loc0.setdefault(_b, [0.0, 0.0, 0.0])[_fc.array_index] = _fc.evaluate(act.frame_range[0])
     if _loc0:
-        _rest3 = {b.name: b.matrix_local.to_3x3() for b in arm.data.bones}
-        _kids = {b.name: [c.name for c in b.children] for b in arm.data.bones}
+        # REST NORMALIZATION + VISUAL REBAKE. Auto-rigs can ship a SCRAMBLED rest pose that the clip's location keys
+        # ASSEMBLE into the actual body every frame (the Combine soldier: frame-0 posed positions sit up to 91 units
+        # from their rests on a 73-unit rig — the 129 location curves are structural, not decorative). Amplitude
+        # can't play location keys, so the fix is to make the clip's FIRST VISUAL POSE the new rest and re-derive the
+        # animation against it:
+        #   1. at frame 0: apply the armature modifier on the meshes (bakes the assembled body as the new bind shape)
+        #   2. Apply Pose As Rest on the armature (the assembled pose becomes the rest pose)
+        #   3. re-add the armature modifiers (re-bind the assembled mesh to the assembled rest)
+        #   4. re-bake the action with VISUAL KEYING (curves re-derived relative to the new rest — translations
+        #      collapse to ~0, rotations stay true), then the location-strip below removes the residue.
+        _fs0 = int(act.frame_range[0]); _fe0 = int(act.frame_range[1])
+        # SNAPSHOT the true visual pose of every bone on every frame FIRST (original rig + original action) —
+        # everything after this destroys the old reference frame.
+        _snap = {}
+        for _f in range(_fs0, _fe0 + 1):
+            bpy.context.scene.frame_set(_f)
+            bpy.context.view_layer.update()
+            _snap[_f] = {pb.name: pb.matrix.copy() for pb in arm.pose.bones}
+        bpy.context.scene.frame_set(_fs0)
+        bpy.context.view_layer.update()
+        _rebind = []
+        for _mo in [o for o in bpy.context.scene.objects if o.type == 'MESH']:
+            for _md in [m for m in _mo.modifiers if m.type == 'ARMATURE']:
+                bpy.ops.object.select_all(action='DESELECT')
+                _mo.select_set(True); bpy.context.view_layer.objects.active = _mo
+                try:
+                    bpy.ops.object.modifier_apply(modifier=_md.name)
+                    _rebind.append(_mo.name)
+                except Exception as _e2:
+                    print("RIGANIM WARN: could not apply armature modifier on %s (%s)" % (_mo.name, _e2))
         bpy.ops.object.select_all(action='DESELECT')
-        arm.select_set(True)
-        bpy.context.view_layer.objects.active = arm
-        bpy.ops.object.mode_set(mode='EDIT')
-        _eb = arm.data.edit_bones
-        _moved = 0
-        for _bname, _l in _loc0.items():
-            if _bname not in _eb or _bname not in _rest3: continue
-            _off = _rest3[_bname] @ Vector(_l)     # bone-local frame-0 offset -> armature space
-            if _off.length < 1e-9: continue
-            _stack = [_bname]
-            while _stack:
-                _n = _stack.pop()
-                if _n in _eb:
-                    _eb[_n].head += _off; _eb[_n].tail += _off
-                _stack.extend(_kids.get(_n, []))
-            _moved += 1
+        arm.select_set(True); bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.mode_set(mode='POSE')
+        bpy.ops.pose.select_all(action='SELECT')
+        bpy.ops.pose.armature_apply(selected=False)          # frame-0 visual pose -> new rest
         bpy.ops.object.mode_set(mode='OBJECT')
-        if _moved:
-            print("RIGANIM folded frame-0 locations into RESTS for %d bones (corrective offsets preserved)" % _moved)
+        for _mn in _rebind:
+            _mo = bpy.context.scene.objects.get(_mn)
+            if _mo is not None:
+                _nm = _mo.modifiers.new("Armature", 'ARMATURE'); _nm.object = arm
+        # MANUAL visual rebake from the pre-apply snapshots (an nla.bake at this point would sample the old keys
+        # double-applied on the new rest). New local basis per frame, pure matrix math:
+        #   local_f(bone)  = parentWorld_f^-1 @ world_f          (armature-space snapshots)
+        #   basis_f(bone)  = newRestLocal^-1 @ local_f           (Blender: poseLocal = restLocal @ basis)
+        # Only the ROTATION of basis_f is written (Amplitude is rotation-only; frame-0 basis == identity by
+        # construction, so the rest IS the first frame).
+        _old_act = act
+        _new_act = bpy.data.actions.new(_old_act.name + "_rebaked")
+        arm.animation_data.action = _new_act
+        try: arm.animation_data.action_slot = _new_act.slots.new(id_type='OBJECT', name=arm.name)
+        except Exception: pass
+        _parent_of = {b.name: (b.parent.name if b.parent else None) for b in arm.data.bones}
+        _rest_local = {}
+        for _b3 in arm.data.bones:
+            if _b3.parent: _rest_local[_b3.name] = _b3.parent.matrix_local.inverted() @ _b3.matrix_local
+            else: _rest_local[_b3.name] = _b3.matrix_local.copy()
+        for pb in arm.pose.bones:
+            pb.rotation_mode = 'QUATERNION'
+        _frames = sorted(_snap.keys())
+        for _f in _frames:
+            _world = _snap[_f]
+            for pb in arm.pose.bones:
+                _pn = _parent_of[pb.name]
+                _localf = (_world[_pn].inverted() @ _world[pb.name]) if _pn else _world[pb.name]
+                _basis = _rest_local[pb.name].inverted() @ _localf
+                pb.rotation_quaternion = _basis.to_quaternion()
+                pb.keyframe_insert("rotation_quaternion", frame=_f)
+        act = _new_act
+        # VERIFY: at frame 0 the evaluated pose must coincide with the rest
+        bpy.context.scene.frame_set(_fs0)
+        bpy.context.view_layer.update()
+        _worst = 0.0
+        for pb in arm.pose.bones:
+            _d = (pb.matrix.translation - arm.data.bones[pb.name].matrix_local.translation).length
+            if _d > _worst: _worst = _d
+        print("RIGANIM rest-normalized + rebaked %d frames x %d bones (%d meshes re-bound); frame-0 residual = %.6f (should be ~0)" % (len(_frames), len(arm.pose.bones), len(_rebind), _worst))
 except Exception as _e:
     try: bpy.ops.object.mode_set(mode='OBJECT')
     except Exception: pass
