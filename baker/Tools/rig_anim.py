@@ -281,6 +281,57 @@ if not any(md.type == 'ARMATURE' for md in joined.modifiers):
 # lying-on-its-back rig upright), y -> Blender world Z (heading), z -> Blender world Y (roll). Applying the SAME
 # world rotation to armature rest bones AND mesh vertices keeps the skin binding aligned; bone-local animation
 # curves are relative to the (now-rotated) rest pose, so the clip plays identically.
+# COLLAPSE NO-OP ROOT BONES (depth reduction) — the runtime composes bone chains with a bounded depth (CPU cap 15,
+# the GPU pass suspected lower): a raw rig's pass-through roots (the soldier's `_rootJoint`: no animation channels,
+# no vertex weights, single child) burn depth for nothing and push the head/hand chains over the working range.
+# Deleting them re-roots their child; Amplitude adds the armature object as one more level on top regardless.
+if any(abs(v) > 1e-4 for v in rig_rot):
+    _animated_bones = set()
+    for _c2, _fc2 in all_fcurve_owners(act):
+        if _fc2.data_path.startswith('pose.bones['):
+            _animated_bones.add(_fc2.data_path.split('["', 1)[1].split('"]', 1)[0])
+    _weighted = set()   # only groups with REAL weights protect a bone (glTF exports empty groups for every joint)
+    for _o2 in bpy.context.scene.objects:
+        if _o2.type == 'MESH':
+            _gnames = [g.name for g in _o2.vertex_groups]
+            for _v in _o2.data.vertices:
+                for _ge in _v.groups:
+                    if _ge.weight > 1e-6:
+                        _weighted.add(_gnames[_ge.group])
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode='EDIT')
+    _removed = 0
+    while True:
+        _victim = None
+        for _b2 in [b for b in arm.data.edit_bones if b.parent is None]:
+            if len(_b2.children) == 1 and _b2.name not in _animated_bones and _b2.name not in _weighted:
+                _victim = _b2; break
+        if _victim is None:
+            break
+        arm.data.edit_bones.remove(_victim); _removed += 1
+    bpy.ops.object.mode_set(mode='OBJECT')
+    if _removed:
+        print("RIGANIM collapsed %d no-op root bone(s) — every chain is now %d level(s) shallower" % (_removed, _removed))
+
+# TOPOLOGICAL BONE RENAME — Amplitude's Skeleton bake SORTS BONES ALPHABETICALLY (decompiled BuildBoneEntry.Compare:
+# roots first, then string.Compare on the name) and the runtime composes them in array order, ASSUMING PARENTS COME
+# BEFORE CHILDREN. Amplitude's own rigs satisfy that by naming convention; a raw rig like the ValveBiped does NOT
+# ('..._014' sorts before '..._02'), so the head/neck and forearm chains read their parents' garbage transforms and
+# hang displaced in-game. Prefixing every bone with its breadth-first index makes alphabetical == topological.
+# Blender auto-syncs vertex groups + fcurve paths on rename; the bone-filter above already ran on the ORIGINAL names.
+# Gated to the rotation-set path: 0,0,0 stays the byte-identical legacy pipeline.
+if any(abs(v) > 1e-4 for v in rig_rot):
+    _order = []
+    def _walkb(b):
+        _order.append(b.name)
+        for c in sorted(b.children, key=lambda x: x.name):
+            _walkb(c)
+    for _root in [b for b in arm.data.bones if b.parent is None]:
+        _walkb(_root)
+    for _i, _bname in enumerate(_order):
+        arm.data.bones[_bname].name = "b%03d_%s" % (_i, _bname)
+    print("RIGANIM bones renamed with topological prefixes (%d bones) — parents now sort before children" % len(_order))
+
 # RIG ROTATION — ONLY when a rotation is requested (rotation 0,0,0 = the EXACT legacy pipeline, byte-for-byte: no
 # object fiddling, no fold — models that were correct before stay correct; the fold is world-preserving for Unity's
 # mesh import but NOT for Amplitude's skeleton bake, so folding unconditionally flipped the previously-good howitzer
@@ -305,13 +356,29 @@ if any(abs(v) > 1e-4 for v in rig_rot):
     bpy.ops.object.select_all(action='SELECT')
     bpy.context.view_layer.objects.active = arm
     try:
-        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
-        print("RIGANIM rig rotation APPLIED TO DATA (identity nodes)")
+        # ROTATION **AND SCALE** into the data. Decompiled Amplitude bake (ClipEntry.Reimport / Skeleton.Reimport):
+        # the clip is sampled from SCENE NODE transforms but the skeleton's rest comes from MESH BINDPOSES, and the
+        # pose TRS holds a single UNIFORM scale — FBX unit-scale compensation living on nodes desyncs the two sources
+        # (constant rest deltas -> a rigidly displaced bone, the soldier's head). Folding scale leaves nothing on the
+        # nodes to lose: the export is in true units, identity transforms everywhere.
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        print("RIGANIM rig rotation+scale APPLIED TO DATA (identity nodes)")
     except Exception as e:
         print("RIGANIM WARN: transform_apply failed (%s) — rotation left object-level (may not survive the bake)" % e)
 
 bpy.ops.object.select_all(action='SELECT')
-bpy.ops.export_scene.fbx(filepath=outp, use_selection=False, add_leaf_bones=False,
+# EXPORT SCALE (raw-FBX-parse evidence, fbx_lclscale/fbx_binddump): Blender's exporter writes meters->cm by scaling
+# the ROOT OBJECTS x100 (`Lcl Scaling [100,100,100]`). Unity compensates with 0.01 in every skinned-mesh bindpose +
+# a x100 root — a sandwich Amplitude's uniform-scale TRS composition mangles on deep bone chains (the Combine
+# soldier's head rode off his shoulders). The proven ReconDrone file has NO node scaling only by luck: its glTF's
+# tiny-authored 0.01 object scale exactly cancels the exporter's x100.
+# - ROTATION/FOLD path (rotation set): transform_apply normalized objects to scale 1, so pre-divide with
+#   global_scale=0.01 -> net node scale 1, UnitScaleFactor 1, bind clusters 1 — the clean drone profile, by design.
+# - LEGACY path (rotation 0,0,0): keep the exporter untouched, byte-identical output (the working models' contract).
+gscale = 0.01 if any(abs(v) > 1e-4 for v in rig_rot) else 1.0
+if gscale != 1.0:
+    print("RIGANIM export global_scale=0.01 (cancels the exporter's m->cm x100 root scaling)")
+bpy.ops.export_scene.fbx(filepath=outp, use_selection=False, add_leaf_bones=False, global_scale=gscale,
                          bake_anim=True, bake_anim_use_all_actions=False,
                          bake_anim_use_nla_strips=False, object_types={'ARMATURE', 'MESH'})
 print("RIGANIM wrote", outp)
