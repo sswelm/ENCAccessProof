@@ -1,4 +1,9 @@
-import bpy, math
+import bpy, math, sys
+# output path: `blender -b --python make_litmus.py -- <out.glb>`; defaults to C:\tmp\litmus.glb
+_out = r"C:\tmp\litmus.glb"
+if "--" in sys.argv:
+    _rest = sys.argv[sys.argv.index("--") + 1:]
+    if _rest: _out = _rest[0]
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # Armature: chain of 12 bones along +X, each 0.5 long, named chain-order-safe (a01..a12)
@@ -53,5 +58,5 @@ for f, ang in ((1, 0.0), (30, 0.15), (60, 0.0)):
     pb.rotation_euler = (0, 0, ang)
     pb.keyframe_insert("rotation_euler", frame=f)
 
-bpy.ops.export_scene.gltf(filepath=r"C:\tmp\litmus.glb", export_yup=True)
-print("LITMUS written")
+bpy.ops.export_scene.gltf(filepath=_out, export_yup=True)
+print("LITMUS written ->", _out)

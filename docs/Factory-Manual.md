@@ -359,6 +359,14 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   `stripParts` drops a *generated* named object, and the animated pipeline (`BuildAnimated` → `_Skeleton` + `_Clips`) is
   exercised by borrowing up to two rigged models from the registry (SKIP if none on disk — a rigged FBX can't be
   synthesized). Both non-destructive (throwaway `__feat_*` names, cleaned up).
+- **Conversion Gate Test** — `Tools ▸ ENC ▸ Bake Conversion Gate Test (litmus)` (2026-07-19). Asserts the raw-rig
+  CONVERSION invariants the animated runtime silently requires — each was once violated and each cost hours of blind
+  in-game debugging (the Combine-soldier campaign): every baked bone's **BindPose/Local scale == 1** (the file-scale
+  sandwich), every bone's **ParentIndex < its own index** (alphabetical-sort/topology contract), and every clip curve
+  entry **rotation-only**. Fixture: the deterministic **litmus rig** (`Tools/make_litmus.py`, synthesized via Blender
+  on demand — rigged fixtures CAN be synthesized now), baked under a throwaway `__convgate__` name through the same
+  `ConfigFor` route as the Bake button, then cleaned up. Slow (a real Blender bake) — run after touching
+  `rig_anim.py` or `UniversalBaker`.
 - **Schema parity** — `bash Tools/check_schema_parity.sh`. The registry is written by the baker (`ModelDef`, JsonUtility)
   and read by the plugin two ways (`ModelEntry` via Newtonsoft, plus a regex fallback) across two separate repos, kept in
   sync by hand. The guard makes drift loud: it asserts (1) the Newtonsoft and regex read paths read the **same** key set,
