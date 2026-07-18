@@ -5,11 +5,20 @@ see the [Factory Manual](Factory-Manual.md).
 
 - **Animated custom models — a first, now one-click.** A **quadcopter drone** injected onto a land-vehicle unit renders
   full-size and textured **and spins its own propellers from its own baked animation** — no engine mod, no GPU-skinning
-  hang. Tick **Animated** in the Factory and a single Bake does it all: Blender slims the rigged model (keep armature +
-  chosen clip, strip to the spinning bones, auto-clamp the frame range), then it bakes an Amplitude `Skeleton` +
+  hang. Authored in the **Animation Lab** (Tools ▸ ENC ▸ Animation Lab, docked beside the Factory — the Factory owns the
+  model, the Lab owns the animation) and a single Bake does it all: Blender slims the rigged model (keep armature +
+  chosen clip, strip to the chosen bones, auto-clamp the frame range), then it bakes an Amplitude `Skeleton` +
   `ClipCollection` + atlas and writes the registry; at runtime the clip is registered and a `PawnManager.AddPawnEntry`
   hook drives the pawn's pose onto it — normalized by clip duration so it plays at real speed. Works for **any number of
   instances**. Clip/bone/hide-donor fields are **Pick-driven** (read from the model's glTF + the plugin log).
+- **A full HUMANOID character from a raw auto-rig (2026-07-19).** A Sketchfab **Combine soldier** (62-bone ValveBiped)
+  replaces a vehicle unit: right-sized, upright, head on, **turning with movement**, idling on its own clip, and still
+  launching its kamikaze-drone projectile. Enabled by the automatic **raw-rig conversion** (Factory-Manual §16):
+  auto-rigs whose clips *assemble the body from a scrambled rest via location keys* — unplayable in Amplitude's
+  rotation-only clip format — are **rest-normalized and visually re-baked** at bake time (assembled pose becomes the
+  rest; the whole clip re-derived as pure rotations, in-bake verified), plus unit-clean export, topological bone
+  renaming (the engine sorts bones alphabetically and needs parents first), and no-op root collapse. Verified with a
+  **litmus rig** (12-deep chain of cubes) that exonerates the runtime for clean rigs.
 - **Deploy-when-stopped — a model that reacts to *movement*.** Tick **Deploy when stopped** and the model **plays its deploy
   clip forward** when the unit stops (e.g. an M114 howitzer's trail legs spread + barrel elevates) and **snaps folded** while it
   travels — a per-unit *held state* driven by movement, not an event. It reuses the fire-on-attack sim→presentation bridge but
@@ -150,3 +159,13 @@ see the [Factory Manual](Factory-Manual.md).
   extent × node scale): metre-scale → on, tiny-authored (e.g. a 0.0025u drone with a 0.01 root node scale) → off. Best-effort
   and overridable; for FBX/.blend/OBJ (unreadable cheaply) it makes no guess and you set it by hand. On = measure the FBX at
   true scale then bake with the unit scale on, so Size = in-game units; off = normal import. The *static* path is unaffected.
+  **Note (2026-07-19):** models going through the **raw-rig conversion** (any non-zero Rotation) export unit-clean — for
+  those, leave Fix-100× **off** (a live file-scale would re-poison the skeleton with a 0.01-bindpose/×100-root sandwich
+  that displaces deep bone chains; the toggle now matters mainly for legacy rigs at Rotation `0,0,0`, like the howitzer).
+- **Amplitude clips are ROTATION-ONLY** (engine constraint, decompiled): bone translation keys are dropped/mis-scaled at
+  runtime. Rigs that animate positions can't play as-is — the automatic conversion (Factory-Manual §16) re-expresses
+  them as rotations (rest normalization + visual rebake). Genuine translation *motion* (a sliding recoil) still needs
+  the far-pivot rotation trick (`deploy_convert.py`).
+- **Preview orientation ≠ game orientation for animated models:** the embedded preview applies fixed display flips —
+  judge orientation IN-GAME only, probing Rotation one axis at a time. Quirk: a rig that needs the conversion but no net
+  rotation uses Rotation `360,0,0` (identity that still triggers the conversion path; gate refactor pending).
