@@ -56,62 +56,20 @@ That's the whole loop. Everything below is detail and the animated workflow.
 - **Model file** — `.glb/.gltf/.obj/.fbx/.blend`. **Leave empty when re-baking** an existing resource to reuse the
   already-imported model with new settings (fast iteration).
 
-### Animation
-- **Animated (own rig + clip)** — bake the model's **own armature + animation** so it moves in-game (e.g. a drone's props
-  spin). The toggle is **greyed out for models with no animation** (a cheap probe checks without Blender). See §5.
-- **Clip name** *(Pick)* — which clip to bake when the model has several (a Sketchfab model often ships `hover`,
-  `exploded_view`, …). **Pick** lists the clips read from the model. Empty = the model's first/assigned clip.
-- **Animate only bones** *(Pick)* — comma-separated bone-name **prefixes** to keep animation on (e.g. `prop`). Strips
-  everything else (camera pans, body bob) that would make the model wobble. **Pick** lists the bone prefixes with counts.
-  Empty = keep the whole clip.
-- **Fix 100× oversize (FBX unit scale)** — bake-time scale fix. Some rigged FBX exports embed a metre→centimetre unit
-  scale that makes the model bake **~100× too big and float high** (fine in the preview, wrong in-game); tick this and the
-  baker measures the FBX at its true scale then bakes with the unit scale on, so **Size means in-game units**. **Per-model**
-  — some exports need it, some break with it: if a model bakes huge/floating, tick it; if ticking it makes the model
-  **vanish or shrink to a speck**, untick it. (The drone bakes right **off**; the howitzer needs it **on**.) Re-bake after
-  changing. Static path unaffected.
-  - **Auto-prefilled on Browse:** when you pick a **GLB/glTF** model, the Factory reads its *true* size (POSITION accessor
-    extent × node scale — what glbconv would report) and pre-ticks this for you: metre-scale models (≈≥0.1u) → **on**,
-    tiny-authored models (a GLB with a small root node scale, e.g. a 0.0025u drone) → **off**. It's a best-effort guess you
-    can override, and a status line shows what it chose. For **FBX / .blend / OBJ** (and `matrix`-transform glTF) the size
-    can't be read cheaply, so it makes **no guess** and leaves the box as-is — set it by hand there.
-- **Fire on attack (play once)** — play the baked clip **once when the unit attacks**, instead of looping. The model rests,
-  then plays a single pass on the shot and returns to rest — e.g. a **howitzer barrel that elevates only when it bombards**.
-  The plugin listens for the game's artillery-strike event, matches the firing unit to this model, and triggers one `0→1`
-  playthrough. **Author the clip to start *and* end at rest** so the single pass looks clean. Leave **off** for a continuous
-  loop (a drone's spinning prop). Animated models only; runtime flag (no re-bake to toggle — Bake just re-writes the
-  registry). See §5 and [Firing-On-Attack.md](Firing-On-Attack.md).
-- **Deploy when stopped** *(+ **Deployed pose time**, **Deploy speed**)* — **play the clip forward** when the unit stops (e.g.
-  a howitzer that spreads its trail legs) and **snap folded** the instant it moves. **Author the clip** so frame 0 = travelling
-  and the deployed pose sits at **Deployed pose time** (0..1; `1` = a real deploy clip's end). **Deploy speed** multiplies the
-  ramp (1 = the clip's authored speed, 2 = twice as fast); folding on move is always instant. It's a *held state*, per-unit,
-  driven by the unit's moving state — concurrency/AI-safe (only visible, our-model units are polled). Animated models only; runtime flag.
-- **Recoil speed** *(with Deploy when stopped + Fire on attack)* — a deployed model can ALSO kick when it **bombards**, from the
-  **same clip**: author the clip as `deploy [0 .. Deployed pose time]` then a `recoil tail [Deployed pose time .. 1]`; the tail
-  plays once per shot (only the gun that fired) then returns to the deployed hold. **Recoil speed** multiplies the kick's playback
-  speed (runtime; no re-bake to change). **Reality check:** the clip bake keeps **rotation only, not translation**, so a real
-  sliding recoil can't be baked directly — `deploy_convert.py` fakes it with a far-pivot helper bone (FK-arc) that swings the tube
-  through a near-straight arc. It reads as a backward kick with a slight swing; a perfectly straight glide isn't achievable.
-  - **Where the recoil is configured:** only **Recoil speed** is a Factory slider (it's a runtime value). The recoil's *shape* —
-    distance, timing, arc straightness — is **baked into the GLB by `deploy_convert.py`**, which you run by hand *before* baking.
-    The Factory does NOT run that script; it bakes the GLB you point it at. To change the shape: edit the command below, re-run it
-    to rebuild the GLB, then hit **Bake**.
-  - **Rigid-part-animated source?** Many Maya/Sketchfab models animate *moving parts* (a turret, trail legs, landing gear) by
-    node transforms, not skinning — the animated bake needs an armature. Run **`Tools/deploy_convert.py`** first:
-    `blender -b -P Tools/deploy_convert.py -- in.glb out.glb [start end] [stripCsv] [readyFrame] [legScale] [barrelScale] [recoilSrcStart recoilSrcEnd step mag arcR]`
-    — it builds a bone-per-part skinned armature carrying the same motion, trims to the deploy sub-range, strips crew/props,
-    **binds at the rest frame** (so the mesh isn't baked pre-posed), and optionally retargets the barrel to a `readyFrame`
-    elevation (`barrelScale` > 1 exaggerates past the source's max), scales the leg spread (`legScale`; 1 = full, 0 =
-    stay folded), and appends a **recoil-on-fire tail** (FK-arc kickback). Recoil-tail knobs: **`recoilSrcStart recoilSrcEnd`** =
-    the source clip's recoil frames (its timing), **`step`** = sampling step (default 2), **`mag`** = slide distance (default 1 =
-    source; 2 ≈ half the tube), **`arcR`** = arc pivot distance (default 400; larger = straighter/less swing, but more jitter-prone).
-    Bake the result normally. Find the deploy sub-range + `readyFrame` (and the source recoil frames) by scrubbing the clip in Blender.
-    Example (the M114): `... m114_howitzer_in_action.glb m114_deploy.glb 0 180 "" 420 1 1 440 510 2 2 400`.
-  - **The rest state holds deployed, folds instantly** — the runtime half (already built): the plugin detects travel by the
-    unit's **render-position change** (not the game's `IsMoving`, whose wait-to-idle settle would drop the pose), so it folds
-    the instant it moves and holds deployed at rest. Also bake **`deployPoseTime` ≤ 0.99** (never 1.0 — the pose sampler wraps
-    exactly-1.0 back to frame 0 = folded; the plugin also clamps to 0.999 defensively). *(The static **preview** shows the
-    folded bind pose, not the deployed one — judge deploy in-game.)*
+### Animation *(summary only — settings live in the Animation Lab, §15)*
+Since 2026-07-18 the Factory no longer edits animation settings itself. The two windows are **mutually exclusive in
+their settings and work together**:
+
+- For an **animated entry** this section shows a **read-only summary** — e.g. *ANIMATED — clip 'deploy',
+  fire-on-attack, deploy-on-stop (pose 0.72, speed 4), recoil (speed 3)* — plus an **Edit in Animation Lab** button
+  that opens the Lab (docked as a tab next to the Factory) with this entry loaded. **Bake in either window** — both go
+  through the identical pipeline, and a Factory bake uses the animation settings as saved by the Lab.
+- For a **fresh rigged model** (animation detected in the file, nothing configured yet): a hint + **Open Animation
+  Lab** button; configure the clip there and it bakes as ANIMATED from then on.
+- **Safety nets** (born from the "howitzers on their side" incident, where a lost `animated` flag silently re-baked the
+  howitzer static — tipped over, no behaviors): the flag is **self-healed** from the entry's own config (a named clip,
+  behaviors, bone filter, or a baked clip GUID ⇒ the entry *is* animated, whatever the stored bool says), and baking a
+  rigged model **without** any animation config asks for confirmation before producing a static bake.
 
 ### Transform
 - **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
@@ -226,22 +184,22 @@ lowest triangle count with no visible loss: drop the count → Bake → watch th
 Your model must be **rigged with a skeletal animation** (an armature + at least one clip). glTF/GLB is easiest (the clip
 and bone pickers read it directly).
 
-1. **Pawn description** — choose a donor with **no animated sub-parts** and a full idle/move set (a land vehicle is ideal;
-   an attack-helicopter donor forces its rotor onto your model). Resource name.
-2. **Model file** — the rigged `.glb`/`.fbx`. If detection finds animation, the **Animated** toggle enables and you'll see
-   *"Animation detected"*.
-3. Tick **Animated**.
-4. **Clip name → Pick →** choose the loop you want (e.g. `hover`). Not the exploded/assembly clips.
-5. **Animate only bones → Pick →** choose the spinning group (e.g. `prop`). This keeps only those bones animated and
+1. **In the Factory: Pawn description** — choose a donor with **no animated sub-parts** and a full idle/move set (a land
+   vehicle is ideal; an attack-helicopter donor forces its rotor onto your model). Resource name.
+2. **Model file** — the rigged `.glb`/`.fbx`. When detection finds animation you'll see *"Animation detected"* with an
+   **Open Animation Lab** button — press it (the Lab opens docked next to the Factory, pre-filled with this model).
+3. **In the Animation Lab: Clip name → Pick →** choose the loop you want (e.g. `hover`). Not the exploded/assembly clips.
+4. **Animate only bones → Pick →** choose the spinning group (e.g. `prop`). This keeps only those bones animated and
    freezes the rest, killing camera/body wobble. Leave empty for a fully-animated model (a walker, a turret).
-6. **Size** — the drone is small; try `4`. The Console logs the computed Scale Factor.
-7. Make sure **Blender is detected** (Settings). **Bake.** Watch for:
+5. **Size** (back in the Factory — it owns the model's transform/size) — the drone is small; try `4`. The Console logs
+   the computed Scale Factor.
+6. Make sure **Blender is detected** (Settings). **Bake** (either window). Watch for:
    ```
    [Factory] <name> FBX scale factor … (native longest … -> <Size> units)
    [Factory] <name> ANIMATED DONE. skeleton=… clip=… atlas=…
    ```
    A **non-zero `clip=`** means the animation baked correctly.
-8. **Rebuild the mod** (§6) and relaunch. The model should render and play its clip at real speed.
+7. **Rebuild the mod** (§6) and relaunch. The model should render and play its clip at real speed.
 
 **Iterating on an animated model:** changing **Size/transform** only? leave **Reuse extracted** ticked (it skips the slow
 re-slim). Changing the **Clip**, **Animate-only-bones**, or the **Model file**? **untick Reuse extracted** so it re-slims.
@@ -494,3 +452,53 @@ tune a sound without launching the game.
 **Performance note:** the runtime audio driver polls only *our* units' sub-pawns and refreshes its scene lookup on a ~2 s
 cache — never a per-frame `FindObjectsOfType` (an early version did, and it visibly cut FPS). If you extend it, keep any
 full scene scan off the hot path.
+
+---
+
+## 15. The Animation Lab window — a model's animation, in one place
+
+**Tools ▸ ENC ▸ Animation Lab** (2026-07-18). Docks as a **tab next to the Universal Model Factory**, so the pair
+presents as one tabbed dialog. The design rule: **the Factory owns the MODEL** (identity, pawn, model file, transform,
+size, geometry/shading, static runtime flags), **the Lab owns the ANIMATION** — every setting lives in exactly one of
+the two windows, and jump buttons hand context across ("Edit in Animation Lab" in the Factory loads the entry here).
+Both windows Bake through the identical pipeline (`ConfigFor → UniversalBaker.BuildAnimated → ModelRegistry.Upsert`),
+so it does not matter where you press Bake.
+
+**Edit existing** lists the **animated** entries only. The model identity (Resource / Target pawn / Model file) shows
+**read-only** — change those in the Factory. Survives domain reloads (`[SerializeField]`, like the other Labs).
+
+### Clip (bake-time — changing these needs a re-Bake)
+- **Clip name** *(Pick)* — which clip to bake when the model has several (a Sketchfab model often ships `hover`,
+  `exploded_view`, …). **Pick** lists the clips read from the model (glb/gltf). Empty = the model's first/assigned clip.
+- **Animate only bones** *(Pick)* — comma-separated bone-name **prefixes** to keep animation on (e.g. `prop`). Strips
+  everything else (camera pans, body bob) that would make the model wobble. Empty = keep the whole clip.
+- **Fix 100× oversize (FBX unit scale)** — some rigged exports embed a metre→centimetre unit scale that makes the model
+  bake ~100× too big and float high. Per-model: huge/floating → tick; vanishes when ticked → untick. (Drone off,
+  howitzer on.) Auto-prefilled on the Factory's Browse for GLB/glTF.
+
+### Behavior (runtime — **Save (no bake)** + game relaunch applies them, no re-bake, no mod rebuild)
+- **Fire on attack (play once)** — play the baked clip **once when the unit attacks** instead of looping; rests at
+  frame 0 otherwise (a howitzer barrel that elevates only when it bombards). Author the clip to start *and* end at
+  rest. Off = continuous loop (a drone's spinning prop). See [Firing-On-Attack.md](Firing-On-Attack.md).
+- **Deploy when stopped** *(+ **Deployed pose time**, **Deploy speed**)* — play the clip forward when the unit stops
+  (spread the trail legs) and snap folded the instant it moves. Frame 0 = travelling; the deployed pose sits at
+  Deployed pose time (0..1, keep ≤ 0.99 — exactly 1.0 wraps to frame 0). Deploy speed multiplies the ramp; folding is
+  always instant. Held per-unit, driven by the unit's **render-position change** (settle-immune).
+- **Recoil speed** *(needs both of the above)* — the deployed gun also kicks when it bombards, from the same clip's
+  tail `[Deployed pose time .. 1]`; plays once per shot, only on the gun that fired. The recoil's *shape* is baked into
+  the GLB by `Tools/deploy_convert.py` (run by hand before baking — see its full usage in §5's source-prep notes);
+  this slider only scales playback speed.
+
+### Buttons
+- **Bake** — re-run the animated pipeline (Blender slim → skeleton + clip + atlas) with the settings above, then write
+  the registry entry.
+- **Save (no bake)** — write the registry entry only (assets untouched): the way to tweak Behavior flags/sliders.
+  Relaunch the game to see it; the mod bundle is unchanged.
+- **Remove** — drop the entry from the registry (baked assets stay on disk).
+
+### Safety nets
+The `animated` flag is **derived, not trusted**: an entry carrying animation config (named clip, behaviors, bone
+filter, or a baked clip GUID) is re-marked ANIMATED automatically on load and before every bake. This ended the
+"howitzers on their side" failure mode — a stale unticked checkbox once re-baked the howitzer STATIC, which strips the
+clip + behaviors and bakes the (animated-path-ignored) Rotation offset into the mesh, shipping tipped-over guns. Baking
+a rigged model that truly has no animation config still asks for confirmation first.
