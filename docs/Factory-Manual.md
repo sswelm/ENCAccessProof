@@ -80,9 +80,9 @@ their settings and work together**:
   `90, 0, 0`). Nominal semantics: x ≈ stand-up pitch, y ≈ heading, z ≈ roll — but the mapping crosses multiple axis
   conversions, so **probe one axis at a time in 90° steps and judge IN-GAME ONLY**: ⚠ the embedded preview's
   orientation is meaningless for animated models (fixed display flips; it happened to match the soldier and
-  contradicted the howitzer — chasing it re-baked a working gun onto its side, twice). Rotation changes require a
-  real re-slim: **Model file set + Reuse extracted UNticked**. `deploy_convert.py`-prepared rigs (the howitzer) are
-  correct at `0,0,0` — never give them a rotation.
+  contradicted the howitzer — chasing it re-baked a working gun onto its side, twice). Rotation needs the **Model
+  file set**; the Blender step re-runs **automatically** when any of its settings changed (see the Reuse note in §5).
+  `deploy_convert.py`-prepared rigs (the howitzer) are correct at `0,0,0` — never give them a rotation.
 - **Position offset (x, y, z = height)** — Static models bake it in (z = waterline; negative sinks a ship). For
   **animated** models it's applied at **runtime, in the pawn's own frame** (2026-07-18): x = sideways, y = fore/aft,
   z = altitude (world-up). The planar part is rotated by the unit's facing each frame, so the nudge **turns with the
@@ -215,10 +215,12 @@ and bone pickers read it directly).
    A **non-zero `clip=`** means the animation baked correctly.
 7. **Rebuild the mod** (§6) and relaunch. The model should render and play its clip at real speed.
 
-**Iterating on an animated model:** changing **Size/Position** only? leave **Reuse extracted** ticked (it skips the slow
-re-slim). Changing the **Rotation**, **Clip**, **Animate-only-bones**, or the **Model file**? **untick Reuse extracted**
-so it re-slims — rotation is applied inside the Blender step (baked into the rig data), so a bake that skips Blender
-silently keeps the old orientation.
+**Iterating on an animated model (2026-07-18 — geometry caching is AUTOMATIC):** the Blender re-slim runs exactly when
+one of its inputs changed — **Rotation, Reduce-to-tris, Clip, Animate-only-bones, Material mode, or the Model file** —
+and is skipped otherwise (fast). You never manage this. The checkbox (now labelled **"Keep extracted texture
+(hand-edits)"**) has ONE job on the animated path: protect a hand-edited extracted albedo from being regenerated when
+the re-slim runs. (Earlier today it also gated the geometry, which made Rotation silently unresponsive while ticked —
+that trap is gone.) For static models it additionally reuses the extracted OBJ, as before.
 
 ---
 

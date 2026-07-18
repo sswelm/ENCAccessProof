@@ -40,6 +40,7 @@ public struct BakeConfig
     public string  animClip;        // ANIMATED only: name of the clip to bake when the model has several (e.g. "hover"); empty = the assigned/first action
     public string  animateBones;    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
     public bool    animUnitFix;     // ANIMATED only: if the model bakes ~100x too big & floats (a metre->cm FBX unit scale), tick this — the baker measures the FBX at its true scale (useFileScale off) then bakes with the unit scale on, so Size = in-game units. Per-model because different rig exports embed different unit scales (some need it, some break with it).
+    public bool    keepTexture;     // ANIMATED only: when the Blender step re-runs, DON'T regenerate the extracted albedo (protects hand-edited textures). This is the 'Reuse extracted files' checkbox's ONLY effect on the animated path — geometry caching is automatic (the windows re-slim exactly when a Blender-step setting changed).
 }
 
 public struct BakeResult
@@ -172,6 +173,10 @@ public static class UniversalBaker
         {
             int target = cfg.targetTris > 0 ? cfg.targetTris : 12000;   // animated skins want to stay well under the shared buffer
             string albedoOut = Path.Combine(fsDir, name + "_albedo.png");
+            // 'Keep texture': skip regenerating an existing extracted albedo (rig_anim skips export on an empty path),
+            // so a hand-edited texture survives geometry re-slims. A missing albedo is always (re)extracted.
+            if (cfg.keepTexture && File.Exists(albedoOut))
+            { Debug.Log($"[Factory] {name}: keeping the existing extracted albedo (hand-edit protection)."); albedoOut = ""; }
             bool keepMats = cfg.materialMode != MaterialMode.Single;   // Auto/Multi keep the material slots so the atlas step can pack them (Single collapses to 1, the old default)
             if (!RigAnimViaBlender(cfg.modelFile, fbxFull, target, cfg.animateBones ?? "", cfg.animClip ?? "", albedoOut, keepMats, cfg.rotationEuler))
                 return Fail("Blender animated slim failed (see console). Is the model rigged with the named animation clip?");
@@ -340,7 +345,13 @@ public static class UniversalBaker
             child.transform.SetParent(root.transform);
             child.transform.localRotation = Quaternion.Euler(0f, 90f, 0f) * Quaternion.Euler(180f, 0f, 0f) * Quaternion.Euler(rotationEuler);
             child.AddComponent<MeshFilter>().sharedMesh = mesh;
-            child.AddComponent<MeshRenderer>().sharedMaterial = mat;
+            // ONE MATERIAL PER SUBMESH: Unity renders only as many submeshes as the renderer has materials, so a
+            // multi-material mesh (the drone keeps 75 slots) with a single material previewed as just submesh 0 —
+            // one propeller blade. Repeat the atlas material across every slot so the whole model shows.
+            var mr = child.AddComponent<MeshRenderer>();
+            var mats = new Material[Mathf.Max(1, mesh.subMeshCount)];
+            for (int i = 0; i < mats.Length; i++) mats[i] = mat;
+            mr.sharedMaterials = mats;
             string prefabPath = resDir + "/" + name + "_Preview.prefab";
             AssetDatabase.DeleteAsset(prefabPath);
             PrefabUtility.SaveAsPrefabAsset(root, prefabPath);

@@ -278,6 +278,10 @@ public class AnimationLabWindow : EditorWindow
         cur.animClip = (cur.animClip ?? "").Trim();
         cur.animateBones = (cur.animateBones ?? "").Trim();
         var cfg = ModelFactoryWindow.ConfigFor(cur);
+        // Geometry caching is AUTOMATIC (mirror of the Factory's DoBake): re-slim exactly when a Blender-step input
+        // changed; the 'Reuse extracted' checkbox only protects the hand-edited extracted texture (cfg.keepTexture).
+        cfg.reuseExtracted = !ModelFactoryWindow.AnimatedSlimInputsChanged(cur);
+        if (!cfg.reuseExtracted) Debug.Log("[AnimLab] " + cur.resourceName + ": Blender-step settings changed — re-slimming (automatic).");
         var r = UniversalBaker.BuildAnimated(cfg);
         if (!r.ok) { status = "Bake FAILED: " + r.error; Debug.LogError("[AnimLab] " + r.error); return; }
         cur.skel = ModelRegistry.ParseGuid(r.skeletonGuid);

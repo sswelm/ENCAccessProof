@@ -404,7 +404,11 @@ public class ModelFactoryWindow : EditorWindow
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Texture / import", EditorStyles.miniBoldLabel);
-        cur.reuseExtracted = EditorGUILayout.Toggle(new GUIContent("Reuse extracted files", "Skip re-importing the model file and reuse the OBJ/albedo already in the resource folder. Tick this after hand-editing the extracted texture (e.g. in paint.net) so your fix survives the bake."), cur.reuseExtracted);
+        cur.reuseExtracted = EditorGUILayout.Toggle(new GUIContent("Keep extracted texture (hand-edits)",
+            "Protect the extracted albedo from being regenerated, so a hand-edited texture (e.g. in paint.net) survives " +
+            "re-bakes. ANIMATED models: this is the checkbox's ONLY effect — geometry is re-processed automatically " +
+            "whenever a relevant setting changes (rotation, tris, clip, bones, material, model file), so rotation etc. " +
+            "always respond. STATIC models: also reuses the extracted OBJ (skip re-import, fast iteration)."), cur.reuseExtracted);
 
         EditorGUILayout.Space();
         // A brand-new resource (<New>) has nothing to re-bake, so it also needs a model file; an existing one may leave
@@ -805,6 +809,22 @@ public class ModelFactoryWindow : EditorWindow
         return end >= 0 ? parts[end] : pawnName;
     }
 
+    // 'Reuse extracted' is a CACHE, not a switch: these are the settings the ANIMATED Blender step consumes — if any
+    // of them changed vs the saved entry, reusing the old FBX would silently ignore the change (the "rotation doesn't
+    // respond" trap). The bake then re-runs the Blender step for that one bake; the ticked checkbox itself is kept as
+    // the user's fast-iteration preference. A never-baked entry always slims.
+    internal static bool AnimatedSlimInputsChanged(ModelDef cur)
+    {
+        var e = ModelRegistry.Load().FirstOrDefault(x => x.resourceName == cur.resourceName);
+        if (e == null) return true;
+        return cur.rotation != e.rotation
+            || cur.targetTris != e.targetTris
+            || (cur.animClip ?? "") != (e.animClip ?? "")
+            || (cur.animateBones ?? "") != (e.animateBones ?? "")
+            || cur.materialMode != e.materialMode
+            || (cur.modelFile ?? "") != (e.modelFile ?? "");
+    }
+
     // Map a registry ModelDef to a BakeConfig. SHARED so the bake smoke test (BakeSmokeTest.cs) bakes through the exact
     // same config path as the Bake button — a parallel copy would silently drift from what ships.
     internal static BakeConfig ConfigFor(ModelDef cur) => new BakeConfig
@@ -816,7 +836,8 @@ public class ModelFactoryWindow : EditorWindow
         albedoBrightness = cur.albedoBrightness, albedoSaturation = cur.albedoSaturation, keepBlack = cur.keepBlack, materialMode = cur.materialMode,
         atlasMaxDim = cur.atlasMaxDim <= 0 ? 512 : cur.atlasMaxDim,
         stripParts = cur.stripParts,
-        animated = cur.animated, animClip = (cur.animClip ?? "").Trim(), animateBones = (cur.animateBones ?? "").Trim(), animUnitFix = cur.animUnitFix
+        animated = cur.animated, animClip = (cur.animClip ?? "").Trim(), animateBones = (cur.animateBones ?? "").Trim(), animUnitFix = cur.animUnitFix,
+        keepTexture = cur.reuseExtracted   // on the ANIMATED path the checkbox's ONLY meaning is 'protect the hand-edited extracted texture'
     };
 
     void DoBake()
@@ -870,6 +891,14 @@ public class ModelFactoryWindow : EditorWindow
                 "Bake static", "Cancel"))
         { status = "Bake cancelled — tick 'Animated (own rig + clip)' to bake the animated version."; return; }
         var cfg = ConfigFor(cur);
+        if (cfg.animated)
+        {
+            // Geometry caching is AUTOMATIC on the animated path: the Blender step re-runs exactly when one of its
+            // inputs changed (rotation/tris/clip/bones/material/model), regardless of the checkbox — the checkbox's
+            // only meaning here is 'keep the hand-edited extracted texture' (cfg.keepTexture, set in ConfigFor).
+            cfg.reuseExtracted = !AnimatedSlimInputsChanged(cur);
+            if (!cfg.reuseExtracted) Debug.Log("[Factory] " + cur.resourceName + ": Blender-step settings changed — re-slimming (automatic).");
+        }
         var r = cfg.animated ? UniversalBaker.BuildAnimated(cfg) : UniversalBaker.Build(cfg);
         if (!r.ok) { status = "Bake FAILED: " + r.error; return; }
         cur.skel = ModelRegistry.ParseGuid(r.skeletonGuid);
