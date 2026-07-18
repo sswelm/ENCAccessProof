@@ -837,6 +837,20 @@ public class ModelFactoryWindow : EditorWindow
         cur.hideMeshes = (cur.hideMeshes ?? "").Trim();
         cur.animClip = (cur.animClip ?? "").Trim();
         cur.animateBones = (cur.animateBones ?? "").Trim();
+        // ENFORCED OWNERSHIP (mirror of AnimationLabWindow.RebaseOnRegistry): the ANIMATION fields belong to the
+        // Animation Lab — before baking, always take their freshest saved values from the registry so a stale Factory
+        // copy can't clobber what the Lab configured (a Factory bake once silently dropped the Lab's Fix-100×,
+        // shipping a 100×-giant soldier). This window contributes everything else (model file, transform, size, …).
+        {
+            var regE = ModelRegistry.Load().FirstOrDefault(x => x.resourceName == cur.resourceName);
+            if (regE != null)
+            {
+                cur.animClip = regE.animClip; cur.animateBones = regE.animateBones; cur.animUnitFix = regE.animUnitFix;
+                cur.fireOnAttack = regE.fireOnAttack; cur.deployOnStop = regE.deployOnStop;
+                cur.deployPoseTime = regE.deployPoseTime; cur.deploySpeed = regE.deploySpeed; cur.recoilSpeed = regE.recoilSpeed;
+                if (regE.animated) cur.animated = true;
+            }
+        }
         // GUARD against a silent animated->static downgrade (the "howitzers on their side" incident). Two layers:
         // (1) the ENTRY carries animation config (clip/behaviors) -> it IS animated; self-heal the flag, no dialog.
         // (2) only the FILE has animation (a fresh rigged model, no config yet) -> unticked may be deliberate; ask.

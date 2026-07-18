@@ -1029,11 +1029,36 @@ namespace ENCAccessProof
                 SetMember(pose, "Weight", 0f);
                 SetMember(entry, "Pose" + i, pose);
             }
-            ClearAimLayer(entry);
+            // The AIM layer is cleared only for the ARTILLERY behaviors (it twists the howitzer's barrel as the game
+            // aims). For other animated models the game's procedural bone-rotation layers are left alone — clearing
+            // them is suspected of pinning the Combine soldier to one fixed compass facing (the game may turn pawns
+            // through that layer). Diagnostics below record what the layer + pawn rotation actually do while moving.
+            if (e.fireOnAttack || e.deployOnStop) ClearAimLayer(entry);
             ApplyPositionOffset(e, entry);
             ApplyScale(e, entry);
             ctx.pawnEntries.SetValue(entry, ctx.idx);
             LogPoseHookOnce(ctx, e, pose0);
+            DebugFacingPeriodic(e, entry);
+        }
+
+        // TEMP FACING DIAGNOSTIC (fixed-compass soldier): every ~3s, log the pawn's ObjectSpace rotation and the
+        // BoneRotation layer angles for one animated pawn. Moving the unit in different directions then tells us:
+        // R changing but facing fixed => the renderer ignores pawn rotation for this rig; R constant => the game
+        // never turns this pawn; BoneRotation angles nonzero => the game steers through the procedural layer.
+        static float dbgFacingNext;
+        static void DebugFacingPeriodic(ModelEntry e, object entry)
+        {
+            if (UnityEngine.Time.time < dbgFacingNext) return;
+            dbgFacingNext = UnityEngine.Time.time + 3f;
+            var os = GetMember(entry, "ObjectSpace");
+            string br = "";
+            for (int i = 0; i < 4; i++)
+            {
+                var b = GetMember(entry, "BoneRotation" + i);
+                if (b == null) continue;
+                br += $" [{i}] bone={GetMember(b, "SkeletonBoneIndex")} axis={GetMember(b, "AxisIndex")} angle={GetMember(b, "Angle")}";
+            }
+            Plugin.Log.LogInfo($"[Uni][facing] '{e.resourceName}' R={GetMember(os, "Rotation")} T={GetMember(os, "Translation")}{br}");
         }
 
         // The normalized pose time for one animated pawn, per the model's behavior: continuous loop (a spinning prop),

@@ -10,8 +10,10 @@
 #   5. export the first material's base-colour image as the albedo PNG (for the Factory's atlas)
 #   6. join to 1 mesh + 1 material + quadric-decimate to ~target tris (KEEPING the armature + weights)
 #   7. export a slim FBX with baked animation
-# Usage: blender -b --python rig_anim.py -- <input> <output.fbx> <targetTris> [bonePrefixesCSV] [clipName] [albedoOut.png]
+# Usage: blender -b --python rig_anim.py -- <input> <output.fbx> <targetTris> [bonePrefixesCSV] [clipName] [albedoOut.png] [keepMats] [rotXdeg,rotYdeg,rotZdeg]
 import bpy, bmesh, sys, os
+from math import radians
+from mathutils import Matrix
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 inp, outp, target = argv[0], argv[1], int(argv[2])
@@ -19,6 +21,15 @@ prefixes = [p.strip() for p in (argv[3] if len(argv) > 3 else "").split(",") if 
 clip_name = (argv[4] if len(argv) > 4 else "").strip()
 albedo_out = argv[5] if len(argv) > 5 else ""
 keep_materials = len(argv) > 6 and argv[6].strip() == "1"   # multi-material bake: keep the slots (submeshes) instead of collapsing to 1
+# Optional rig ROTATION (degrees, registry semantics: x = pitch/stand-up, y = heading, z = roll). Some rigs round-trip
+# glTF->Blender->FBX lying down or facing sideways (the Combine soldier bakes on his back); the game orients animated
+# units by the RIG, so the fix must be baked into the rig here — the Factory's Rotation field is meaningless at runtime.
+rig_rot = [0.0, 0.0, 0.0]
+if len(argv) > 7 and argv[7].strip():
+    try:
+        rig_rot = [float(v) for v in argv[7].split(",")][:3] + [0.0] * max(0, 3 - len(argv[7].split(",")))
+    except Exception:
+        print("RIGANIM WARN: bad rotation arg '%s' — ignoring" % argv[7])
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 ext = os.path.splitext(inp)[1].lower()
@@ -206,6 +217,42 @@ print("RIGANIM decimate %d -> %d tris (ratio %.3f)" % (total, sum(len(p.vertices
 if not any(md.type == 'ARMATURE' for md in joined.modifiers):
     _am = joined.modifiers.new("Armature", 'ARMATURE'); _am.object = arm
     print("RIGANIM re-bound armature modifier (join had dropped it)")
+
+# BAKE-TIME RIG ROTATION: rotate every parent-less object (the armature root; children follow) in WORLD space, then
+# APPLY the transform INTO THE DATA (vertices + bone rest matrices). Object-level rotation alone is NOT enough: a
+# skinned mesh keeps its vertices in mesh/bind space, and both the Factory preview (raw mesh) and Amplitude's
+# skeleton bake (SetPrefab/ImportMeshes) read the DATA, discarding object transforms — an object-only rotation
+# looked applied in the log yet changed nothing in-game. Registry mapping: x -> Blender world X (pitch — stands a
+# lying-on-its-back rig upright), y -> Blender world Z (heading), z -> Blender world Y (roll). Applying the SAME
+# world rotation to armature rest bones AND mesh vertices keeps the skin binding aligned; bone-local animation
+# curves are relative to the (now-rotated) rest pose, so the clip plays identically.
+if any(abs(v) > 1e-4 for v in rig_rot):
+    rot = (Matrix.Rotation(radians(rig_rot[1]), 4, 'Z') @
+           Matrix.Rotation(radians(rig_rot[0]), 4, 'X') @
+           Matrix.Rotation(radians(rig_rot[2]), 4, 'Y'))
+    for o in bpy.context.scene.objects:
+        if o.parent is None:
+            o.matrix_world = rot @ o.matrix_world
+    print("RIGANIM rig rotation: x=%s y=%s z=%s (deg, registry semantics)" % tuple(rig_rot))
+# ALWAYS fold rotations into the DATA (vertices + bone rests) — with or without a user rotation. The glTF->FBX round
+# trip otherwise leaves a compensating rotation on the armature NODE (the soldier ships a -90°X there), and every
+# downstream reader treats node rotations differently (Unity bakes them into the mesh, Amplitude's skeleton bake has
+# its own ideas) — folding to identity nodes removes that variable entirely: what's in the data is all there is.
+# Strip OBJECT-level animation channels first (paths not under pose.bones): a glTF often keys the armature NODE
+# itself, which both blocks transform_apply AND re-asserts the original orientation every frame at runtime.
+if arm.animation_data and arm.animation_data.action:
+    _rm = 0
+    for coll, fc in all_fcurve_owners(arm.animation_data.action):
+        if not fc.data_path.startswith("pose.bones"):
+            coll.remove(fc); _rm += 1
+    if _rm: print("RIGANIM stripped %d OBJECT-level fcurves (non-bone) so the rig orientation can bake" % _rm)
+bpy.ops.object.select_all(action='SELECT')
+bpy.context.view_layer.objects.active = arm
+try:
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+    print("RIGANIM transforms folded into data (identity nodes)")
+except Exception as e:
+    print("RIGANIM WARN: transform_apply failed (%s) — node rotations left in place" % e)
 
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.export_scene.fbx(filepath=outp, use_selection=False, add_leaf_bones=False,

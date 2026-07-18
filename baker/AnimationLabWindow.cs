@@ -232,10 +232,29 @@ public class AnimationLabWindow : EditorWindow
         EditorGUILayout.EndScrollView();
     }
 
+    // ENFORCED OWNERSHIP: a bake/save from this window rebases onto the FRESHEST registry entry and applies only the
+    // ANIMATION-owned fields from this form. Without this, whichever window held a stale copy silently clobbered the
+    // other's work at bake time (cost three bakes on the Combine soldier: the Factory bake lost the Lab's Fix-100×,
+    // then the Lab bake lost the Factory's rotation AND size). Model-owned fields (rotation, position, size, tris,
+    // material, shading, …) always come from the registry — this window can't even display them, so it must not
+    // write its stale copies of them either. No-op for a brand-new entry (nothing saved yet to rebase on).
+    void RebaseOnRegistry()
+    {
+        var reg = ModelRegistry.Load().FirstOrDefault(x => x.resourceName == (cur.resourceName ?? "").Trim());
+        if (reg == null) return;
+        var mine = cur;
+        cur = JsonUtility.FromJson<ModelDef>(JsonUtility.ToJson(reg));
+        cur.animated = true;
+        cur.animClip = mine.animClip; cur.animateBones = mine.animateBones; cur.animUnitFix = mine.animUnitFix;
+        cur.fireOnAttack = mine.fireOnAttack; cur.deployOnStop = mine.deployOnStop;
+        cur.deployPoseTime = mine.deployPoseTime; cur.deploySpeed = mine.deploySpeed; cur.recoilSpeed = mine.recoilSpeed;
+    }
+
     // Persist runtime-only tweaks without touching the baked assets: the entry keeps its existing skeleton/clip/atlas
     // GUIDs (loaded with the entry), so the plugin re-reads the new settings on the next game launch.
     void SaveOnly()
     {
+        RebaseOnRegistry();
         cur.animated = true;
         cur.resourceName = (cur.resourceName ?? "").Trim();
         cur.pawnDescription = (cur.pawnDescription ?? "").Trim();
@@ -251,6 +270,7 @@ public class AnimationLabWindow : EditorWindow
     // capture the baked GUIDs onto the entry -> Upsert to the registry.
     void DoBake()
     {
+        RebaseOnRegistry();   // bake with the freshest model-owned fields (rotation/size/…) — only animation fields are ours
         cur.animated = true;
         cur.resourceName = (cur.resourceName ?? "").Trim();
         cur.pawnDescription = (cur.pawnDescription ?? "").Trim();

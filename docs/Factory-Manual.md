@@ -72,8 +72,15 @@ their settings and work together**:
   rigged model **without** any animation config asks for confirmation before producing a static bake.
 
 ### Transform
-- **Rotation offset (XYZ)** — degrees, on top of the auto forward-alignment. Static models bake this into the mesh; for
-  animated models the orientation comes from the model's own rig, so export it facing correctly.
+- **Rotation offset (XYZ)** — degrees. Static models bake this into the mesh. For **animated** models (2026-07-18) it
+  is now **baked into the rig itself** in the Blender step — vertices + bone rest matrices, folded to identity nodes —
+  so it's REAL in-game (before, it was preview-only and a rig that round-tripped lying down was unfixable; the raw
+  Sketchfab Combine soldier ships a -90°X armature node and needed `90, 0, 0`). Semantics: **x ≈ stand-up pitch,
+  y ≈ heading, z ≈ roll** — but the mapping crosses two axis conversions, so don't reason it out: **probe one axis at
+  a time in 90° steps** (x first until upright, then y for heading). Requires a real re-slim: **Model file set +
+  Reuse extracted UNticked**, then Bake. ⚠ The embedded preview's orientation is NOT the game's (it adds fixed
+  stand-up flips) — a preview-tuned rotation can still lie flat in-game; final judge is the game. Rigs prepared by
+  `deploy_convert.py` (the howitzer) rebuild the armature clean and generally need `0,0,0`.
 - **Position offset (x, y, z = height)** — Static models bake it in (z = waterline; negative sinks a ship). For
   **animated** models it's applied at **runtime, in the pawn's own frame** (2026-07-18): x = sideways, y = fore/aft,
   z = altitude (world-up). The planar part is rotated by the unit's facing each frame, so the nudge **turns with the
@@ -206,8 +213,10 @@ and bone pickers read it directly).
    A **non-zero `clip=`** means the animation baked correctly.
 7. **Rebuild the mod** (§6) and relaunch. The model should render and play its clip at real speed.
 
-**Iterating on an animated model:** changing **Size/transform** only? leave **Reuse extracted** ticked (it skips the slow
-re-slim). Changing the **Clip**, **Animate-only-bones**, or the **Model file**? **untick Reuse extracted** so it re-slims.
+**Iterating on an animated model:** changing **Size/Position** only? leave **Reuse extracted** ticked (it skips the slow
+re-slim). Changing the **Rotation**, **Clip**, **Animate-only-bones**, or the **Model file**? **untick Reuse extracted**
+so it re-slims — rotation is applied inside the Blender step (baked into the rig data), so a bake that skips Blender
+silently keeps the old orientation.
 
 ---
 
@@ -507,3 +516,28 @@ filter, or a baked clip GUID) is re-marked ANIMATED automatically on load and be
 "howitzers on their side" failure mode — a stale unticked checkbox once re-baked the howitzer STATIC, which strips the
 clip + behaviors and bakes the (animated-path-ignored) Rotation offset into the mesh, shipping tipped-over guns. Baking
 a rigged model that truly has no animation config still asks for confirmation first.
+
+### Cross-window safety & the facing mechanism (2026-07-18)
+
+**Enforced field ownership.** Bake/Save from EITHER window now rebases on the freshest registry entry and contributes
+only the fields that window owns (Factory: model/transform/size/…; Lab: clip/bones/Fix-100×/behaviors). Before this,
+whichever window held a stale copy silently clobbered the other's values at bake time — it cost three bakes on the
+Combine soldier (a Factory bake dropped the Lab's Fix-100× → 100× giant; the Lab's stale copy then dropped rotation
+AND size). You can now edit in one window and bake from the other safely.
+
+**How the game turns pawns (found via the fixed-compass soldier).** The engine orients a pawn's visual through the
+procedural **BoneRotation layer** (`PawnEntry.BoneRotation0-3`), not only `ObjectSpace.Rotation`. The plugin used to
+zero that layer on every animated model (added so artillery aiming couldn't twist the howitzer's barrel) — which
+pinned the soldier to one compass facing forever. It now clears the layer **only for models with the artillery
+behaviors** (fire-on-attack / deploy-on-stop); everything else keeps the game's layers and turns normally.
+
+**OPEN (2026-07-18, one subsystem — procedural pawn state vs our pose override):**
+1. **Drone visual lost on attack** — with the soldier visual injected on the DroneSquadFPV unit, the attack still
+   resolves (sim kill + audio) but the kamikaze-drone projectile no longer displays. The `FireProjectile` spawn rides
+   the pawn's throw ANIMATION, and our pose hook stomps `Pose0` every frame. Designed fix: read what the game wrote to
+   Pose0 before overriding; when it isn't the ordinary idle/move clip, pass the game's pose through (attack window).
+2. **Hood/head stretch after turning** — diagnosed via the `[Uni][facing]` log: on this donor all four BoneRotation
+   slots carry an INVALID bone index (`0xFFFFFFFF`) with junk angles (1558°, 977°, …); left alive they deform the rig
+   (head), but zeroing them freezes facing. The slot semantics (what bone -1 targets, where facing really lives) need
+   a decompile of the layer's writer before a precise fix (sanitize junk slots, keep real ones).
+3. The temporary `[Uni][facing]` periodic log stays in until (1)+(2) are resolved.

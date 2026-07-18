@@ -32,12 +32,14 @@ public struct BakeConfig
     public float   albedoBrightness; // multiply the baked atlas RGB (1 = unchanged). >1 lifts a dark skin — the injection path ships FLAT albedo (donor PBR neutralized), so shiny/dark models read muddy in-game; this compensates at bake time
     public float   albedoSaturation; // scale colour vividness around per-pixel luminance (1 = unchanged, 0 = greyscale, >1 = punchier). Fixes desaturated albedos (game lighting can't add colour back)
     public bool    keepBlack;        // MULTI-MATERIAL only: skip the near-black->grey remap so an intentionally black material (glossy canopy, dark cockpit) stays black. Default false = neutralize (hides UV dead-zones / packing gaps)
+    public MaterialMode materialMode; // Auto/Single/Multi atlas mode. The animated path uses this to decide single vs packed multi-material atlas (previously animated was always single).
     public int     atlasMaxDim;      // longest side of the baked atlas in px (256 / 512 / 1024 / 2048). Smaller = smaller shipped _Atlas.asset. A unit is ~80px at map zoom so 512-1024 is plenty; 0 = default (512)
     public int     targetTris;      // >0 = quadric-decimate the source to ~this many triangles (Blender) before baking, to fit the engine's shared vertex/index buffer
     public string  stripParts;      // bake-time (Blender): comma-separated object-name substrings to DELETE from the source before baking (e.g. a helicopter's own rotor so the donor's spinning rotor shows through). Empty = keep everything.
     public bool    animated;        // true = ANIMATED path: bake from the model's OWN armature + clip (Skeleton + ClipCollection), not the procedural vehicle rig
     public string  animClip;        // ANIMATED only: name of the clip to bake when the model has several (e.g. "hover"); empty = the assigned/first action
     public string  animateBones;    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
+    public bool    animUnitFix;     // ANIMATED only: if the model bakes ~100x too big & floats (a metre->cm FBX unit scale), tick this — the baker measures the FBX at its true scale (useFileScale off) then bakes with the unit scale on, so Size = in-game units. Per-model because different rig exports embed different unit scales (some need it, some break with it).
 }
 
 public struct BakeResult
@@ -49,8 +51,14 @@ public static class UniversalBaker
 {
     public static BakeResult Build(BakeConfig cfg)
     {
-        try { return BuildInner(cfg); }
-        catch (Exception e) { Debug.LogError("[Factory] " + e); return new BakeResult { ok = false, error = e.Message }; }
+        // E5: snapshot the existing baked outputs BEFORE the (delete-first) bake, and restore them if it fails, so a
+        // partway-failed re-bake can't leave the registry pointing at now-deleted assets. Success path is unchanged.
+        var backup = BackupOutputs(cfg.resourceName);
+        BakeResult r;
+        try { r = BuildInner(cfg); }
+        catch (Exception e) { Debug.LogError("[Factory] " + e); r = new BakeResult { ok = false, error = e.Message }; }
+        if (r.ok) DiscardBackup(backup); else RestoreOutputs(backup);
+        return r;
     }
 
     // ANIMATED bake — a parallel pipeline that keeps the model's OWN armature + clip instead of the procedural
@@ -60,8 +68,74 @@ public static class UniversalBaker
     // + atlas guids for the registry ("clip" makes the runtime drive the pawn's pose onto our animation).
     public static BakeResult BuildAnimated(BakeConfig cfg)
     {
-        try { return BuildAnimatedInner(cfg); }
-        catch (Exception e) { Debug.LogError("[Factory] " + e); return new BakeResult { ok = false, error = e.Message }; }
+        var backup = BackupOutputs(cfg.resourceName);   // E5: same rollback protection on the animated path
+        BakeResult r;
+        try { r = BuildAnimatedInner(cfg); }
+        catch (Exception e) { Debug.LogError("[Factory] " + e); r = new BakeResult { ok = false, error = e.Message }; }
+        if (r.ok) DiscardBackup(backup); else RestoreOutputs(backup);
+        return r;
+    }
+
+    // ---- E5: re-bake rollback protection --------------------------------------------------------------------------
+    // Both bake paths DELETE the model's baked outputs before the fallible steps (Blender, glbconv, the Amplitude
+    // skeleton/clip bake). Without this, a re-bake that throws or produces an empty GUID partway leaves those assets
+    // gone while the registry still references them — "re-bake failed, old model destroyed". So we copy the existing
+    // outputs (each .asset AND its .meta, so the GUIDs survive) to a temp dir OUTSIDE the project before the bake, and
+    // restore them on failure. The delete-first stale-cache fix is untouched — this only wraps it.
+    // OUTSIDE Assets/ is essential: a copy under Assets/ would import as a DUPLICATE-GUID asset and corrupt the original.
+    static readonly string[] OutputSuffixes = { "_ModelMesh.asset", "_Atlas.asset", "_Mat.mat", "_Model.prefab", "_Skeleton.asset", "_Clips.asset" };
+
+    class OutputBackup { public string name = ""; public string dir = ""; public readonly List<string> files = new List<string>(); }
+
+    static string ResourcesFull() => Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Assets", "Resources");
+
+    // Copy whatever outputs currently exist for `name` (+ their .meta) to a fresh temp dir. Never throws.
+    static OutputBackup BackupOutputs(string name)
+    {
+        var b = new OutputBackup { name = name ?? "" };
+        if (string.IsNullOrEmpty(name)) return b;
+        b.dir = Path.Combine(Path.GetTempPath(), "enc_rebake_backup", name);
+        try
+        {
+            if (Directory.Exists(b.dir)) Directory.Delete(b.dir, true);
+            string res = ResourcesFull();
+            foreach (var s in OutputSuffixes)
+                foreach (var ext in new[] { "", ".meta" })
+                {
+                    string src = Path.Combine(res, name + s + ext);
+                    if (!File.Exists(src)) continue;
+                    Directory.CreateDirectory(b.dir);
+                    File.Copy(src, Path.Combine(b.dir, name + s + ext), true);
+                    b.files.Add(name + s + ext);
+                }
+        }
+        catch (Exception e) { Debug.LogWarning("[Factory] re-bake backup failed (proceeding WITHOUT rollback protection): " + e.Message); b.files.Clear(); }
+        return b;
+    }
+
+    static void DiscardBackup(OutputBackup b)
+    {
+        try { if (b != null && !string.IsNullOrEmpty(b.dir) && Directory.Exists(b.dir)) Directory.Delete(b.dir, true); } catch { }
+    }
+
+    // Restore the backed-up outputs (called only on a FAILED bake): wipe any partial new outputs, copy the backups back
+    // verbatim (asset + meta -> original GUIDs), and reimport. A no-op when nothing was backed up (a first bake).
+    static void RestoreOutputs(OutputBackup b)
+    {
+        if (b == null || b.files.Count == 0) { DiscardBackup(b); return; }
+        try
+        {
+            string res = ResourcesFull();
+            foreach (var s in OutputSuffixes)
+                foreach (var ext in new[] { "", ".meta" })
+                { string p = Path.Combine(res, b.name + s + ext); try { if (File.Exists(p)) File.Delete(p); } catch { } }
+            foreach (var f in b.files) File.Copy(Path.Combine(b.dir, f), Path.Combine(res, f), true);
+            AssetDatabase.Refresh();
+            int n = b.files.Count(f => !f.EndsWith(".meta"));
+            Debug.LogWarning($"[Factory] {b.name}: re-bake FAILED — restored the previous {n} baked asset(s) from backup. Your working model is intact (the registry was not changed).");
+        }
+        catch (Exception e) { Debug.LogError("[Factory] re-bake RESTORE failed — recover the model from git or the project backup: " + e); }
+        finally { DiscardBackup(b); }
     }
 
     static BakeResult BuildAnimatedInner(BakeConfig cfg)
@@ -98,32 +172,63 @@ public static class UniversalBaker
         {
             int target = cfg.targetTris > 0 ? cfg.targetTris : 12000;   // animated skins want to stay well under the shared buffer
             string albedoOut = Path.Combine(fsDir, name + "_albedo.png");
-            if (!RigAnimViaBlender(cfg.modelFile, fbxFull, target, cfg.animateBones ?? "", cfg.animClip ?? "", albedoOut))
+            bool keepMats = cfg.materialMode != MaterialMode.Single;   // Auto/Multi keep the material slots so the atlas step can pack them (Single collapses to 1, the old default)
+            if (!RigAnimViaBlender(cfg.modelFile, fbxFull, target, cfg.animateBones ?? "", cfg.animClip ?? "", albedoOut, keepMats, cfg.rotationEuler))
                 return Fail("Blender animated slim failed (see console). Is the model rigged with the named animation clip?");
         }
         if (!File.Exists(fbxFull)) return Fail("no slim FBX at " + fbxRel + " — bake with a Model file first (Reuse extracted needs an existing one).");
         AssetDatabase.ImportAsset(fbxRel, ImportAssetOptions.ForceUpdate);
+
+        // Decide multi-material EARLY (from the MTL on disk) — a multi-material bake rebuilds/merges the skinned mesh
+        // (BuildMultiAtlasAndRemap below) and Amplitude's skeleton importer rejects that rebuilt mesh if tangents were
+        // stripped, so the tangent optimization is limited to single-material models (Amplitude reads their mesh as-is).
+        string fsResDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir);
+        var orderedAlb = LoadOrderedAlbedos(fsResDir, name);   // MTL-ordered (materialName -> albedo texture)
+        // Need >1 REAL albedo to pack a multi-material atlas. Multi/Auto with 0-1 albedos (e.g. a fresh extraction that
+        // didn't regenerate the per-material albedos, or a misconfig) falls back to a single atlas instead of building a
+        // blank 2x2 and spamming "no atlas rect — left unmapped" for every submesh. Multi still forces multi whenever
+        // the albedos are actually present (>1); it just can't conjure a multi-atlas from nothing.
+        bool multiMat = orderedAlb.Count > 1
+                        && (cfg.materialMode == MaterialMode.Multi || cfg.materialMode == MaterialMode.Auto);
 
         // --- 2) import the FBX: Generic rig, import animation, scale so the longest axis ~= size ---
         var imp = AssetImporter.GetAtPath(fbxRel) as ModelImporter;
         if (imp == null) return Fail("could not get ModelImporter for " + fbxRel);
         imp.animationType = ModelImporterAnimationType.Generic;
         imp.importAnimation = true;
+        // Tangents: EXPLICITLY set both ways (a prior bake stamps this into the .meta, so a bare "skip" leaves it stuck).
+        // Single-material -> None: runtime neutralizes normal maps, so tangents are 16 B/vert of dead weight in the mesh +
+        // hex skeleton. Multi-material -> CalculateMikk (the default): its mesh is REBUILT (Instantiate + submesh-merge),
+        // and Amplitude's skeleton importer throws IndexOutOfRange on that rebuilt mesh if it has no tangents.
+        imp.importTangents = ModelImporterTangents.CalculateMikk;   // ALWAYS keep tangents on the ANIMATED path: its skeleton bake (Amplitude MeshCollection.ImportMeshes on a real skinned mesh) reads them, and stripping them throws IndexOutOfRange (broke the single-material ReconDrone — "worked last night", i.e. before the strip). The tangent-size optimization is safe ONLY on the static path below.
         imp.globalScale = 1f;
+        // "Fix 100x oversize (FBX unit scale)" — PER-MODEL toggle, because different rig exports embed different unit scales.
+        // OFF (default): measure with Unity's default useFileScale (the drone bakes correctly this way). ON: some FBX exports
+        // carry a metre->cm scale that makes the model bake ~100x too big; measure at the TRUE scale (useFileScale off) then
+        // bake with the unit scale on (the howitzer needs this). There is NO single rule that fits both — hence the toggle.
+        if (cfg.animUnitFix) imp.useFileScale = false;
         imp.SaveAndReimport();
         var fbxGo = AssetDatabase.LoadAssetAtPath<GameObject>(fbxRel);
         float longest = MeasureLongestAxis(fbxGo);
+        if (cfg.animUnitFix) imp.useFileScale = true;   // bake with the embedded unit scale on (required for the correct render size)
         if (longest > 1e-4f)
         {
             imp.globalScale = size / longest;   // SDK skeleton uses the FBX native scale, so match `size` via Scale Factor
             imp.SaveAndReimport();
             fbxGo = AssetDatabase.LoadAssetAtPath<GameObject>(fbxRel);
-            Debug.Log($"[Factory] {name} FBX scale factor {imp.globalScale:0.###} (native longest {longest:0.###} -> {size} units)");
+            Debug.Log($"[Factory] {name} FBX scale factor {imp.globalScale:0.###} (native longest {longest:0.###} -> {size} units){(cfg.animUnitFix ? " [unit-fix]" : "")}");
         }
+        else if (cfg.animUnitFix) { imp.SaveAndReimport(); fbxGo = AssetDatabase.LoadAssetAtPath<GameObject>(fbxRel); }   // apply useFileScale-on even if too small to rescale
         if (fbxGo == null) return Fail("imported FBX has no GameObject");
 
-        // --- 3) atlas from the exported albedo (same single-albedo path + Resources-root location as static) ---
-        var atlas = BuildAtlas(resDir, name, cfg.albedoBrightness, cfg.albedoSaturation);
+        // --- 3) atlas: SINGLE albedo, or (for a multi-material OPEN model like a towed gun) a PACKED atlas with the skinned
+        //        mesh UVs remapped per-submesh. MaterialMode gates it: Single = one texture; Multi = force packing; Auto =
+        //        pack when the model has >1 material. Without this, every part samples one texture and e.g. a wheel maps wrong.
+        //        (fsResDir / orderedAlb / multiMat were computed up front so the importer could gate tangent-stripping.) ---
+        Mesh previewMesh = null;
+        Texture2D atlas = multiMat
+            ? BuildMultiAtlasAndRemap(fbxGo, orderedAlb, name, cfg, out previewMesh)   // pack + remap the skinned mesh UVs in place (SetPrefab below reads them)
+            : BuildAtlas(resDir, name, cfg.albedoBrightness, cfg.albedoSaturation);
         atlas = FinalizeAtlas(atlas, name, cfg.atlasMaxDim);   // cap resolution + DXT1-compress (keeps the shipped _Atlas.asset small)
         string atlasPath = "Assets/Resources/" + name + "_Atlas.asset";
         AssetDatabase.DeleteAsset(atlasPath);
@@ -137,6 +242,19 @@ public static class UniversalBaker
         AssetDatabase.DeleteAsset(skelPath);
         var skel = ScriptableObject.CreateInstance(skelType);
         AssetDatabase.CreateAsset(skel, skelPath);
+        // Pre-check the skinned mesh's bone data: a vertex weighted to a bone index the mesh's bone list doesn't have
+        // makes Amplitude's SetPrefab/Reimport (MeshCollection.ImportMeshes) throw an opaque IndexOutOfRange. Dump the
+        // state and flag any mismatch clearly (this is what breaks the ReconDrone's FRESH bake).
+        foreach (var smr in fbxGo.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            var m = smr.sharedMesh; if (m == null) continue;
+            int nBones = smr.bones != null ? smr.bones.Length : 0;
+            int maxIdx = -1; var bws = m.boneWeights;
+            if (bws != null) foreach (var w in bws) maxIdx = Mathf.Max(maxIdx, Mathf.Max(w.boneIndex0, w.boneIndex1), Mathf.Max(w.boneIndex2, w.boneIndex3));
+            Debug.Log($"[Factory] {name} SKMESH '{smr.name}': verts={m.vertexCount} subMeshes={m.subMeshCount} mats={(smr.sharedMaterials != null ? smr.sharedMaterials.Length : 0)} bones={nBones} bindposes={(m.bindposes != null ? m.bindposes.Length : 0)} maxBoneIdxUsed={maxIdx} tangents={(m.tangents != null ? m.tangents.Length : 0)}");
+            if (maxIdx >= nBones)
+                Debug.LogError($"[Factory] {name}: BONE MISMATCH — a vertex is weighted to bone index {maxIdx} but the mesh lists only {nBones} bones. THIS is the IndexOutOfRange in Amplitude's ImportMeshes (a fresh-extraction rig/decimation issue).");
+        }
         if (!InvokeReq(skelType, "SetPrefab", new[] { typeof(GameObject) }, skel, new object[] { fbxGo }, out var err)) return Fail(err);
         if (!InvokeReq(skelType, "Reimport", Type.EmptyTypes, skel, null, out err)) return Fail(err);
         EditorUtility.SetDirty(skel);
@@ -163,7 +281,9 @@ public static class UniversalBaker
         // --- 6) preview aid: a STATIC textured prefab (the baked mesh + the atlas skin) you can select to inspect in
         //        Unity's preview window and to judge the (decimated) vertex count. NOT written to the registry, so the
         //        runtime ignores it entirely — it's purely a modeling aid.
-        GeneratePreviewPrefab(name, resDir, fbxRel, atlas, cfg.rotationEuler);
+        // Rotation is now baked INTO the rig by rig_anim.py (cfg.rotationEuler passed to the Blender step above), so
+        // the preview must NOT apply it again — pass zero. What the preview shows is now what the game gets.
+        GeneratePreviewPrefab(name, resDir, fbxRel, atlas, Vector3.zero, previewMesh);
 
         string skelGuid = AmplitudeGuid(skel), atlasGuid = AmplitudeGuid(atlas), clipGuid = AmplitudeGuid(clipColl);
         // an empty GUID means the SDK skeleton/clip bake produced nothing — fail loudly rather than write a dead registry entry.
@@ -195,14 +315,22 @@ public static class UniversalBaker
     // modeling aid for Unity's preview window + judging the decimated vertex count — it is NOT in the registry, so the
     // runtime never touches it. Uses the same mesh that gets injected, so its vert count is the real one; logs it so you
     // can see the effect of 'Reduce to ~tris' and cut further.
-    static void GeneratePreviewPrefab(string name, string resDir, string fbxRel, Texture2D atlas, Vector3 rotationEuler)
+    static void GeneratePreviewPrefab(string name, string resDir, string fbxRel, Texture2D atlas, Vector3 rotationEuler, Mesh overrideMesh = null)
     {
         try
         {
-            var mesh = AssetDatabase.LoadAllAssetsAtPath(fbxRel).OfType<Mesh>()
-                .OrderByDescending(m => m.vertexCount).FirstOrDefault();          // the body mesh
+            // multi-material bake hands us the already-remapped, single-submesh mesh so the preview shows all parts with the
+            // right UVs; otherwise load the largest mesh from the FBX (the body).
+            var mesh = overrideMesh ?? AssetDatabase.LoadAllAssetsAtPath(fbxRel).OfType<Mesh>()
+                .OrderByDescending(m => m.vertexCount).FirstOrDefault();
             if (mesh == null) { Debug.LogWarning("[Factory] preview: no mesh found in " + fbxRel); return; }
+            if (overrideMesh != null && !AssetDatabase.Contains(mesh))   // a runtime clone can't be referenced by the saved prefab -> persist it as an asset first
+            {
+                string mp = resDir + "/" + name + "_PreviewMesh.asset";
+                AssetDatabase.DeleteAsset(mp); AssetDatabase.CreateAsset(mesh, mp); AssetDatabase.SaveAssets();
+            }
             var mat = new Material(Shader.Find("Standard")) { name = name + "_PreviewMat", mainTexture = atlas };
+            mat.SetFloat("_Glossiness", 0f); mat.SetFloat("_Metallic", 0f);   // matte (Standard defaults to 0.5 smoothness -> glossy on dark textures, e.g. tyres)
             string matPath = resDir + "/" + name + "_PreviewMat.mat";
             AssetDatabase.DeleteAsset(matPath); AssetDatabase.CreateAsset(mat, matPath);
             // Mesh on a CHILD: the registry Rotation offset, then a fixed 180° world-X flip so the preview lands upright
@@ -225,13 +353,17 @@ public static class UniversalBaker
     }
 
     // Blender: slim a rigged/animated model into a decimated FBX that keeps its armature + one clip (Tools/rig_anim.py).
-    static bool RigAnimViaBlender(string src, string outFbx, int targetTris, string bonePrefixes, string clipName, string albedoOut)
+    // `rotation` (degrees; x = pitch/stand-up, y = heading, z = roll) is baked INTO THE RIG — the game orients animated
+    // units by the rig, so a rig that round-trips lying down (the Combine soldier) can only be fixed here, at bake time.
+    static bool RigAnimViaBlender(string src, string outFbx, int targetTris, string bonePrefixes, string clipName, string albedoOut, bool keepMaterials, Vector3 rotation)
     {
         string proj = Directory.GetParent(Application.dataPath).FullName;
         string script = Path.Combine(proj, "Tools", "rig_anim.py");
         if (!File.Exists(script)) { Debug.LogError("[Factory] bundled rig_anim.py missing: " + script); return false; }
         string blender = FindBlender();
-        string args = $"--background --python \"{script}\" -- \"{src}\" \"{outFbx}\" {Mathf.Max(1, targetTris)} \"{bonePrefixes ?? ""}\" \"{clipName ?? ""}\" \"{albedoOut ?? ""}\"";
+        var inv = System.Globalization.CultureInfo.InvariantCulture;   // never the OS locale — a Dutch comma-decimal would corrupt the arg
+        string rotArg = string.Format(inv, "{0:0.###},{1:0.###},{2:0.###}", rotation.x, rotation.y, rotation.z);
+        string args = $"--background --python \"{script}\" -- \"{src}\" \"{outFbx}\" {Mathf.Max(1, targetTris)} \"{bonePrefixes ?? ""}\" \"{clipName ?? ""}\" \"{albedoOut ?? ""}\" {(keepMaterials ? "1" : "0")} \"{rotArg}\"";
         var psi = new System.Diagnostics.ProcessStartInfo(blender, args)
         { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
         try
@@ -290,7 +422,8 @@ public static class UniversalBaker
             // AH-1's Blender time). Either step is skipped when unset (empty Strip parts / targetTris 0); the survivor
             // runs alone. targetTris is a CEILING, not a quota (a model already under it passes through unchanged);
             // double-sided doubles the baked geometry, so we HALVE the target then (default 24000 -> 12000), keeping the
-            // field a single "budget" the user sets once, just under the ~25k per-model vertex ceiling.
+            // field a single "budget" the user sets once. NOTE: there is NO hard per-model cap in the engine — the real
+            // budget is the shared pawn-layer pool (~1M verts; HAF docs/Vertex-Budget.md), so higher targets are fine.
             bool wantStrip = !string.IsNullOrWhiteSpace(cfg.stripParts);
             bool wantReduce = cfg.targetTris > 0;
             if (wantStrip || wantReduce)
@@ -368,10 +501,11 @@ public static class UniversalBaker
         var wantImport = cfg.normals == NormalsMode.Recalculate ? ModelImporterNormals.Calculate : ModelImporterNormals.Import;
         if (AssetImporter.GetAtPath(objPath) is ModelImporter imp &&
             (imp.importNormals != wantImport || Mathf.Abs(imp.normalSmoothingAngle - smoothing) > 0.5f
-             || imp.weldVertices))
+             || imp.weldVertices || imp.importTangents != ModelImporterTangents.None))
         {
             imp.importNormals = wantImport; imp.normalSmoothingAngle = smoothing;
             imp.weldVertices = false;
+            imp.importTangents = ModelImporterTangents.None;   // normal maps are neutralized at runtime -> tangents are dead weight (16 bytes/vert in mesh + skeleton, plus extra vert splits). Drop them.
             imp.SaveAndReimport();
         }
 
@@ -400,6 +534,7 @@ public static class UniversalBaker
             var albs = matList.Select(mm => LoadReadableAlbedo(fsResDir, mm)).ToArray();
             packedAtlas = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = name + "_Atlas" };
             atlasRects = packedAtlas.PackTextures(albs, 2, cfg.atlasMaxDim > 0 ? cfg.atlasMaxDim : AtlasMaxDimDefault);   // cap packing at the final size (was 4096) — no need to pack huge then shrink
+            foreach (var a in albs) if (a != null) UnityEngine.Object.DestroyImmediate(a);   // E8: free the packed source albedos — Unity objects don't GC, so they leak (tens of MB) per bake until a domain reload
             // Force opaque AND (unless keepBlack) repaint near-black regions neutral grey. Two sources of near-black:
             // (a) unused UV "dead-zones" inside a source albedo (e.g. the zeppelin hull texture's black corner that the
             // hull top samples), and (b) the gaps PackTextures leaves between packed islands — faces whose UVs land on
@@ -463,6 +598,13 @@ public static class UniversalBaker
                             ni = cVerts.Count; remap[oldI] = ni;
                             cVerts.Add(local.MultiplyPoint3x4(v[oldI]));
                             Vector2 u = mUV ? uv[oldI] : Vector2.zero;
+                            // Atlas cells have no texture WRAP, but many source models park each material's UV
+                            // island in a distant integer tile (this AH-1 runs U up to ~23) relying on wrap. Fold
+                            // every UV into [0,1) so it lands inside its packed rect instead of flying into the black
+                            // gaps between islands. An island that sits wholly within one tile has all its verts
+                            // subtract the same integer -> no distortion; only a triangle straddling a tile edge
+                            // smears slightly, which is unavoidable when emulating wrap on a packed atlas.
+                            u.x -= Mathf.Floor(u.x); u.y -= Mathf.Floor(u.y);
                             cUV.Add(new Vector2(r.x + u.x * r.width, r.y + u.y * r.height));
                             cNorm.Add(mNorm ? local.MultiplyVector(nr[oldI]).normalized : Vector3.up);
                         }
@@ -472,6 +614,12 @@ public static class UniversalBaker
                 }
             }
         }
+        // E3: a rigged/skinned-only FBX imports as SkinnedMeshRenderers, which this static combine (MeshFilter-only) never
+        // sees -> cVerts is empty. Without this guard the bake would complete and ship a 0-vertex, INVISIBLE unit with a
+        // valid-looking registry entry (only trace: "verts=0" in a log). Fail loudly; rigged models belong on the Animated path.
+        if (cVerts.Count == 0)
+            return Fail($"{name}: the static combine found no mesh geometry (0 vertices) — the model likely imports as " +
+                        "skinned meshes (a rigged FBX) the static path can't read. Use the Animated bake, or check the model imported correctly.");
         var mesh = new Mesh { name = name + "_ModelMesh", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         mesh.SetVertices(cVerts);
         if (haveUV) mesh.SetUVs(0, cUV);
@@ -604,9 +752,16 @@ public static class UniversalBaker
         // ship renders 90 deg off in-game even though the (force-reimported) preview looks right. Fresh assets == first bake.
         foreach (var old in new[] { "_ModelMesh.asset", "_Mat.mat", "_Model.prefab", "_Skeleton.asset" })
             AssetDatabase.DeleteAsset("Assets/Resources/" + name + old);
+        // E7: a prior ANIMATED bake left <name>_Preview.prefab (+ _PreviewMesh/_PreviewMat) in FactorySource, and the
+        // window's LoadPreview PREFERS that over the static _Model.prefab whenever it exists — so without this a static
+        // re-bake would keep showing the OLD animated model in the preview. The static path has no _Preview of its own
+        // (its preview IS the _Model prefab), so delete the stale animated-preview assets to fall through to it.
+        foreach (var pv in new[] { "_Preview.prefab", "_PreviewMesh.asset", "_PreviewMat.mat" })
+            AssetDatabase.DeleteAsset(resDir + "/" + name + pv);
         AssetDatabase.CreateAsset(mesh, "Assets/Resources/" + name + "_ModelMesh.asset");
 
         var mat = new Material(Shader.Find("Standard")) { name = name + "_Mat", mainTexture = atlas };
+        mat.SetFloat("_Glossiness", 0f); mat.SetFloat("_Metallic", 0f);   // matte (Standard defaults to 0.5 smoothness -> glossy on dark textures, e.g. tyres)
         AssetDatabase.CreateAsset(mat, "Assets/Resources/" + name + "_Mat.mat");
 
         var meshGO = new GameObject("Unit_" + name); meshGO.transform.SetParent(root.transform);
@@ -780,6 +935,97 @@ public static class UniversalBaker
         return atlas;
     }
 
+    // Read the glbconv MTL and return its materials IN ORDER, each with its base-colour albedo loaded. The MTL is the
+    // authoritative material list/order for the atlas (submesh order matches it). Empty list => single-material fallback.
+    static List<KeyValuePair<string, Texture2D>> LoadOrderedAlbedos(string fsResDir, string name)
+    {
+        var list = new List<KeyValuePair<string, Texture2D>>();
+        string mtl = Path.Combine(fsResDir, name + ".mtl");
+        if (!File.Exists(mtl)) return list;
+        string cur = null;
+        foreach (var raw in File.ReadAllLines(mtl))
+        {
+            var t = raw.Trim();
+            if (t.StartsWith("newmtl ")) cur = t.Substring(7).Trim();
+            else if (t.StartsWith("map_Kd ") && cur != null)
+            {
+                string p = Path.Combine(fsResDir, t.Substring(7).Trim());
+                if (File.Exists(p)) { var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = cur }; tex.LoadImage(File.ReadAllBytes(p)); list.Add(new KeyValuePair<string, Texture2D>(cur, tex)); }
+                cur = null;
+            }
+        }
+        return list;
+    }
+
+    static string SimplifyMat(string s) => (s ?? "").ToLowerInvariant().Replace("material", "").Replace("mat", "").Replace("_", "").Replace(" ", "").Replace(":", "");
+
+    // Pack the per-material albedos into ONE atlas and remap the FBX's SKINNED mesh UVs per-submesh into their packed rect,
+    // so each part samples its own texture. The mesh is CLONED (we never mutate the imported asset) and re-assigned to the
+    // renderer, so the skeleton bake (SetPrefab, run after this) reads the remapped UVs. Submesh->rect is matched by material
+    // base-name, falling back to submesh index (submesh order == MTL order for a glbconv/rig_anim pair from the same GLB).
+    static Texture2D BuildMultiAtlasAndRemap(GameObject fbxGo, List<KeyValuePair<string, Texture2D>> orderedAlb, string name, BakeConfig cfg, out Mesh remappedPreviewMesh)
+    {
+        remappedPreviewMesh = null;
+        var albs = orderedAlb.Select(kv => kv.Value).ToArray();
+        var atlas = new Texture2D(2, 2, TextureFormat.RGBA32, false) { name = name + "_Atlas" };
+        var rects = atlas.PackTextures(albs, 2, cfg.atlasMaxDim > 0 ? cfg.atlasMaxDim : AtlasMaxDimDefault);
+        var apx = atlas.GetPixels32();
+        AdjustAlbedo(apx, cfg.albedoBrightness, cfg.albedoSaturation);
+        for (int i = 0; i < apx.Length; i++) { apx[i].a = 255; if (!cfg.keepBlack && apx[i].r < 32 && apx[i].g < 32 && apx[i].b < 32) { apx[i].r = 160; apx[i].g = 160; apx[i].b = 168; } }
+        atlas.SetPixels32(apx); atlas.Apply();
+        Debug.Log($"[Factory] {name} ANIMATED MULTI-MATERIAL: {albs.Length} materials [{string.Join(", ", orderedAlb.Select(kv => kv.Key))}] -> packed atlas {atlas.width}x{atlas.height}");
+        foreach (var a in albs) if (a != null) UnityEngine.Object.DestroyImmediate(a);   // E8: free the packed source albedos (packing copied them into the atlas); only orderedAlb's KEYS are used below
+
+        var baseNames = orderedAlb.Select(kv => SimplifyMat(kv.Key)).ToArray();
+        foreach (var smr in fbxGo.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            var srcMesh = smr.sharedMesh;
+            if (srcMesh == null) continue;
+            var mesh = UnityEngine.Object.Instantiate(srcMesh); mesh.name = srcMesh.name;
+            var uv = mesh.uv;
+            if (uv == null || uv.Length != mesh.vertexCount) { smr.sharedMesh = mesh; continue; }
+            var mats = smr.sharedMaterials;
+            var doneVert = new bool[uv.Length];   // remap each vertex once (parts don't share verts across submeshes after a join)
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                int ri = -1;
+                var sm = (mats != null && s < mats.Length) ? mats[s] : null;
+                if (sm != null)
+                {
+                    // Match by simplified material name, EXACT first: the loose Contains-both-ways match alone lets a
+                    // material "Body" grab "Body_Trim"'s atlas rect (simplified "body" is a substring of "bodytrim"),
+                    // mapping the wrong texture onto that submesh. Try exact, then substring, else the index below.
+                    string bn = SimplifyMat(sm.name);
+                    ri = System.Array.FindIndex(baseNames, b => b.Length > 0 && b == bn);
+                    if (ri < 0) ri = System.Array.FindIndex(baseNames, b => b.Length > 0 && (bn.Contains(b) || b.Contains(bn)));
+                }
+                if (ri < 0) ri = s;   // fall back to index (submesh order == MTL order)
+                if (ri < 0 || ri >= rects.Length) { Debug.LogWarning($"[Factory] {name} submesh {s} ('{(sm != null ? sm.name : "null")}') no atlas rect — left unmapped"); continue; }
+                var r = rects[ri];
+                // Fold each UV into [0,1) first: atlas cells have no wrap, but source models often park a material's
+                // island in a distant integer tile relying on texture wrap — unfolded it flies outside its rect into
+                // the black gaps. Whole-in-one-tile islands subtract a uniform integer (no distortion); see the static path.
+                foreach (int vi in mesh.GetTriangles(s)) if (!doneVert[vi]) { float fu = uv[vi].x - Mathf.Floor(uv[vi].x), fv = uv[vi].y - Mathf.Floor(uv[vi].y); uv[vi] = new Vector2(r.x + fu * r.width, r.y + fv * r.height); doneVert[vi] = true; }
+                Debug.Log($"[Factory]   submesh {s} '{(sm != null ? sm.name : "null")}' -> rect[{ri}] '{orderedAlb[ri].Key}'");
+            }
+            mesh.uv = uv;
+            // MERGE the submeshes into ONE so the whole mesh draws with the single atlas material. A renderer (and the game's
+            // skeleton draw) only renders submesh i if a material slot i exists, and we supply ONE atlas material -> otherwise
+            // every submesh past 0 goes invisible (only the barrel showed). UVs are already remapped, so one submesh is correct.
+            var allTris = new List<int>();
+            for (int s = 0; s < mesh.subMeshCount; s++) allTris.AddRange(mesh.GetTriangles(s));
+            mesh.subMeshCount = 1;
+            mesh.SetTriangles(allTris, 0);
+            // Amplitude's skeleton importer reads tangents off this REBUILT mesh; regenerate them (aligned to the remapped
+            // UVs) so it never gets an empty tangent array -> IndexOutOfRange. Needs normals+UVs, both present here.
+            mesh.RecalculateTangents();
+            smr.sharedMaterials = new[] { mats != null && mats.Length > 0 ? mats[0] : null };   // one slot to match the one submesh
+            smr.sharedMesh = mesh;
+            remappedPreviewMesh = mesh;   // hand the corrected mesh to the preview so it shows all parts with the right UVs
+        }
+        return atlas;
+    }
+
     static bool ConvertGlb(string glb, string outDir, string name, int grid)
     {
         string proj = Directory.GetParent(Application.dataPath).FullName;
@@ -827,12 +1073,29 @@ public static class UniversalBaker
     // Returns false (after killing the child) on timeout; otherwise the process has exited and stdout/stderr are filled.
     static bool RunBounded(System.Diagnostics.Process p, int timeoutMs, out string stdout, out string stderr)
     {
+        stdout = ""; stderr = "";
         var outTask = System.Threading.Tasks.Task.Run(() => p.StandardOutput.ReadToEnd());
         var errTask = System.Threading.Tasks.Task.Run(() => p.StandardError.ReadToEnd());
-        if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } stdout = ""; stderr = ""; return false; }
-        stdout = outTask.GetAwaiter().GetResult();
-        stderr = errTask.GetAwaiter().GetResult();
-        return true;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } return false; }   // the process itself hung -> killed
+        // E4: WaitForExit(timeout) returns as soon as the PROCESS exits, but stdout/stderr stay open until EVERY handle to
+        // their write end is closed — including one a grandchild (a Blender helper) may have inherited. ReadToEnd only
+        // returns at pipe EOF, so awaiting the drain tasks UNBOUNDED (the old GetResult()) could hang the editor main
+        // thread forever — the exact freeze this timeout exists to prevent. Bound the drain to the remaining budget too;
+        // on timeout, take whatever was captured and move on (the process already exited cleanly).
+        int remaining = Math.Max(3000, timeoutMs - (int)sw.ElapsedMilliseconds);
+        bool drained; try { drained = System.Threading.Tasks.Task.WaitAll(new[] { outTask, errTask }, remaining); } catch { drained = true; }
+        stdout = outTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? outTask.Result : "";
+        stderr = errTask.Status == System.Threading.Tasks.TaskStatus.RanToCompletion ? errTask.Result : "";
+        if (!drained)
+        {
+            // reads are still blocked on an inherited-open pipe; don't hang. Observe any eventual fault (the caller
+            // disposes the process, which closes the streams and makes the leaked ReadToEnd throw) so it isn't unobserved.
+            outTask.ContinueWith(t => { var _ = t.Exception; }, System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+            errTask.ContinueWith(t => { var _ = t.Exception; }, System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+            Debug.LogWarning("[Factory] a bake sub-process exited but left its output pipe open (a grandchild likely inherited it); continued with partial output instead of hanging.");
+        }
+        return true;   // the process exited cleanly; report success even if a stray pipe kept us from fully draining it
     }
 
     // Locate blender.exe with zero config: explicit EditorPrefs override, else the newest install under Program Files,

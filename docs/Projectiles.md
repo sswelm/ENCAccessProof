@@ -168,6 +168,13 @@ no effect on the count.
 - **OPEN — launch audio:** the shot plays the *launching unit's weapon-fire sound* (a Humvee gunshot), not a drone whoosh.
   Fix path: check/clear the ProjectileAsset's `Muzzle`, else trace the Wwise event with the plugin's F8 **Audio Trace** and
   repoint it (there's a `drone-fly` wav to use). Not yet done.
+- **OPEN — drone visual lost when the firing pawn has a CUSTOM ANIMATED visual (2026-07-18):** replacing the
+  DroneSquadFPV Humvee with the injected Combine soldier kept the sim kill + attack/impact audio but the drone
+  projectile **no longer displays**. `FireProjectile` rides the pawn's throw ANIMATION, and the plugin's pose hook
+  stomps `Pose0` with our clip every frame, so the throw clip (and its spawn event) never plays. Designed fix: read
+  the game's Pose0 before overriding — when it isn't the ordinary idle/move clip, pass the game's pose through (an
+  attack window); belongs to the same work as the idle/move state machine. Until then: a unit whose pawn fires a
+  visible projectile should keep a vanilla/borrowed visual, or accept the invisible shot.
 
 ## Projectile Lab additions (2026-07-18)
 
