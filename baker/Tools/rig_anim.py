@@ -110,6 +110,19 @@ if prefixes:
         print("RIGANIM ERROR: bone-filter %s matched no animated bone — every fcurve was stripped, the clip would be frozen. Animated bones: %s" % (prefixes, avail))
         sys.exit(1)
 
+# STRIP BONE-TRANSLATION CURVES — Amplitude clips are effectively ROTATION-ONLY: its clip bake reads translation keys
+# at the FBX's NATIVE scale, bypassing the importer's unit conversion, so on a Fix-100x rig a 2 cm neck bob becomes
+# ~2 world units and the head rips off in-game ("the movement gets exaggerated") while Unity's own preview plays the
+# same FBX fine. Rotations are scale-free; bone REST offsets come from the (properly scaled) skeleton, so a
+# rotation-driven rig looks identical without these curves. (This generalizes the drone's old wobble fix, which
+# stripped to rotation-only 'prop' curves by hand.)
+_locs = 0
+for coll, fc in all_fcurve_owners(act):
+    if fc.data_path.startswith("pose.bones") and fc.data_path.endswith(".location"):
+        coll.remove(fc); _locs += 1
+if _locs:
+    print("RIGANIM stripped %d bone-LOCATION fcurves (Amplitude clips are rotation-only; translations bake unscaled)" % _locs)
+
 # clamp scene frame range to the action's real range (else bake_anim pads a frozen tail -> ~1s stall per loop)
 fs, fe = [int(round(v)) for v in act.frame_range]
 bpy.context.scene.frame_start = fs
