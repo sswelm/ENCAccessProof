@@ -348,7 +348,8 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   caught a same-day tangent-strip regression that had broken every animated bake. **Known fidelity limit:** a throwaway
   bake can't regenerate an *animated multi-material* model's per-material albedos (they're keyed to the real name), so the
   howitzer's throwaway bake exercises its skeleton path, not its texture packing — the multi-material atlas code is
-  covered instead by the *static* multi-material AttackHelicopter, whose albedos `glbconv` does regenerate.
+  covered instead by the *static* multi-material AttackHelicopter, whose albedos `glbconv` does regenerate. Texture-only
+  entries (Unit Retexture `Retex_*`: no model file, nothing to bake by design) report `SKIP`, not a failure.
 - **Bake Feature Test** — `Tools ▸ ENC ▸ Bake Feature Test` (**Tier 1**) and `… (Tier 2 — Blender + animated)`. Complements
   the smoke test: where that proves models *bake*, this proves each baker *feature knob* does what it claims, by baking a
   fixture with one knob toggled at a time and asserting a feature-specific invariant on the baked mesh/atlas.
@@ -370,9 +371,12 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   frames, the full rest-normalization — the strongest net; needs the source model files on disk, skips with a
   warning otherwise). Both bake under throwaway `__convgate__` names through the same `ConfigFor` route as the Bake
   button, then clean up. Slow (real Blender bakes) — run after touching `rig_anim.py` or `UniversalBaker`.
-  Also since 2026-07-19: the **Smoke Test** selects an extra representative per animated path (legacy `0,0,0` vs
-  conversion — they're different pipelines) and requires the **`_Clips` asset + `_ClipsPoseData.bytes`** for animated
-  models (an empty-clip bake used to pass silently).
+  Also since 2026-07-19: the **Smoke Test** selects an extra representative per animated path (legacy vs conversion,
+  keyed on the `convertRig` flag since the 2026-07-18 gate refactor — they're different pipelines; tags
+  `animated-legacy` / `animated-conv`) and requires the **`_Clips` asset + `_ClipsPoseData.bytes`** for animated
+  models (an empty-clip bake used to pass silently). The full suite re-verified green after the gate refactor:
+  smoke 14/14 (soldier fresh-baked as `animated-conv` via the flag at Rotation `0,0,0`; the legacy drone + howitzer
+  byte-identical with the flag off) and ConvGate full-conversion PASS on the real soldier rig.
 - **Schema parity** — `bash Tools/check_schema_parity.sh`. The registry is written by the baker (`ModelDef`, JsonUtility)
   and read by the plugin two ways (`ModelEntry` via Newtonsoft, plus a regex fallback) across two separate repos, kept in
   sync by hand. The guard makes drift loud: it asserts (1) the Newtonsoft and regex read paths read the **same** key set,
