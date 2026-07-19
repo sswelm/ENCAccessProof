@@ -160,6 +160,10 @@ namespace ENCAccessProof
                 WriteLoadReport(packs, built.Count, conflicts);
                 Plugin.Log.LogInfo($"[Uni] loaded {packs.Count} pack(s), {built.Count} model(s), {conflicts.Count} conflict(s) [" + string.Join(", ", packs.Select(p => p.modId + "×" + p.models.Count)) + "]");
                 entries = built;   // publish fully built — never mutated after this point
+                // Invalidate the pawn-hook early-out caches: if pawns spawned during a transient-failure retry window
+                // they latched anyAnimated/anyFreeze against the EMPTY list — without this, a recovered retry would
+                // repoint meshes but leave every animated/freeze behavior dead for the session (review round 2).
+                anyAnimated = null; anyFreeze = null;
                 loaded = true;
             }
             catch (Exception e)
@@ -381,10 +385,18 @@ namespace ENCAccessProof
         {
             registered = false;
             anyAnimated = null; anyFreeze = null;                    // recomputed on the next pawn-add
+            _listenerChecked = false;                                // the AudioListener rode a session-scoped camera
             var list = entries;
             if (list != null)
                 foreach (var e in list)
-                { e.skeletonId = -1; e.animId = -1; e.descId = -1; e.repointed = false; }   // session-scoped ids re-learn
+                {
+                    e.skeletonId = -1; e.animId = -1; e.descId = -1; e.repointed = false;   // session-scoped ids re-learn
+                    // Retexture/isolation state is session-scoped too: the isolated layer is a clone of a SESSION-1
+                    // output layer and the adjusted atlas was dumped from it — handing either to the new session's
+                    // content manager re-injects dead objects. Cheap to re-derive; destroy the texture we created.
+                    e.isolatedLayer = null; e.hostOutputLayer = null;
+                    if (e.tex != null) { try { UnityEngine.Object.Destroy(e.tex); } catch { } e.tex = null; }
+                }
         }
 
         // register every skeleton before Apply() builds GPU buffers (AnimationLoad postfix)
@@ -1857,6 +1869,9 @@ namespace ENCAccessProof
                 {
                     string cid = System.Text.Encoding.ASCII.GetString(b, p, 4);
                     int csz = BitConverter.ToInt32(b, p + 4);
+                    // A corrupt/truncated file can hold a negative chunk size -> p stops advancing -> the game hangs
+                    // hard in this loop on the main thread. Bail on any size that can't advance the cursor.
+                    if (csz < 0) { Plugin.Log.LogWarning("[Sound] malformed WAV chunk (negative size) in " + path + " — stopping parse."); break; }
                     if (cid == "fmt ") { fmt = BitConverter.ToInt16(b, p + 8); channels = BitConverter.ToInt16(b, p + 10); rate = BitConverter.ToInt32(b, p + 12); bits = BitConverter.ToInt16(b, p + 22); }
                     else if (cid == "data") { dataOff = p + 8; dataLen = Math.Min(csz, b.Length - (p + 8)); break; }
                     p += 8 + csz + (csz & 1);
