@@ -1608,7 +1608,14 @@ namespace ENCAccessProof
                 {
                     float idleDur = e.animDuration > 0.001f ? e.animDuration : 1f;
                     SetMember(pose0, "AnimationId", (uint)e.animId);
-                    SetMember(pose0, "Time", UnityEngine.Time.time / idleDur);
+                    // STATE-DRIVEN IDLE HOLD (howitzer lesson, 2026-07-19): a deployed STANCE baked as its own 1-2
+                    // frame clip encodes ~identity against the skeleton's reference pose and renders as REST (the
+                    // travel pose) in-game — the legacy howitzer's deployed idle was NEVER a baked stance, it was
+                    // the FULL deploy clip HELD near its end at runtime (deployPoseTime 0.999). Same recipe on the
+                    // state path: idle = the full clip, held at deployPoseTime when < 1 (kept just under 1.0 —
+                    // Repeat(1.0) wraps to frame 0, the folded pose). Characters leave deployPoseTime at 1 = loop.
+                    float t = (e.deployPoseTime > 0f && e.deployPoseTime < 1f) ? e.deployPoseTime : UnityEngine.Time.time / idleDur;
+                    SetMember(pose0, "Time", t);
                 }
                 SetMember(pose0, "Weight", 1f);
                 SetMember(entry, "Pose0", pose0);
