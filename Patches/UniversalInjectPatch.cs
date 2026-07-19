@@ -111,7 +111,11 @@ namespace ENCAccessProof
         static void LoadRegistry()
         {
             if (loaded) return;
-            entries = new List<ModelEntry>();
+            // Build into a LOCAL list and publish `entries` once, fully populated (reference assignment is atomic).
+            // The old code published the empty list first and Add()ed into it — the sim-thread combat hook
+            // (FindEntryForUnitDefinition) could then foreach over it mid-Add and throw (review 2026-07-19).
+            entries = new List<ModelEntry>();   // readers see empty while we build
+            var built = new List<ModelEntry>();
             try
             {
                 // DISCOVERY: the ENC base registry (enc_models.json) + every *.json a third-party mod drops in haf_packs/.
@@ -150,11 +154,12 @@ namespace ENCAccessProof
                             continue;
                         }
                         if (!string.IsNullOrEmpty(e.pawnDescription)) owner[e.pawnDescription] = pk.modId;
-                        entries.Add(e);
+                        built.Add(e);
                     }
 
-                WriteLoadReport(packs, entries.Count, conflicts);
-                Plugin.Log.LogInfo($"[Uni] loaded {packs.Count} pack(s), {entries.Count} model(s), {conflicts.Count} conflict(s) [" + string.Join(", ", packs.Select(p => p.modId + "×" + p.models.Count)) + "]");
+                WriteLoadReport(packs, built.Count, conflicts);
+                Plugin.Log.LogInfo($"[Uni] loaded {packs.Count} pack(s), {built.Count} model(s), {conflicts.Count} conflict(s) [" + string.Join(", ", packs.Select(p => p.modId + "×" + p.models.Count)) + "]");
+                entries = built;   // publish fully built — never mutated after this point
                 loaded = true;
             }
             catch (Exception e)
@@ -353,14 +358,33 @@ namespace ENCAccessProof
         // ("Era6_Common_TowedGunHowitzers_01" -> core "Era6_Common_TowedGunHowitzers"). Returns the entry, or null.
         internal static ModelEntry FindEntryForUnitDefinition(string unitDefText)
         {
-            if (entries == null || string.IsNullOrEmpty(unitDefText)) return null;
-            foreach (var e in entries)
+            // Snapshot the reference: this runs on the SIM thread (combat hook) while the main thread may republish
+            // `entries` (LoadRegistry retry). The published list is never mutated after publish, so iterating a
+            // snapshot is safe; iterating the field directly was not (review 2026-07-19).
+            var list = entries;
+            if (list == null || string.IsNullOrEmpty(unitDefText)) return null;
+            foreach (var e in list)
             {
                 if (string.IsNullOrEmpty(e.pawnDescription)) continue;
                 var core = Regex.Replace(e.pawnDescription, "_\\d+$", "");   // drop the trailing _NN instance suffix
                 if (core.Length > 4 && unitDefText.IndexOf(core, StringComparison.OrdinalIgnoreCase) >= 0) return e;
             }
             return null;
+        }
+
+        // SESSION RE-ARM (review 2026-07-19): AnimationLoad fires per game-session and the manager's collection list is
+        // rebuilt — the props axis re-arms on every fire (proven in-game), but the core model axis latched `registered`
+        // once per PROCESS: load a second game in the same app run and EnsureRegistered no-ops, leaving our skeletons
+        // unregistered and every learned id (skeletonId/animId/descId) stale against the new session's assignments.
+        // Called from the AnimationLoad postfix, right before EnsureRegistered re-registers into the fresh manager.
+        internal static void RearmModelRegistration()
+        {
+            registered = false;
+            anyAnimated = null; anyFreeze = null;                    // recomputed on the next pawn-add
+            var list = entries;
+            if (list != null)
+                foreach (var e in list)
+                { e.skeletonId = -1; e.animId = -1; e.descId = -1; e.repointed = false; }   // session-scoped ids re-learn
         }
 
         // register every skeleton before Apply() builds GPU buffers (AnimationLoad postfix)
@@ -1041,27 +1065,6 @@ namespace ENCAccessProof
             ApplyScale(e, entry);
             ctx.pawnEntries.SetValue(entry, ctx.idx);
             LogPoseHookOnce(ctx, e, pose0);
-            DebugFacingPeriodic(e, entry);
-        }
-
-        // TEMP FACING DIAGNOSTIC (fixed-compass soldier): every ~3s, log the pawn's ObjectSpace rotation and the
-        // BoneRotation layer angles for one animated pawn. Moving the unit in different directions then tells us:
-        // R changing but facing fixed => the renderer ignores pawn rotation for this rig; R constant => the game
-        // never turns this pawn; BoneRotation angles nonzero => the game steers through the procedural layer.
-        static float dbgFacingNext;
-        static void DebugFacingPeriodic(ModelEntry e, object entry)
-        {
-            if (UnityEngine.Time.time < dbgFacingNext) return;
-            dbgFacingNext = UnityEngine.Time.time + 3f;
-            var os = GetMember(entry, "ObjectSpace");
-            string br = "";
-            for (int i = 0; i < 4; i++)
-            {
-                var b = GetMember(entry, "BoneRotation" + i);
-                if (b == null) continue;
-                br += $" [{i}] bone={GetMember(b, "SkeletonBoneIndex")} axis={GetMember(b, "AxisIndex")} angle={GetMember(b, "Angle")}";
-            }
-            Plugin.Log.LogInfo($"[Uni][facing] '{e.resourceName}' R={GetMember(os, "Rotation")} T={GetMember(os, "Translation")}{br}");
         }
 
         // The normalized pose time for one animated pawn, per the model's behavior: continuous loop (a spinning prop),
@@ -2728,7 +2731,7 @@ namespace ENCAccessProof
             return t != null ? AccessTools.Method(t, "AnimationLoad") : null;
         }
         static bool hookLogged;
-        static void Postfix(object __instance) { if (!hookLogged) { hookLogged = true; Plugin.Log.LogInfo("[Uni] UniRegisterHook POSTFIX fired"); } Prober.AnimMgr = __instance; UniversalInject.EnsureRegistered(__instance); }
+        static void Postfix(object __instance) { if (!hookLogged) { hookLogged = true; Plugin.Log.LogInfo("[Uni] UniRegisterHook POSTFIX fired"); } Prober.AnimMgr = __instance; UniversalInject.RearmModelRegistration(); UniversalInject.EnsureRegistered(__instance); }
     }
 
     [HarmonyPatch]

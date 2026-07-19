@@ -114,7 +114,7 @@ public class AnimationLabWindow : EditorWindow
                 if (GUILayout.Button("Remove", GUILayout.Width(72)))
                     if (EditorUtility.DisplayDialog("Remove entry",
                         $"Remove '{existing[selected]}' from the registry? (Baked assets stay on disk.)", "Remove", "Cancel"))
-                    { ModelRegistry.Remove(existing[selected]); cur = new ModelDef { animated = true }; selected = 0; RefreshList(); status = "Removed."; }
+                    { bool rem = ModelRegistry.Remove(existing[selected]); cur = new ModelDef { animated = true }; selected = 0; RefreshList(); status = rem ? "Removed." : "Remove FAILED — see the Console (registry locked or corrupt)."; }
         }
         EditorGUILayout.Space();
 

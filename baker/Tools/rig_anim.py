@@ -127,6 +127,7 @@ if prefixes:
 # armature space via the bone's rest orientation, and move the bone's REST (head+tail, whole subtree — pose location
 # shifts descendants too, and offsets from nested keyed bones compose additively since they're pure translations).
 # After the fold, frame-0 pose == rest, and the rotation-only clip plays around the corrected pivots.
+_rest_applied = False   # set once armature_apply rewrites the rest — after that, a failure must abort the bake
 try:
     _loc0 = {}
     for _coll, _fc in all_fcurve_owners(act):
@@ -160,16 +161,24 @@ try:
             for _md in [m for m in _mo.modifiers if m.type == 'ARMATURE']:
                 bpy.ops.object.select_all(action='DESELECT')
                 _mo.select_set(True); bpy.context.view_layer.objects.active = _mo
+                # modifier_apply refuses multi-user mesh data ("Modifiers cannot be applied to multi-user data") —
+                # instanced duplicates (wheels, blades) hit this. Single-user-ize first, same as prep_model.py does.
+                if _mo.data.users > 1:
+                    _mo.data = _mo.data.copy()
                 try:
                     bpy.ops.object.modifier_apply(modifier=_md.name)
                     _rebind.append(_mo.name)
                 except Exception as _e2:
-                    print("RIGANIM WARN: could not apply armature modifier on %s (%s)" % (_mo.name, _e2))
+                    # HARD-FAIL: continuing would let armature_apply below rewrite the rest pose underneath this
+                    # mesh's still-old bind — a permanently deformed export shipped with exit 0 (review 2026-07-19).
+                    print("RIGANIM ERROR: could not apply armature modifier on %s (%s) — aborting: a partial rest-fold would silently mis-bake the model" % (_mo.name, _e2))
+                    sys.exit(1)
         bpy.ops.object.select_all(action='DESELECT')
         arm.select_set(True); bpy.context.view_layer.objects.active = arm
         bpy.ops.object.mode_set(mode='POSE')
         bpy.ops.pose.select_all(action='SELECT')
         bpy.ops.pose.armature_apply(selected=False)          # frame-0 visual pose -> new rest
+        _rest_applied = True                                 # PAST THE POINT OF NO RETURN: the rest is rewritten
         bpy.ops.object.mode_set(mode='OBJECT')
         for _mn in _rebind:
             _mo = bpy.context.scene.objects.get(_mn)
@@ -214,6 +223,12 @@ try:
 except Exception as _e:
     try: bpy.ops.object.mode_set(mode='OBJECT')
     except Exception: pass
+    # Failed BEFORE the rest rewrite: the rig is untouched, continuing with a plain location-strip is safe.
+    # Failed AFTER (rest already rewritten, clip rebake incomplete): the export would pair the NEW rest with the OLD
+    # (or a partial) clip — a silent mis-bake with exit 0. Fail the bake loudly instead (review 2026-07-19).
+    if _rest_applied:
+        print("RIGANIM ERROR: rest-fold failed AFTER the rest pose was rewritten (%s) — aborting: exporting now would ship a half-normalized rig" % _e)
+        sys.exit(1)
     print("RIGANIM WARN: rest-fold failed (%s) — location keys will just be stripped" % _e)
 
 # STRIP BONE-TRANSLATION CURVES — Amplitude clips are effectively ROTATION-ONLY: its clip bake reads translation keys

@@ -188,10 +188,15 @@ public static class ModelRegistry
 
     // LEGACY-CONTRACT MIGRATION (2026-07-18): the conversion pipeline used to be triggered by 'rotation != 0' on an
     // animated entry (the soldier shipped with the 360,0,0 identity trick). That made Rotation a hidden pipeline
-    // switch — editing it on a legacy model silently rerouted the bake. The explicit convertRig flag replaced it;
-    // this upgrades any old entry in memory (the next Save persists it). Runs on every Load — a no-op once migrated.
-    static List<ModelDef> Migrate(List<ModelDef> list)
+    // switch — editing it on a legacy model silently rerouted the bake. The explicit convertRig flag replaced it.
+    // ONE-SHOT: it only runs when the FILE predates the flag (no "convertRig" key anywhere in the JSON — every
+    // post-refactor Save writes the key on every entry, so its absence is a reliable pre-refactor marker). Gating on
+    // the file, not the entry, is what makes a user's deliberate choice stick: an always-on migration would force
+    // convertRig back ON every Load for any animated entry with a rotation set, making the unticked state
+    // impossible to keep (review 2026-07-19).
+    static List<ModelDef> Migrate(List<ModelDef> list, string rawJson)
     {
+        if (rawJson != null && rawJson.Contains("\"convertRig\"")) return list;   // post-refactor file — user intent is explicit, keep it
         foreach (var m in list)
             if (m != null && m.animated && !m.convertRig && m.rotation != Vector3.zero)
             {
@@ -225,7 +230,7 @@ public static class ModelRegistry
                         {
                             try { Directory.CreateDirectory(ConfigDir); File.WriteAllText(RegistryPath, backupJson); } catch { }
                             Debug.Log($"[Factory] game registry was missing — restored {b.models.Count} model(s) from the project backup ({ProjectBackupPath}).");
-                            return Migrate(SortByName(b.models));
+                            return Migrate(SortByName(b.models), backupJson);
                         }
                     }
                     catch (Exception be)
@@ -236,9 +241,10 @@ public static class ModelRegistry
                 }
                 return new List<ModelDef>();
             }
-            var data = JsonUtility.FromJson<RegistryFile>(File.ReadAllText(RegistryPath));
+            var liveJson = File.ReadAllText(RegistryPath);
+            var data = JsonUtility.FromJson<RegistryFile>(liveJson);
             lastLoadCorrupt = false;
-            return Migrate(SortByName(data?.models ?? new List<ModelDef>()));
+            return Migrate(SortByName(data?.models ?? new List<ModelDef>()), liveJson);
         }
         catch (Exception e)
         {

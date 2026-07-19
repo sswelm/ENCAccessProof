@@ -872,6 +872,14 @@ public class ModelFactoryWindow : EditorWindow
                 cur.convertRig = regE.convertRig;
                 cur.fireOnAttack = regE.fireOnAttack; cur.deployOnStop = regE.deployOnStop;
                 cur.deployPoseTime = regE.deployPoseTime; cur.deploySpeed = regE.deploySpeed; cur.recoilSpeed = regE.recoilSpeed;
+                // Unit Retexture / Unit Sound ownership — same rule as the Lab fields: this window can't even display
+                // these, so it must never write its stale clone of them. Without this, a Factory re-bake silently
+                // reverted a skin/tint/engine-sound configured after the entry was loaded here (review 2026-07-19).
+                cur.desaturate = regE.desaturate; cur.tintR = regE.tintR; cur.tintG = regE.tintG; cur.tintB = regE.tintB;
+                cur.textureFile = regE.textureFile;
+                cur.engineSound = regE.engineSound; cur.engineStartEvent = regE.engineStartEvent; cur.engineStopEvent = regE.engineStopEvent;
+                cur.soundFile = regE.soundFile; cur.soundStartFile = regE.soundStartFile; cur.soundStopFile = regE.soundStopFile;
+                cur.soundVolume = regE.soundVolume; cur.soundStartVolume = regE.soundStartVolume; cur.soundStopVolume = regE.soundStopVolume;
                 if (regE.animated) cur.animated = true;
             }
         }

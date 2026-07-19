@@ -504,9 +504,13 @@ public static class UniversalBaker
             AssetDatabase.ImportAsset(objPath, ImportAssetOptions.ForceSynchronousImport);
         if (AssetDatabase.LoadAssetAtPath<GameObject>(objPath) == null)
         {
+            // Fallback: objPath guessed .obj but the extracted source may be the other supported extension (e.g. a
+            // reused FBX whose import block was skipped). Rebuild the asset path from resDir + the found filename —
+            // the file is by construction inside resDir. (This used to substring on "/Resources/", a leftover from
+            // before sources moved to FactorySource — it threw Substring(-1) instead of recovering.)
             var found = Directory.GetFiles(Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir))
                 .Select(p => p.Replace('\\', '/')).FirstOrDefault(p => p.EndsWith(name + ".obj") || p.EndsWith(name + ".fbx"));
-            objPath = found != null ? "Assets" + found.Substring(found.IndexOf("/Resources/")) : objPath;
+            objPath = found != null ? resDir + "/" + Path.GetFileName(found) : objPath;
             if (found != null) AssetDatabase.ImportAsset(objPath, ImportAssetOptions.ForceSynchronousImport);
             if (AssetDatabase.LoadAssetAtPath<GameObject>(objPath) == null) return Fail("no importable model at " + resDir);
         }
