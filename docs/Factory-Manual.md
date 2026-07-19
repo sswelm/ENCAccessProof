@@ -359,7 +359,11 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   atlas isn't CPU-readable). **Tier 2** (slower, real Blender): `targetTris` decimates a *generated* high-poly grid,
   `stripParts` drops a *generated* named object, and the animated pipeline (`BuildAnimated` → `_Skeleton` + `_Clips`) is
   exercised by borrowing up to two rigged models from the registry (SKIP if none on disk — a rigged FBX can't be
-  synthesized). Both non-destructive (throwaway `__feat_*` names, cleaned up).
+  synthesized); since 2026-07-19 those fixtures clone the registry entry and route through `ConfigFor`, so
+  `convertRig`/rotation carry and each model is tested on the pipeline it actually ships on. Both non-destructive
+  (throwaway `__feat_*` names, cleaned up). Benign console noise during Tier 2: `ImportFBX Warnings: Can't import
+  normals, because mesh 'default' doesn't have any` — the synthetic OBJ fixtures carry no normals and Unity
+  recalculates them; shading is irrelevant to what these fixtures assert.
 - **Conversion Gate Test** — `Tools ▸ ENC ▸ Tests ▸ Bake Conversion Gate Test (litmus)` and `… (registry converted models)`
   (2026-07-19). Asserts the raw-rig CONVERSION invariants the animated runtime silently requires — each was once
   violated and each cost hours of blind in-game debugging (the Combine-soldier campaign): every baked bone's

@@ -13,7 +13,8 @@ by when they'll bite.
   location-STRIP stays on BOTH paths deliberately: every verified legacy bake (drone, howitzer) went through it, and
   un-stripping risked re-introducing the drone's unscaled-translation wobble. Rationale: legacy rigs have a sane rest
   by definition, and for them the fold was a near-no-op (frame-0 pose ≈ rest) — so gating it off converges on the
-  same output. **Verify on the next howitzer/drone re-bake in-game** (smoke test re-run recommended after this).
+  same output. **Bake-level verification DONE** (same day): smoke test 14/14 with the howitzer fresh-baked
+  `animated-legacy` through the gated pipeline. Remaining: eyeball the howitzer in-game after the next REAL re-bake.
 
 ## Worth fixing before the next model of the affected kind
 
