@@ -965,6 +965,7 @@ namespace ENCAccessProof
                 var getMc = animMgr.GetType().GetMethods(BF).FirstOrDefault(m2 => m2.Name == "GetMeshCollection" && m2.GetParameters().Length == 1 && m2.GetParameters()[0].ParameterType == guid.GetType());
                 try { mc = getMc?.Invoke(animMgr, new[] { guid }); } catch { }
                 bool Dead(object o) => o == null || (o is UnityEngine.Object uo && !uo);
+                bool preRegistered = !Dead(mc);   // already encoded (e.g. via [Props] PropCollectionGuids) — angles stamped now would be TOO LATE (guid-cached)
                 if (Dead(mc))
                 {
                     var adb = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
@@ -975,12 +976,12 @@ namespace ENCAccessProof
                         foreach (var b in UnityEngine.AssetBundle.GetAllLoadedAssetBundles())
                         { var a = b.LoadAsset(propName + "_Collection"); if (a != null && mcType.IsInstanceOfType(a)) { mc = a; break; } }
                     if (Dead(mc)) { Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: collection not loadable (guid {e.handPropGuid}, name '{propName}_Collection') — no weapon this session"); return; }
-                    try { animMgr.GetType().GetMethod("RegisterMeshCollection", BindingFlags.Public | BindingFlags.Instance)?.Invoke(animMgr, new[] { mc }); } catch { }
                 }
-                // 1b) draw-time IMPORT ANGLES override (registry "x,y,z"): the fragment encoder reads the collection's
-                //     FxMeshContent.ImportAngles — NOT the FxMesh asset's own angles — and encoding happens in our
-                //     FragmentEntry.Load below, so stamping the loaded collection HERE makes the knob runtime-only
-                //     (change + relaunch; no prop re-bake, no mod rebuild).
+                // 1b) draw-time IMPORT ANGLES override (registry "x,y,z") — MUST run BEFORE RegisterMeshCollection:
+                //     the encoder DISCARDS the authored FxMeshContent, rebuilds it from the FxMesh ASSET (with the
+                //     asset's ImportAngles rotating the vertices), and caches the result per guid (decompiled:
+                //     FxMeshLayer.GetFxMeshStructIndex). Stamping the asset before the registration below makes the
+                //     knob runtime-only (change + relaunch; no prop re-bake, no mod rebuild).
                 if (!string.IsNullOrEmpty(e.handPropAngles))
                 {
                     var av = (e.handPropAngles ?? "").Split(',');
@@ -1024,10 +1025,13 @@ namespace ENCAccessProof
                                 }
                                 break;
                             }
-                        Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop import angles ({ax},{ay},{az}) content={(stamped ? "stamped" : "MISS")} fxMeshAsset={(fxStamped ? "stamped" : "MISS")}");
+                        Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop import angles ({ax},{ay},{az}) content={(stamped ? "stamped" : "MISS")} fxMeshAsset={(fxStamped ? "stamped" : "MISS")}{(preRegistered ? " — WARNING: collection was already registered/encoded (PropCollectionGuids?), angles may not take this session" : "")}");
                     }
                     else Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: bad angles '{e.handPropAngles}' (want \"x,y,z\")");
                 }
+                // register AFTER the stamp (dedupes internally; LoadIFNs the meshes = the encode that reads the angles)
+                if (!preRegistered)
+                    try { animMgr.GetType().GetMethod("RegisterMeshCollection", BindingFlags.Public | BindingFlags.Instance)?.Invoke(animMgr, new[] { mc }); } catch { }
                 // 2) the output layer from the borrowed material ("" = the shared EQ_DLC04_Weapons, sling-verified)
                 var mg = Csv(string.IsNullOrEmpty(e.handPropMat) ? "1356489961,1316891353,-864888678,1241300466" : e.handPropMat);
                 if (mg == null) { Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: bad material guid '{e.handPropMat}'"); return; }
