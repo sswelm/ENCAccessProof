@@ -989,7 +989,11 @@ namespace ENCAccessProof
                         && float.TryParse(av[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ay)
                         && float.TryParse(av[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float az))
                     {
-                        bool stamped = false;
+                        // Stamp BOTH angle carriers before the encoding in Load below: the collection's
+                        // FxMeshContent.ImportAngles (harmless; proven ignored by the fragment path in the field)
+                        // AND the FxMesh ASSET's own importAngles — the field the district axis proved effective,
+                        // read when the mesh geometry is uploaded.
+                        bool stamped = false, fxStamped = false;
                         if (GetMember(mc, "skinnedMeshInfos") is Array sis)
                             foreach (var si in sis)
                             {
@@ -1000,10 +1004,27 @@ namespace ENCAccessProof
                                     var iaF = AccessTools.Field(fmc.GetType(), "ImportAngles");
                                     if (iaF != null && iaF.FieldType == typeof(UnityEngine.Vector3))
                                     { iaF.SetValue(fmc, new UnityEngine.Vector3(ax, ay, az)); stamped = true; }
+                                    // resolve + stamp the FxMesh asset the content entry points at
+                                    var fxGuid = GetMember(fmc, "Guid");
+                                    var fxType = AccessTools.TypeByName("Amplitude.Graphics.Fx.FxMesh");
+                                    if (fxGuid != null && fxType != null)
+                                    {
+                                        var adb2 = AccessTools.TypeByName("Amplitude.Framework.Asset.AssetDatabase");
+                                        var loadFx = adb2?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                                            .FirstOrDefault(m2 => (m2.Name == "TryLoadAsset" || m2.Name == "LoadAsset") && m2.IsGenericMethodDefinition && m2.GetParameters().Length == 1)?.MakeGenericMethod(fxType);
+                                        object fx = null;
+                                        try { fx = loadFx?.Invoke(null, new[] { fxGuid }); } catch { }
+                                        if (fx != null && !(fx is UnityEngine.Object ufo && !ufo))
+                                        {
+                                            var iaF2 = AccessTools.Field(fxType, "importAngles");
+                                            if (iaF2 != null && iaF2.FieldType == typeof(UnityEngine.Vector3))
+                                            { iaF2.SetValue(fx, new UnityEngine.Vector3(ax, ay, az)); fxStamped = true; }
+                                        }
+                                    }
                                 }
                                 break;
                             }
-                        Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop import angles ({ax},{ay},{az}) {(stamped ? "stamped" : "NOT stamped — FxMeshContent not found")}");
+                        Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop import angles ({ax},{ay},{az}) content={(stamped ? "stamped" : "MISS")} fxMeshAsset={(fxStamped ? "stamped" : "MISS")}");
                     }
                     else Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: bad angles '{e.handPropAngles}' (want \"x,y,z\")");
                 }
