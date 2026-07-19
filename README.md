@@ -162,6 +162,9 @@ field-by-field breakdown is in the [Factory Manual](docs/Factory-Manual.md) and 
 The plugin's own cfg (`…\community.humankind.encaccessproof.cfg`) — press **F8** in-game for a scan/feedback window.
 
 ## Docs
+- **Can HAF import my model?** [**Animated-Models.md**](docs/Animated-Models.md) — the plain-language answer, in
+  three levels: clean rigs, rigid-part machines (artillery), and full character rigs incl. messy auto-rigs (yes,
+  humanoids work — the public "anything moving is not possible" consensus is outdated). Start here for animation.
 - **Use it:** [**Factory-Manual.md**](docs/Factory-Manual.md) — step-by-step guide (every field, the static + animated
   workflows, a troubleshooting table). Start here if you just want to add a model. §16 is the dedicated
   **animated-model conversion guide**: what Amplitude's animation system can play, the automatic raw-rig conversion

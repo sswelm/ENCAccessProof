@@ -598,6 +598,10 @@ attack). The temporary `[Uni][facing]` periodic log can be removed on the next p
 
 ## 16. Converting an animated model — from raw rig to Amplitude-ready
 
+> **New here?** Read [**Animated-Models.md**](Animated-Models.md) first — the plain-language "what kinds of animated
+> models can HAF import" page (three levels, what each needs, current limits). This section is the deep technical
+> treatment behind it.
+
 Everything learned getting the first humanoid (a raw Sketchfab ValveBiped) fully working in-game, distilled into the
 practical guide. The Factory does the conversion **automatically** — this section explains what it does, how to drive
 it, and how to read the safeguards. *(For the other half — how the game consumes the baked result every frame — see
