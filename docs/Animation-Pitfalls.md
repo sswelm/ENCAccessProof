@@ -38,6 +38,17 @@ move — the unit spends the whole trip in the fold's first frames ("it forgets 
   **empty** Pre-movement clip is a true instant snap (which is all the legacy howitzer ever did — its
   "instant fold" was the *absence* of a fold animation).
 
+### Law 5 — Bone POSITIONS are pinned at the bind pose; only ROTATIONS animate
+Stricter than Law 1, discovered by experiment (Arc-R scaling test): the engine keeps every bone at its
+bind-pose position and plays only orientations through the hierarchy. Consequences:
+- a whole-body lurch (the M114's carriage recoiling backward) cannot be expressed in a clip at all;
+- the far-pivot "RecoilArm" arc — designed to fake a slide as rotation — renders as a **small in-place pitch**
+  (the tube tilts by θ instead of swinging R·θ along the arc). The beloved legacy "kickback" was always exactly
+  this modest pitch, read at map zoom; up close it looks like a nose-dip. Judge fire effects at PLAYING distance.
+- the practical kick recipe: slam-only recoil range (`445..451` on the M114) + the palindrome **Return slow**
+  (the same frames played backward slowed, gliding home). Whole-body motion would need a runtime ObjectSpace
+  nudge (possible, unbuilt).
+
 ### Law 4 — What a preview shows is NOT what the game plays
 Three different things can lie to you independently:
 - a **custom editor renderer** can corrupt the view itself (two hand-rolled BakeMesh draw paths each mangled
@@ -84,6 +95,9 @@ What finally broke the debugging loop was not a cleverer theory — it was a **m
 | A knob change bakes identical output | stale slim cache — **edits made through the Lab re-slim automatically**; edits made directly to the registry file behind an open window do NOT (the cache compares form vs file) | ↻ Reload first, or delete `anim*/…_anim.fbx` |
 | Crossed/wrong limbs in a stance ROLE clip (historical) | role slicing leaked pose values into channels the primary doesn't key | fixed: slicing saves/restores all pose bones (`rig_anim.py`) |
 | Same bake differs run to run (historical) | export-time pose was whatever frame the tool last touched — it becomes the engine's reference | fixed: every export pins the scene to the clip's first frame |
+| Whole gun pitches/dives when firing (close zoom) | Law 5: the arc kick IS a pitch; it reads as a dive only nose-to-the-glass | judge at map zoom; tune via recoil range/Return slow |
+| Attack plays stale/old animation after a recipe edit (historical) | Blender exits 0 even when the conversion script CRASHES — the baker reused the old converted GLB and recorded the bad args as success | fixed: success = the script's own final marker; reversed recoil ranges rejected with a clear error |
+| Aim-layer suspicion during fire | the donor streams runaway angles (5000°+) — but at the INVALID bone index sentinel (0xFFFFFFFF): applied to nothing | exonerated; a throttled `[Aim]` log in ClearAimLayer shows what streams |
 
 ## What the legacy howitzer really was (calibrate your expectations)
 

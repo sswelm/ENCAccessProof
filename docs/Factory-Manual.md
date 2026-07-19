@@ -540,7 +540,9 @@ reproduces from the entry alone:
 | **Barrel ready frame** | source frame of the fully-elevated barrel; re-keys barrel/cannon parts to rise over the deploy's back half (empty = leave as authored) |
 | **Leg spread scale** | empty = source leg curves verbatim; a number re-keys `*leg*` parts as pure travel→spread rotation (`1` = full width). **Required for legs that slide — see the rotation-only law in [Animated-Models.md](Animated-Models.md)** |
 | **Barrel elevation scale** | `>1` exaggerates past the source's max (empty = 1) |
-| **Recoil frames (a..b)** | the kickback's source range, remapped onto the deployed pose as the `recoil` clip (empty = none); **step / slide scale / arc R** tune sampling, distance, and straightness |
+| **Recoil frames (a..b)** | the kickback SLAM's source range (slam ONLY — post-slam source frames are usually reload choreography; e.g. `445..451` on the M114), remapped onto the deployed pose as the `recoil` clip. Set the **Attack clip** to plain `recoil`. Empty = none |
+| **Return slow** | the palindrome return: the slam played BACKWARD at this multiple of its duration, gliding the tube home (empty = 4 = quarter speed; 0 = hold + snap) |
+| **Recoil step / Slide scale / Arc R** | arc sampling fineness, slam distance scale, arc pivot distance. NOTE Law 5 ([Animation-Pitfalls.md](Animation-Pitfalls.md)): the arc renders in-game as a tube PITCH of `slam × slide ÷ R` degrees-ish, not a slide — so **Arc R is effectively the kick-strength dial, inverted**: 400 ≈ 6° dip (the legacy look), 200 ≈ 12°, 100 ≈ 23°. Never 0 (division by zero, fails loudly). Judge at map zoom |
 
 The conversion **generates the state clips** — `deployed`, `folded`, `unfold`, `fold`, `recoil` — from those frame
 numbers; the Pick dropdowns and the ▶ picker inspect the *converted* file once it exists, so you just assign the
