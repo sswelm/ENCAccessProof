@@ -110,8 +110,10 @@ runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — al
 - **Multi-mod — merge packs from many authors.** The runtime is a **Humankind Asset Framework** host, not just ENC's
   loader: it merges ENC's base registry with any number of third-party **packs** dropped in `BepInEx/config/haf_packs/`,
   so a modder augments their own units with a custom model / texture / sound by shipping just a config file + assets — **no
-  ENC edits, no code**. Same-pawn conflicts are detected (first-loaded wins, logged loud — no silent overrides), and every
-  load writes a `haf_load_report.txt` listing what was discovered. See [**Multi-Mod.md**](docs/Multi-Mod.md).
+  ENC edits, no code**. Pack resolution is **enforced** (2026-07-19): duplicate `modId`s rejected, `dependsOn` validated,
+  load order topologically sorted over `dependsOn`/`loadAfter` (cycles broken loudly), **declared `overrides` replace** the
+  targeted entry, and an undeclared same-pawn clash stays first-loaded-wins, logged loud — no silent overrides. Every
+  load writes a `haf_load_report.txt` with the resolution decisions. See [**Multi-Mod.md**](docs/Multi-Mod.md).
 
 Full detail — the shared-buffer ceiling, texture flip, per-model isolation, limitations — in
 [**Capabilities.md**](docs/Capabilities.md).

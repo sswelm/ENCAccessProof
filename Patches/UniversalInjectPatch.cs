@@ -104,9 +104,12 @@ namespace ENCAccessProof
             public int schemaVersion;
             public List<string> dependsOn = new List<string>();
             public List<string> loadAfter = new List<string>();
-            public bool hasOverrides;                 // RESERVED: parsed + echoed in the load report; ordering/override RESOLUTION is a later increment (a second real author will shape it)
+            public List<PackOverride> overrides = new List<PackOverride>();   // ENFORCED since 2026-07-19: an explicit, declared replacement of another pack's entry
             public List<ModelEntry> models = new List<ModelEntry>();
         }
+        // A declared cross-pack replacement: "this pack intentionally replaces <modId>'s entry on <pawnDescription>".
+        // Declared = consensual under the HAF conflict philosophy (an UNdeclared clash is still first-loaded-wins, loud).
+        class PackOverride { public string modId = "", pawn = ""; }
 
         static void LoadRegistry()
         {
@@ -138,27 +141,50 @@ namespace ENCAccessProof
                 }
                 if (packs.Count == 0) throw new Exception("no packs could be read");   // transient (lock/AV) — retry, don't latch
 
+                // PACK RESOLUTION (enforced 2026-07-19): duplicate modIds rejected, dependsOn validated, load order
+                // topologically sorted over dependsOn + loadAfter (stable — no declared constraints = the old
+                // base-first + filename order, byte-identical), cycles fall back loudly. See ResolvePacks.
+                var resolution = new List<string>();
+                packs = ResolvePacks(packs, resolution);
+                if (packs.Count == 0) throw new Exception("no packs survived resolution (see haf_load_report.txt)");
+
                 // MERGE with explicit conflict detection. A model's identity is its pawnDescription (the physical pawn slot
-                // — two skins can't ride one pawn). v1 policy: FIRST-loaded wins on an undeclared clash, and it's logged LOUD
-                // (no silent overrides — the HAF conflict philosophy). dependsOn/loadAfter/overrides are parsed and echoed in
-                // the report but NOT yet enforced; that resolution lands when a second real author needs it.
-                var owner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                // — two skins can't ride one pawn). Policy: a DECLARED override (the pack's `overrides` array names the
+                // owning modId + pawn) REPLACES the earlier entry — declared = consensual, logged as an override, not a
+                // conflict. An UNdeclared clash stays FIRST-loaded wins, logged LOUD (no silent overrides — the HAF
+                // conflict philosophy).
+                var ownerMod = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var ownerIdx = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                 var conflicts = new List<string>();
+                var applied = new List<string>();
                 foreach (var pk in packs)
                     foreach (var e in pk.models)
                     {
-                        if (!string.IsNullOrEmpty(e.pawnDescription) && owner.TryGetValue(e.pawnDescription, out var held))
+                        if (!string.IsNullOrEmpty(e.pawnDescription) && ownerMod.TryGetValue(e.pawnDescription, out var held))
                         {
+                            bool declared = false;
+                            foreach (var ov in pk.overrides)
+                                if (string.Equals(ov.modId, held, StringComparison.OrdinalIgnoreCase) &&
+                                    string.Equals(ov.pawn, e.pawnDescription, StringComparison.OrdinalIgnoreCase))
+                                { declared = true; break; }
+                            if (declared)
+                            {
+                                built[ownerIdx[e.pawnDescription]] = e;   // replace in place — ownerIdx stays valid
+                                ownerMod[e.pawnDescription] = pk.modId;
+                                applied.Add($"pawn={e.pawnDescription} '{pk.modId}' replaces '{held}' (declared override)");
+                                Plugin.Log.LogInfo($"[Uni] OVERRIDE: pack '{pk.modId}' replaces '{held}' on pawn '{e.pawnDescription}' (declared).");
+                                continue;
+                            }
                             conflicts.Add($"pawn={e.pawnDescription} kept={held} dropped={pk.modId}({e.resourceName})");
-                            Plugin.Log.LogWarning($"[Uni] CONFLICT: pack '{pk.modId}' targets pawn '{e.pawnDescription}' already claimed by '{held}' — keeping '{held}' (first-loaded wins).");
+                            Plugin.Log.LogWarning($"[Uni] CONFLICT: pack '{pk.modId}' targets pawn '{e.pawnDescription}' already claimed by '{held}' — keeping '{held}' (first-loaded wins; declare it in `overrides` to replace).");
                             continue;
                         }
-                        if (!string.IsNullOrEmpty(e.pawnDescription)) owner[e.pawnDescription] = pk.modId;
+                        if (!string.IsNullOrEmpty(e.pawnDescription)) { ownerMod[e.pawnDescription] = pk.modId; ownerIdx[e.pawnDescription] = built.Count; }
                         built.Add(e);
                     }
 
-                WriteLoadReport(packs, built.Count, conflicts);
-                Plugin.Log.LogInfo($"[Uni] loaded {packs.Count} pack(s), {built.Count} model(s), {conflicts.Count} conflict(s) [" + string.Join(", ", packs.Select(p => p.modId + "×" + p.models.Count)) + "]");
+                WriteLoadReport(packs, built.Count, conflicts, applied, resolution);
+                Plugin.Log.LogInfo($"[Uni] loaded {packs.Count} pack(s), {built.Count} model(s), {conflicts.Count} conflict(s), {applied.Count} override(s) [" + string.Join(", ", packs.Select(p => p.modId + "×" + p.models.Count)) + "]");
                 entries = built;   // publish fully built — never mutated after this point
                 // Invalidate the pawn-hook early-out caches: if pawns spawned during a transient-failure retry window
                 // they latched anyAnimated/anyFreeze against the EMPTY list — without this, a recovered retry would
@@ -190,7 +216,12 @@ namespace ENCAccessProof
                 if (root["schemaVersion"] != null) pk.schemaVersion = (int)root["schemaVersion"];
                 pk.dependsOn = StrList(root["dependsOn"]);
                 pk.loadAfter = StrList(root["loadAfter"]);
-                pk.hasOverrides = (root["overrides"] as JArray)?.Count > 0;
+                if (root["overrides"] is JArray ovs)
+                    foreach (var ov in ovs)
+                    {
+                        string om = (string)ov["modId"] ?? "", op = (string)ov["pawnDescription"] ?? "";
+                        if (om.Length > 0 && op.Length > 0) pk.overrides.Add(new PackOverride { modId = om, pawn = op });
+                    }
             }
             catch { }   // wrapper is best-effort; the models parse below has its own primary+fallback and is what matters
             pk.models = ParseModels(text);
@@ -203,22 +234,88 @@ namespace ENCAccessProof
         // Write a human-readable load report next to the registry — packs discovered, model counts, reserved metadata, and
         // any conflicts. This is what makes a multi-pack setup DEBUGGABLE (the early slice of HAF runtime diagnostics) and is
         // the first thing a joining modder checks to confirm their pack was seen.
-        static void WriteLoadReport(List<Pack> packs, int total, List<string> conflicts)
+        // PACK RESOLUTION (2026-07-19, was reserved-and-logged): enforce what the wrapper declares, in this order —
+        // duplicate modIds rejected (first file keeps the id), dependsOn validated (a missing dependency SKIPS the
+        // pack; iterated to a fixpoint since a skip can strand a dependent), then a STABLE topological sort over
+        // dependsOn + loadAfter edges. Stability matters: ready packs are picked in SEED order (base first, then
+        // filename order), so with no declared constraints the result is byte-identical to the pre-resolution order —
+        // today's single-pack setup is provably unaffected. loadAfter naming an absent modId is soft (ignored);
+        // a dependency cycle appends its members in seed order with a loud warning. `notes` feeds the load report.
+        static List<Pack> ResolvePacks(List<Pack> packs, List<string> notes)
+        {
+            // -- duplicate modIds --
+            var byId = new Dictionary<string, Pack>(StringComparer.OrdinalIgnoreCase);
+            var kept = new List<Pack>();
+            foreach (var pk in packs)
+            {
+                if (byId.TryGetValue(pk.modId, out var first))
+                {
+                    notes.Add($"SKIPPED '{Path.GetFileName(pk.file)}': duplicate modId '{pk.modId}' (kept '{Path.GetFileName(first.file)}')");
+                    Plugin.Log.LogWarning($"[Uni] pack '{Path.GetFileName(pk.file)}' skipped: duplicate modId '{pk.modId}' — already claimed by '{Path.GetFileName(first.file)}'.");
+                    continue;
+                }
+                byId[pk.modId] = pk; kept.Add(pk);
+            }
+            // -- dependsOn (hard requirement, fixpoint) --
+            bool removedAny = true;
+            while (removedAny)
+            {
+                removedAny = false;
+                for (int i = kept.Count - 1; i >= 0; i--)
+                    foreach (var dep in kept[i].dependsOn)
+                        if (!kept.Any(x => string.Equals(x.modId, dep, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            notes.Add($"SKIPPED '{kept[i].modId}': dependsOn '{dep}' is not loaded");
+                            Plugin.Log.LogWarning($"[Uni] pack '{kept[i].modId}' skipped: dependsOn '{dep}' is not loaded.");
+                            kept.RemoveAt(i); removedAny = true; break;
+                        }
+            }
+            // -- stable topological order (Kahn, seed-order picks) --
+            var ordered = new List<Pack>();
+            var pending = new List<Pack>(kept);
+            while (pending.Count > 0)
+            {
+                Pack pick = null;
+                foreach (var pk in pending)
+                {
+                    bool ready = true;
+                    foreach (var pre in pk.dependsOn.Concat(pk.loadAfter))
+                        if (pending.Any(x => !ReferenceEquals(x, pk) && string.Equals(x.modId, pre, StringComparison.OrdinalIgnoreCase)))
+                        { ready = false; break; }
+                    if (ready) { pick = pk; break; }
+                }
+                if (pick == null)   // every pending pack waits on another pending pack = a cycle
+                {
+                    notes.Add("CYCLE in dependsOn/loadAfter among: " + string.Join(", ", pending.Select(p => p.modId)) + " — file order used for these");
+                    Plugin.Log.LogWarning("[Uni] pack ordering CYCLE among: " + string.Join(", ", pending.Select(p => p.modId)) + " — falling back to file order.");
+                    ordered.AddRange(pending);
+                    break;
+                }
+                ordered.Add(pick); pending.Remove(pick);
+            }
+            for (int i = 0; i < ordered.Count; i++)
+                if (!ReferenceEquals(ordered[i], kept[i])) { notes.Add("load order (after sort): " + string.Join(" → ", ordered.Select(p => p.modId))); break; }
+            return ordered;
+        }
+
+        static void WriteLoadReport(List<Pack> packs, int total, List<string> conflicts, List<string> applied, List<string> resolution)
         {
             try
             {
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("HAF load report  (regenerated every load)");
-                sb.AppendLine($"packs={packs.Count}  models={total}  conflicts={conflicts.Count}");
+                sb.AppendLine($"packs={packs.Count}  models={total}  conflicts={conflicts.Count}  overrides applied={applied.Count}");
                 sb.AppendLine();
                 foreach (var p in packs)
                 {
                     sb.AppendLine($"[{p.modId}]  schemaVersion={p.schemaVersion}  models={p.models.Count}  file={Path.GetFileName(p.file)}");
-                    if (p.dependsOn.Count > 0) sb.AppendLine("    dependsOn: " + string.Join(", ", p.dependsOn) + "   (reserved — not yet enforced)");
-                    if (p.loadAfter.Count > 0) sb.AppendLine("    loadAfter: " + string.Join(", ", p.loadAfter) + "   (reserved — not yet enforced)");
-                    if (p.hasOverrides) sb.AppendLine("    overrides: declared   (reserved — not yet enforced)");
+                    if (p.dependsOn.Count > 0) sb.AppendLine("    dependsOn: " + string.Join(", ", p.dependsOn));
+                    if (p.loadAfter.Count > 0) sb.AppendLine("    loadAfter: " + string.Join(", ", p.loadAfter));
+                    if (p.overrides.Count > 0) sb.AppendLine("    overrides declared: " + string.Join(", ", p.overrides.Select(o => o.modId + ":" + o.pawn)));
                 }
-                if (conflicts.Count > 0) { sb.AppendLine(); sb.AppendLine("CONFLICTS (first-loaded kept):"); foreach (var c in conflicts) sb.AppendLine("  " + c); }
+                if (resolution.Count > 0) { sb.AppendLine(); sb.AppendLine("RESOLUTION:"); foreach (var r in resolution) sb.AppendLine("  " + r); }
+                if (applied.Count > 0) { sb.AppendLine(); sb.AppendLine("OVERRIDES APPLIED (declared replacements):"); foreach (var a in applied) sb.AppendLine("  " + a); }
+                if (conflicts.Count > 0) { sb.AppendLine(); sb.AppendLine("CONFLICTS (undeclared — first-loaded kept; declare in `overrides` to replace):"); foreach (var c in conflicts) sb.AppendLine("  " + c); }
                 File.WriteAllText(Path.Combine(Paths.ConfigPath, "haf_load_report.txt"), sb.ToString());
             }
             catch { }
