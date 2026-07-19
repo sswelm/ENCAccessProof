@@ -986,14 +986,15 @@ namespace ENCAccessProof
                         { var a = b.LoadAsset(propName + "_Collection"); if (a != null && mcType.IsInstanceOfType(a)) { mc = a; break; } }
                     if (Dead(mc)) { Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: collection not loadable (guid {e.handPropGuid}, name '{propName}_Collection') — no weapon this session"); return; }
                 }
-                // 1b) draw-time IMPORT ANGLES override (registry "x,y,z") — MUST run BEFORE RegisterMeshCollection:
-                //     the encoder DISCARDS the authored FxMeshContent, rebuilds it from the FxMesh ASSET (with the
-                //     asset's ImportAngles rotating the vertices), and caches the result per guid (decompiled:
-                //     FxMeshLayer.GetFxMeshStructIndex). Stamping the asset before the registration below makes the
-                //     knob runtime-only (change + relaunch; no prop re-bake, no mod rebuild).
-                if (!string.IsNullOrEmpty(e.handPropAngles))
+                // 1b) draw-time IMPORT ANGLES — ALWAYS stamped BEFORE RegisterMeshCollection: the encoder DISCARDS
+                //     the authored FxMeshContent, rebuilds it from the FxMesh ASSET (rotating vertices by the asset's
+                //     ImportAngles), and caches per guid (decompiled: FxMeshLayer.GetFxMeshStructIndex). The baked
+                //     angle value does NOT survive the mod bundle — in-game the asset reports the CLASS DEFAULT
+                //     (-90,0,0), which silently tipped every prop over vs the preview. So: stamp the registry
+                //     override when set, else stamp ZERO — in-game then always matches the baked vertices
+                //     (orientation authored via the Prop Lab's Rotation offset).
                 {
-                    var av = (e.handPropAngles ?? "").Split(',');
+                    var av = (string.IsNullOrEmpty(e.handPropAngles) ? "0,0,0" : e.handPropAngles).Split(',');
                     if (av.Length == 3
                         && float.TryParse(av[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ax)
                         && float.TryParse(av[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ay)
