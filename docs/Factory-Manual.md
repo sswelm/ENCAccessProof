@@ -511,8 +511,36 @@ the two windows, and jump buttons hand context across ("Edit in Animation Lab" i
 Both windows Bake through the identical pipeline (`ConfigFor → UniversalBaker.BuildAnimated → ModelRegistry.Upsert`),
 so it does not matter where you press Bake.
 
-**Edit existing** lists the **animated** entries only. The model identity (Resource / Target pawn / Model file) shows
-**read-only** — change those in the Factory. Survives domain reloads (`[SerializeField]`, like the other Labs).
+**Edit existing** lists the **animated** entries only. The model identity (Resource / Target pawn) shows
+**read-only** — change those in the Factory; the Model file row has a **Browse…** button (2026-07-19) for
+repointing an entry at a new source. **After every compile/domain reload the window RE-LOADS the selected entry
+from the registry** (2026-07-19) — the file is the single source of truth; unsaved form edits from before a compile
+are deliberately dropped (*Save (no bake)* first if you want to keep them). The **↻ Reload** button does the same
+explicitly — the escape hatch from any stale window copy (re-selecting the *same* entry in the dropdown does
+NOT reload it). This closed the recurring "stale Lab clobber" trap where a pre-reload form silently overwrote
+registry edits at the next Save/Bake.
+
+### Deploy conversion (rigid-parts source → bone-per-part rig, 2026-07-19)
+
+For **Level-2 sources** (Sketchfab vehicles/artillery animated by moving *parts*, not a skeleton): tick **Deploy
+conversion**, point the Model file at the **raw original**, and the bake runs `Tools/deploy_convert.py`
+automatically first — into `FactorySource/<res>/deploy_converted.glb`, cached on an args+source+tool fingerprint
+(a knob change reconverts and re-slims; nothing else does). Every knob is registry data — the full pipeline
+reproduces from the entry alone:
+
+| Field | Meaning |
+| --- | --- |
+| **Deploy frames … End** | the deploy motion's source-frame range (scrub the raw file in ▶ to find it). **Required.** |
+| **Strip parts** | name substrings to delete (crew, loose props); empty = the converter's proven defaults |
+| **Barrel ready frame** | source frame of the fully-elevated barrel; re-keys barrel/cannon parts to rise over the deploy's back half (empty = leave as authored) |
+| **Leg spread scale** | empty = source leg curves verbatim; a number re-keys `*leg*` parts as pure travel→spread rotation (`1` = full width). **Required for legs that slide — see the rotation-only law in [Animated-Models.md](Animated-Models.md)** |
+| **Barrel elevation scale** | `>1` exaggerates past the source's max (empty = 1) |
+| **Recoil frames (a..b)** | the kickback's source range, remapped onto the deployed pose as the `recoil` clip (empty = none); **step / slide scale / arc R** tune sampling, distance, and straightness |
+
+The conversion **generates the state clips** — `deployed`, `folded`, `unfold`, `fold`, `recoil` — from those frame
+numbers; the Pick dropdowns and the ▶ picker inspect the *converted* file once it exists, so you just assign the
+five names to the five roles. (The clip names live in the converted GLB; the bake resolves them by name, isolates
+one clip per role folder, and the game loads the resulting ClipCollections by GUID.)
 
 ### Clip (bake-time — changing these needs a re-Bake)
 - **State-driven (idle / move / after / attack)** *(2026-07-19)* — OFF = the single-clip modes below (continuous

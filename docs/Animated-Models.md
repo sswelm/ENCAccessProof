@@ -32,11 +32,22 @@ Models animated by **moving separate parts** (nodes) rather than a skinned skele
 legs, landing gear, a crane, turrets. Very common for Sketchfab vehicles.
 
 - **Examples shipped:** the TowedGunHowitzers — folds for travel, deploys when it stops, recoils when it bombards.
-- **What you do:** run `Tools/deploy_convert.py` once (headless Blender) to turn the moving parts into a
-  bone-per-part skinned armature, then bake like Level 1. The runtime behaviors (deploy-on-stop, fire-on-attack,
-  recoil) are checkboxes in the Animation Lab — see [Firing-On-Attack.md](Firing-On-Attack.md).
-- **One authoring rule:** motion that genuinely *slides* (a recoiling barrel) must be faked as rotation — the
-  converter's hidden far-pivot "RecoilArm" does this for you.
+- **What you do (2026-07-19, fully recipe-driven):** point the entry's Model file at the **raw original** and tick
+  **"Deploy conversion (rigid-parts source)"** in the Animation Lab. The bake then runs the converter automatically
+  (cached; re-runs only when a knob, the source, or the tool changed) and generates **ready-made state clips** —
+  `deployed` / `folded` / `unfold` / `fold` / `recoil` — cut from two frame numbers you provide (deploy start/end,
+  found by scrubbing the raw file in the ▶ clip picker; recoil range likewise). Assign them to the state-driven
+  roles, Bake. Nothing is hand-run; the whole pipeline reproduces from the registry entry. The legacy hand-run
+  `Tools/deploy_convert.py` invocation still works but is no longer the recommended path.
+- **THE authoring law — the engine's clip bake is ROTATION-ONLY.** Baked clips keep per-bone rotation and DISCARD
+  per-bone translation. Any part whose source motion *translates* must be re-expressed as rotation, or the game
+  plays it pivoting about the wrong point (the M114's trail legs — which spread by rotation **plus** a slide —
+  swept inward/under instead of out; a preview can look perfect and the game still mangles it, because previews
+  play the full curves). Two converter knobs exist precisely for this:
+  - **Leg spread scale** — empty keeps the source leg curves verbatim (fine only for purely-rotational legs);
+    a number re-keys `*leg*` parts as a clean travel→spread pure rotation (`1` = full source width — what the
+    proven howitzer uses; `0.5` = half as wide). If a sliding part isn't named "leg", rename it or expect drift.
+  - the hidden far-pivot **"RecoilArm"** — fakes the barrel's recoil slide as a long-arc rotation automatically.
 
 ### Level 3 — Full character rigs, including messy auto-rigs *(the breakthrough)*
 
