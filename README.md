@@ -1,7 +1,7 @@
 # Humankind Asset Framework (HAF)
 
-**Give any Humankind unit your own 3D model, texture, and sound — no executable patching, no per-model code.**
-*(Formerly **ENC Access Proof**.)*
+**Give any Humankind unit — or district, pawn prop, or projectile — your own 3D model, texture, and sound. No
+executable patching, no per-model code.** *(Formerly **ENC Access Proof**.)*
 
 HAF augments [Humankind](https://www.games2gether.com/amplitude-studios/humankind) with custom unit assets. You **bake**
 an ordinary model (`.glb` / `.fbx` / `.obj` / `.blend`) in a Unity editor tool — the **Universal Model Factory** — and a
@@ -22,7 +22,23 @@ model *types* loaded, not units on screen.
 > small JSON pack registry — so the tooling and the injector stay fully decoupled, and the registry is the public API
 > other mods build against.
 
-## What works (proven in-game)
+## The four injection axes
+
+**HAF lets mods add custom visuals in four places: units, districts, props, and projectiles.** Each axis is proven
+in-game with a shipped example:
+
+| Axis | What it replaces | Proven with | Deep dive |
+|---|---|---|---|
+| **Units** | A unit's whole 3D model — static or **animated**, with per-model runtime behaviors | Ships, aircraft, a folding/firing howitzer, a **62-bone humanoid soldier** | [Factory-Manual.md](docs/Factory-Manual.md) · [Animated-Models.md](docs/Animated-Models.md) |
+| **Districts** | A district's on-map building, scoped to **one tile** | A nuclear-plant Breeder Reactor | [District-Visuals.md](docs/District-Visuals.md) |
+| **Pawn props** | Weapons & gear on a pawn's **attachment slots** — no whole-model replacement | Slingers carrying an actual sling | [Pawn-Props.md](docs/Pawn-Props.md) |
+| **Projectiles** | The **munition mesh** a unit fires | An anti-tank unit launching a kamikaze FPV drone | [Projectiles.md](docs/Projectiles.md) |
+
+**Animation, audio, and retexturing are cross-cutting features** that ride these axes: a unit model can carry its own
+baked animation ([Animated-Models.md](docs/Animated-Models.md)), engine or custom WAV movement sound, and a
+runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — all from the same JSON registry, no code.
+
+## What works (proven in-game, in detail)
 - **Animated custom models — a first, one-click.** A quadcopter drone injected onto a land unit renders full-size,
   textured, and **spins its own propellers from its own baked animation** — for any number of instances. Tick
   **Animated**, press Bake.
