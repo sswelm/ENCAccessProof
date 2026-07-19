@@ -48,6 +48,7 @@ namespace ENCAccessProof
         public object moveClipColl, afterClipColl, attackClipColl, combatClipColl;
         public int moveAnimId = -1, afterAnimId = -1, attackAnimId = -1, combatAnimId = -1;
         public float moveDur = 1f, afterDur = 1f, attackDur = 1f, combatDur = 1f;
+        public int attackRepeats = 1;    // how many times the ATTACK clip replays per trigger (the fire window = repeats x clip duration; the GPU sampler's Repeat(Time,1) wraps each pass). For short recoil-pop source clips (shootAR2s = 0.17s) that should read as sustained fire. Runtime-only knob — no re-bake.
         public readonly Dictionary<long, UnityEngine.Vector3> stateLastPos = new Dictionary<long, UnityEngine.Vector3>();  // MAIN thread poll: unit GUID -> last render pos
         public readonly Dictionary<long, bool> stateMoving = new Dictionary<long, bool>();                                 // unit GUID -> was moving last poll (detects the moving->stopped flip)
         public readonly Dictionary<long, float> stateStoppedAt = new Dictionary<long, float>();                            // unit GUID -> Time.time the unit stopped moving
@@ -419,6 +420,7 @@ namespace ENCAccessProof
                                 soundStartVolume = m["soundStartVolume"] != null ? (float)m["soundStartVolume"] : 1f,
                                 soundStopVolume = m["soundStopVolume"] != null ? (float)m["soundStopVolume"] : 1f,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
+                                attackRepeats = m["attackRepeats"] != null ? (int)m["attackRepeats"] : 1,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
                                 recoilSpeed = m["recoilSpeed"] != null ? (float)m["recoilSpeed"] : 1f,
                             });
@@ -459,6 +461,7 @@ namespace ENCAccessProof
                 var svs = Regex.Matches(text, "\"soundStartVolume\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: start one-shot volume
                 var svp = Regex.Matches(text, "\"soundStopVolume\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: stop one-shot volume
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
+                var arp = Regex.Matches(text, "\"attackRepeats\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: STATE-DRIVEN attack clip replay count per trigger (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
                 var rsp = Regex.Matches(text, "\"recoilSpeed\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: recoil-on-fire playback speed multiplier (default 1)
                 var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
@@ -500,6 +503,7 @@ namespace ENCAccessProof
                         soundStartVolume = i < svs.Count && float.TryParse(svs[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _svs) ? _svs : 1f,
                         soundStopVolume = i < svp.Count && float.TryParse(svp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _svp) ? _svp : 1f,
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
+                        attackRepeats = i < arp.Count && int.TryParse(arp[i].Groups[1].Value, out var _arp) ? _arp : 1,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
                         recoilSpeed = i < rsp.Count && float.TryParse(rsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _rsp) ? _rsp : 1f,
                         scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
@@ -1375,14 +1379,19 @@ namespace ENCAccessProof
             if (e.attackAnimId >= 0)
             {
                 float atd = e.attackDur > 0.001f ? e.attackDur : 1f;
+                // attackRepeats: the window spans N passes of the clip; Time is fed UNCLAMPED (dt/clipDur) and the
+                // sampler's Repeat(Time,1) wraps it, so the clip replays each pass — sustained fire from a
+                // single-pop source clip. repeats=1 degenerates to the original clamped one-shot.
+                int rep = e.attackRepeats > 0 ? e.attackRepeats : 1;
+                float win = atd * rep;
                 float nowT = UnityEngine.Time.time;
                 lock (e.activeFires)
                     for (int i = 0; i < e.activeFires.Count; i++)
                     {
                         float dtF = nowT - e.activeFires[i].startTime;
-                        if (dtF < 0f || dtF >= atd) continue;
+                        if (dtF < 0f || dtF >= win) continue;
                         if ((e.activeFires[i].pos - pos).sqrMagnitude < 4f * 4f)
-                        { inAttack = true; attackT = UnityEngine.Mathf.Min(dtF / atd, 0.999f); break; }
+                        { inAttack = true; attackT = UnityEngine.Mathf.Min(dtF / atd, rep - 0.001f); break; }
                     }
             }
             float stoppedAt = -1f; bool matched = false;
@@ -1678,7 +1687,7 @@ namespace ENCAccessProof
                 // and the STATE-DRIVEN attack clip (window = attackDur; armed directly by the ranged-fight hook).
                 bool stateAttack = e.animStateDriven && e.attackAnimId >= 0;
                 if (!e.fireOnAttack && !stateAttack) continue;
-                float dur = stateAttack ? (e.attackDur > 0.001f ? e.attackDur : 1f)
+                float dur = stateAttack ? (e.attackDur > 0.001f ? e.attackDur : 1f) * (e.attackRepeats > 0 ? e.attackRepeats : 1)
                                         : (e.animDuration > 0.001f ? e.animDuration : 1f);
                 // reverse for-loop, NOT RemoveAll: the dur-capturing lambda allocated a closure per entry per FRAME,
                 // even with zero active fires (perf pass 2026-07-19)
