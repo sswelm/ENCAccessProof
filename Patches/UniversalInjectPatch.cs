@@ -1864,10 +1864,16 @@ namespace ENCAccessProof
                     if (ang != 0f && UnityEngine.Time.time - lastAimLog > 1f)
                     {
                         lastAimLog = UnityEngine.Time.time;
-                        Plugin.Log.LogInfo($"[Aim] streamed slot{i}: Angle={ang:0.0} BoneIndex={GetMember(br, "BoneIndex")} Axis={GetMember(br, "Axis")} (cleared)");
+                        // dump EVERY field of the BoneRotation struct — the first probe guessed member names
+                        // (BoneIndex/Axis) and read nothing, and the index decides whether this runaway angle
+                        // lands on a real bone (the diver) or the invalid 0xFFFFFFFF sentinel (a red herring).
+                        var t = br.GetType();
+                        var dump = string.Join(" ", t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                            .Select(fi => fi.Name + "=" + fi.GetValue(br)));
+                        Plugin.Log.LogInfo($"[Aim] streamed slot{i} ({t.Name}): {dump} (cleared)");
                     }
                 }
-                catch { }
+                catch (Exception ex) { Plugin.Log.LogWarning("[Aim] dump: " + ex.Message); }
                 SetMember(br, "Angle", 0f);
                 SetMember(entry, BoneRotationNames[i], br);
             }
