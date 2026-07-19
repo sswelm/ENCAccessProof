@@ -95,6 +95,26 @@ Per bone, per pose slot (`ApplyPose` → `GetPoseTRS`):
   the conversion's `b###_` rename.
 - **Depth ≤ 15** — no-op root bones are collapsed to preserve budget.
 
+## 4b. State-driven playback facts (Phase 2, 2026-07-19 — decompiled + experimentally proven)
+
+- **The full pawn array uploads to the GPU EVERY FRAME**: `PawnManager.DoComputation()` runs per evolve pass and does
+  a whole-array `pawnEntriesBuffer.SetData(pawnEntries)`. There is **no id latching** — every field the pose hook
+  writes (AnimationId included) reaches the GPU each frame, so **per-frame `AnimationId` switching on Pose0 is safe**
+  and is how the state machine (idle / run / after-move) is implemented.
+- **The secondary pose slots (Pose1/Pose2) misbehave** in the GPU pass: driving states by weight-switching constant-id
+  slots rendered the pawn **invisible while moving** (most plausibly a garbage id sampling an arbitrary buffer entry —
+  a scale-0 entry collapses the mesh to a point). The C# mirror (`GetLocalBoneTRS`/`ApplyPose`) is slot-agnostic, so
+  the divergence lives in the compute shader; the state machine simply avoids the secondary slots.
+- **Rotation-format clip data cannot explode a mesh**: `GetPoseTRS` forces translation to zero and scale to 1 for
+  `Rotation`-encoded curves. This yields a sharp diagnostic dichotomy: a pawn rendering **invisible** ⇒ a wrong
+  *animation id* (sampling foreign entries); a pawn rendering **frozen** ⇒ *constant clip data* (see the
+  frozen-runner bug in Factory-Manual §16: Blender's bone rename syncs fcurve paths only for the ASSIGNED action, so
+  dormant state-role clips exported as statues until patched explicitly).
+- **Byte-level clip forensics**: the `_Clips*PoseData.bytes` layout is per-curve blocks (Rotation format:
+  `ceil(frames/2) × 3` uints per curve). A healthy clip shows a MIX of varying and constant curve blocks (animated
+  vs still bones); ALL-constant blocks = a frozen bake. This check runs from PowerShell in seconds and settled in
+  minutes what in-game observation could not.
+
 ## 5. Multi-instance & lifecycle notes
 
 - Same-unit instances get **different SkeletonIds** — hence descriptor keying + SkeletonId forcing (a second

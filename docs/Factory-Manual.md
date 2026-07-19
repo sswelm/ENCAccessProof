@@ -515,8 +515,18 @@ so it does not matter where you press Bake.
 **read-only** — change those in the Factory. Survives domain reloads (`[SerializeField]`, like the other Labs).
 
 ### Clip (bake-time — changing these needs a re-Bake)
+- **State-driven (idle / move / after)** *(2026-07-19)* — OFF = the single-clip modes below (continuous loop or the
+  Behavior flags). ON = a **state machine for characters**: the **Idle clip** plays standing, the **Movement clip**
+  loops while the unit travels (fixes the idle-slide), and the optional **After-movement clip** plays once on
+  stopping before settling into Idle. Each role gets the same Pick-from-model dropdown; Movement is required, After
+  optional. All roles bake in ONE Blender pass against ONE shared skeleton (every clip is rebaked against the
+  primary/Idle clip's frame-0 rest — separate per-role rests would rigidly displace the non-primary clips), into
+  per-role ClipCollections (`_Clips` / `_ClipsMove` / `_ClipsAfter`). Mutually exclusive with Fire-on-attack /
+  Deploy-when-stopped (those are ignored while State-driven is ON). The runtime polls each unit's movement ~20×/s
+  (render-position delta — settle-immune) and switches the pawn's Pose0 clip per state.
 - **Clip name** *(Pick)* — which clip to bake when the model has several (a Sketchfab model often ships `hover`,
   `exploded_view`, …). **Pick** lists the clips read from the model (glb/gltf). Empty = the model's first/assigned clip.
+  With State-driven ON this field is the **Idle clip**.
 - **Animate only bones** *(Pick)* — comma-separated bone-name **prefixes** to keep animation on (e.g. `prop`). Strips
   everything else (camera pans, body bob) that would make the model wobble. Empty = keep the whole clip.
 - **Fix 100× oversize (FBX unit scale)** — some rigged exports embed a metre→centimetre unit scale that makes the model

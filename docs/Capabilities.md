@@ -167,6 +167,10 @@ see the [Factory Manual](Factory-Manual.md).
   runtime. Rigs that animate positions can't play as-is — the automatic conversion (Factory-Manual §16) re-expresses
   them as rotations (rest normalization + visual rebake). Genuine translation *motion* (a sliding recoil) still needs
   the far-pivot rotation trick (`deploy_convert.py`).
+- **STATE-DRIVEN characters (2026-07-19, verified in-game):** a model can play different clips per movement state —
+  Idle standing, a Movement loop while traveling (the Combine soldier RUNS), an optional After-movement one-shot on
+  stopping. Configured in the Animation Lab (State-driven toggle + three clip pickers); all roles bake against one
+  shared skeleton in a single pass; the runtime switches the pawn's Pose0 clip from a ~20×/s movement poll.
 - **Preview orientation ≠ game orientation for animated models:** the embedded preview applies fixed display flips —
   judge orientation IN-GAME only, probing Rotation one axis at a time. The conversion path is selected by the explicit
   **"Convert raw rig"** checkbox (2026-07-18 gate refactor — it used to trigger on any non-zero Rotation, forcing a

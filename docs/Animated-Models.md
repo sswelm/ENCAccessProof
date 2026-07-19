@@ -2,7 +2,7 @@
 
 The short answer: **more than the community thinks is possible.** The public consensus is still "anything moving is
 not possible" in Humankind modding — HAF has shipped a spinning-prop drone, a folding/firing howitzer, and a full
-humanoid character (a raw Sketchfab auto-rig) as working in-game units.
+humanoid character (a raw Sketchfab auto-rig) that **idles standing and runs while moving** as working in-game units.
 
 This page is the plain-language front door. If you just want to know whether *your* model can work, read this; the
 deep technical treatment lives in [Factory-Manual.md §16](Factory-Manual.md) (how the conversion works) and
@@ -44,12 +44,21 @@ Humanoids and creatures with real skeletons — including **auto-rigged download
 whose clips assemble the body every frame with location keys (typical of Sketchfab auto-rigs; these are unplayable
 in the engine as-is, which is where the "not possible" consensus came from).
 
-- **Examples shipped:** the Combine soldier (62-bone ValveBiped) — stands, turns with movement, idles, attacks.
+- **Examples shipped:** the Combine soldier (62-bone ValveBiped) — stands, turns with movement, **idles standing,
+  runs while moving**, attacks.
 - **What you do:** tick **"Convert raw rig"** in the Animation Lab and bake. The conversion is automatic: it makes
   the clip's first visual pose the new rest pose, re-derives the entire animation as pure rotations, renames bones
   so the engine's sorting can't scramble them, and exports unit-clean (usually with "Fix 100×" OFF).
 - **If the result is mis-oriented:** add a Rotation and probe one axis at a time — and judge **in-game**, not in the
   preview (the preview's orientation is meaningless for animated models).
+
+## State-driven characters (idle / run / after-move)
+
+A character can play **different clips per movement state**: tick **"State-driven"** in the Animation Lab and pick
+an **Idle clip** (plays standing), a **Movement clip** (loops while the unit travels — a run cycle), and optionally
+an **After-movement clip** (played once on stopping, then back to Idle). All clips come from the same model file and
+bake against **one shared skeleton** in a single pass — pick, bake, done. This is what makes a humanoid read as a
+*unit* instead of a statue gliding across the map.
 
 ## What this unlocks
 
@@ -58,8 +67,6 @@ motion can be expressed (or re-expressed) as bone rotations.
 
 ## Current limits, honestly
 
-- **One clip per model** plays in-game today (looped, or behavior-driven: fire-once / deploy). A state machine
-  (idle vs run vs after-move) is designed and planned, not yet shipped — characters currently idle while moving.
 - **Translation *motion* can't play** (engine rule). Sliding parts need the far-pivot rotation trick.
 - **Multiple armatures in one file:** only the first is used.
 - **Morph targets / shape keys** aren't supported on the conversion path.
