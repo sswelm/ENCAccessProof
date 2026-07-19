@@ -339,7 +339,7 @@ Bakes are manual and the roster is growing, so a baker change can silently break
 until much later. Three guards catch that at the integration seam unit tests can't reach — run them after any change to the
 baker, `rig_anim.py`, `glbconv`, or the registry schema.
 
-- **Bake Smoke Test** — `Tools ▸ ENC ▸ Bake Smoke Test (one per path)` (or `(ALL models)`). Bakes one representative per
+- **Bake Smoke Test** — `Tools ▸ ENC ▸ Tests ▸ Bake Smoke Test (one per path)` (or `(ALL models)`). Bakes one representative per
   bake-path (`animated × material mode`) through the *same* config route as the Bake button and asserts each completes
   without throwing and produces non-empty `_Skeleton`/`_Atlas` (+ `_ModelMesh` for static). **Non-destructive**: it bakes
   `reuseExtracted=false` models under a throwaway `__smoketest__` name (your real assets + registry are untouched) and
@@ -350,7 +350,7 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   howitzer's throwaway bake exercises its skeleton path, not its texture packing — the multi-material atlas code is
   covered instead by the *static* multi-material AttackHelicopter, whose albedos `glbconv` does regenerate. Texture-only
   entries (Unit Retexture `Retex_*`: no model file, nothing to bake by design) report `SKIP`, not a failure.
-- **Bake Feature Test** — `Tools ▸ ENC ▸ Bake Feature Test` (**Tier 1**) and `… (Tier 2 — Blender + animated)`. Complements
+- **Bake Feature Test** — `Tools ▸ ENC ▸ Tests ▸ Bake Feature Test` (**Tier 1**) and `… (Tier 2 — Blender + animated)`. Complements
   the smoke test: where that proves models *bake*, this proves each baker *feature knob* does what it claims, by baking a
   fixture with one knob toggled at a time and asserting a feature-specific invariant on the baked mesh/atlas.
   **Tier 1** (fast, self-contained synthetic cube): `doubleSided` doubles the triangle count, Faceted unwelds
@@ -360,7 +360,7 @@ baker, `rig_anim.py`, `glbconv`, or the registry schema.
   `stripParts` drops a *generated* named object, and the animated pipeline (`BuildAnimated` → `_Skeleton` + `_Clips`) is
   exercised by borrowing up to two rigged models from the registry (SKIP if none on disk — a rigged FBX can't be
   synthesized). Both non-destructive (throwaway `__feat_*` names, cleaned up).
-- **Conversion Gate Test** — `Tools ▸ ENC ▸ Bake Conversion Gate Test (litmus)` and `… (registry converted models)`
+- **Conversion Gate Test** — `Tools ▸ ENC ▸ Tests ▸ Bake Conversion Gate Test (litmus)` and `… (registry converted models)`
   (2026-07-19). Asserts the raw-rig CONVERSION invariants the animated runtime silently requires — each was once
   violated and each cost hours of blind in-game debugging (the Combine-soldier campaign): every baked bone's
   **BindPose/Local scale == 1** (the file-scale sandwich), every bone's **ParentIndex < its own index**

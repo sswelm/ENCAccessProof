@@ -1,4 +1,4 @@
-// ConversionGateTest.cs (ENC editor) — Tools > ENC > Bake Conversion Gate Test.
+// ConversionGateTest.cs (ENC editor) — Tools > ENC > Tests > Bake Conversion Gate Test.
 // The FOURTH regression guard (Factory-Manual §11): asserts the raw-rig CONVERSION invariants that the animated
 // runtime silently requires (established by decompiling Amplitude's bake + runtime, and by the Combine-soldier
 // campaign — each was once violated, each produced an in-game failure that took hours to diagnose by hand):
@@ -26,7 +26,7 @@ public static class ConversionGateTest
 {
     const string PREFIX = "__convgate__";
 
-    [MenuItem("Tools/ENC/Bake Conversion Gate Test (litmus)")]
+    [MenuItem("Tools/ENC/Tests/Bake Conversion Gate Test (litmus)")]
     public static void RunLitmus()
     {
         // --- fixture: synthesize the litmus rig if it isn't cached ---
@@ -54,7 +54,7 @@ public static class ConversionGateTest
             : $"[ConvGate] LITMUS: {fails} FAILURE(S) — the conversion pipeline regressed; see errors above.");
     }
 
-    [MenuItem("Tools/ENC/Bake Conversion Gate Test (registry converted models)")]
+    [MenuItem("Tools/ENC/Tests/Bake Conversion Gate Test (registry converted models)")]
     public static void RunRegistryConverted()
     {
         // The REAL adversarial fixtures: every registry model on the conversion path (the Combine soldier's

@@ -25,7 +25,7 @@ public static class BakeSmokeTest
 {
     const string PREFIX = "__smoketest__";
 
-    [MenuItem("Tools/ENC/Bake Smoke Test (one per path)")]
+    [MenuItem("Tools/ENC/Tests/Bake Smoke Test (one per path)")]
     public static void RunRepresentatives()
     {
         var defs = ModelRegistry.Load();
@@ -41,7 +41,7 @@ public static class BakeSmokeTest
         Run(reps, "one per bake-path");
     }
 
-    [MenuItem("Tools/ENC/Bake Smoke Test (ALL models)")]
+    [MenuItem("Tools/ENC/Tests/Bake Smoke Test (ALL models)")]
     public static void RunAll()
     {
         var defs = ModelRegistry.Load();
