@@ -1262,56 +1262,35 @@ namespace ENCAccessProof
             var pose0 = GetMember(entry, "Pose0");                     // boxed PawnEntryPose (struct)
             // PawnEntryPose.Time is NORMALIZED (sampler does Mathf.Repeat(Time,1) = one loop). ComputePoseTime divides by the
             // clip duration so it plays at REAL speed and hits every frame; raw Time.time = duration× too fast + frame-skipping.
-            int zeroFrom = 1;
+            // STATE-DRIVEN models switch Pose0's ANIMATIONID by movement state. This is safe: PawnManager's
+            // DoComputation() does a FULL pawnEntriesBuffer.SetData(pawnEntries) EVERY FRAME (decompiled), so every
+            // field we write — ids included — reaches the GPU each frame; there is no id latching. (The earlier
+            // "id switching is ignored" reading was an illusion: the move clip's data was CONSTANT at a near-idle
+            // stance at the time. A Pose1 weight-switching attempt rendered the pawn INVISIBLE while moving — the
+            // secondary slots misbehave on the GPU pass in some unmapped way — so the state machine deliberately
+            // uses only the battle-tested Pose0.)
             if (e.animStateDriven && e.moveAnimId >= 0)
             {
-                // WEIGHT-DRIVEN STATES (the in-game diagnostic proved per-frame ANIMATIONID switching is a no-op: the
-                // hook selected the run anim, the pawn kept idling — the id is latched when the pawn entry is built,
-                // while Time/Weight are consumed per frame, exactly what the deploy hold/ramp already demonstrated).
-                // So every state OWNS a pose slot with a CONSTANT id and the machine switches WEIGHTS — the same
-                // mechanism the game's own crossfades use. Pose0=idle, Pose1=move, Pose2=after (when configured).
                 StatePose(e, entry, out bool moving, out bool inAfter, out float afterT);
-                float idleDur = e.animDuration > 0.001f ? e.animDuration : 1f;
-                float moveDur = e.moveDur > 0.001f ? e.moveDur : 1f;
-                if (Plugin.StateProbePose0Move != null && Plugin.StateProbePose0Move.Value)
+                if (moving)
                 {
-                    // TEMP DIAGNOSTIC (cfg [Factory] StateProbePose0Move): play the MOVE clip on Pose0, weight 1,
-                    // ALWAYS. Separates the two suspects for "invisible while moving": if he runs in place standing
-                    // still, the move clip + Pose0 are fine and the Pose1 SLOT is the problem; if he's invisible
-                    // here too, the move clip's GPU bake is bad despite the healthy asset.
+                    float md = e.moveDur > 0.001f ? e.moveDur : 1f;
                     SetMember(pose0, "AnimationId", (uint)e.moveAnimId);
-                    SetMember(pose0, "Weight", 1f);
-                    SetMember(pose0, "Time", UnityEngine.Time.time / moveDur);
-                    SetMember(entry, "Pose0", pose0);
-                    for (int pi = 1; pi < 9; pi++)
-                    { var pz = GetMember(entry, PoseNames[pi]); if (pz == null) continue; SetMember(pz, "Weight", 0f); SetMember(entry, PoseNames[pi], pz); }
-                    goto stateTail;
+                    SetMember(pose0, "Time", UnityEngine.Time.time / md);
                 }
-                SetMember(pose0, "AnimationId", (uint)e.animId);
-                SetMember(pose0, "Weight", (!moving && !inAfter) ? 1f : 0f);
-                SetMember(pose0, "Time", UnityEngine.Time.time / idleDur);
+                else if (inAfter)
+                {
+                    SetMember(pose0, "AnimationId", (uint)e.afterAnimId);
+                    SetMember(pose0, "Time", afterT);
+                }
+                else
+                {
+                    float idleDur = e.animDuration > 0.001f ? e.animDuration : 1f;
+                    SetMember(pose0, "AnimationId", (uint)e.animId);
+                    SetMember(pose0, "Time", UnityEngine.Time.time / idleDur);
+                }
+                SetMember(pose0, "Weight", 1f);
                 SetMember(entry, "Pose0", pose0);
-                var pose1 = GetMember(entry, "Pose1");
-                if (pose1 != null)
-                {
-                    SetMember(pose1, "AnimationId", (uint)e.moveAnimId);
-                    SetMember(pose1, "Weight", moving ? 1f : 0f);
-                    SetMember(pose1, "Time", UnityEngine.Time.time / moveDur);
-                    SetMember(entry, "Pose1", pose1);
-                }
-                zeroFrom = 2;
-                if (e.afterAnimId >= 0)
-                {
-                    var pose2 = GetMember(entry, "Pose2");
-                    if (pose2 != null)
-                    {
-                        SetMember(pose2, "AnimationId", (uint)e.afterAnimId);
-                        SetMember(pose2, "Weight", inAfter ? 1f : 0f);
-                        SetMember(pose2, "Time", afterT);
-                        SetMember(entry, "Pose2", pose2);
-                    }
-                    zeroFrom = 3;
-                }
             }
             else
             {
@@ -1321,14 +1300,13 @@ namespace ENCAccessProof
                 SetMember(pose0, "Time", ComputePoseTime(e, entry, dur));
                 SetMember(entry, "Pose0", pose0);
             }
-            for (int i = zeroFrom; i < 9; i++)
+            for (int i = 1; i < 9; i++)
             {
                 var pose = GetMember(entry, PoseNames[i]);
                 if (pose == null) continue;
                 SetMember(pose, "Weight", 0f);
                 SetMember(entry, PoseNames[i], pose);
             }
-            stateTail:
             // The AIM layer is cleared only for the ARTILLERY behaviors (it twists the howitzer's barrel as the game
             // aims). For other animated models the game's bone-rotation layer stays — it carries the pawn's FACING
             // (clearing it froze the soldier to one compass direction) — but on some donors it arrives with an
