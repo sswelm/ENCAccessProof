@@ -53,6 +53,6 @@ decimation/import/export executes inside Blender's C/C++ core:
 
 ## Editor tooling (`baker/`)
 
-The Universal Model Factory editor scripts are mirrored in `baker/` (the live copies compile inside the ENCReload Unity
+The Model Factory editor scripts are mirrored in `baker/` (the live copies compile inside the ENCReload Unity
 project, which tracks only its `Databases` in git). Drop them into a Unity project that has the Humankind SDK to get the
-**Tools ▸ Universal Model Factory** window.
+**Tools ▸ Model Factory** window.

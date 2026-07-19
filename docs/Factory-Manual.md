@@ -1,8 +1,8 @@
-# Universal Model Factory — User Manual
+# Model Factory — User Manual
 
 How to put your own 3D model onto a Humankind unit, step by step. This is the practical guide.
 
-The Factory is a Unity editor window (**Tools ▸ Universal Model Factory**). You give it a model file and a target unit, set
+The Factory is a Unity editor window (**Tools ▸ Model Factory**). You give it a model file and a target unit, set
 a few options, press **Bake**, then rebuild the mod. The in-game plugin reads what you baked and renders it.
 
 > **Shipping a standalone pack?** The runtime is a multi-mod host — you can distribute your models as their own **pack**
@@ -25,7 +25,7 @@ a few options, press **Bake**, then rebuild the mod. The in-game plugin reads wh
 
 ## 2. Quick start (static model)
 
-1. **Tools ▸ Universal Model Factory**.
+1. **Tools ▸ Model Factory**.
 2. **Pawn description → Pick** — choose the unit your model replaces (e.g. `Era6_Common_Hovercrafts_01`). A **Resource
    name** is suggested; keep or edit it.
 3. **Model file → Browse** — pick your `.glb`/`.obj`/`.fbx`.
@@ -504,7 +504,7 @@ full scene scan off the hot path.
 
 ## 15. The Animation Lab window — a model's animation, in one place
 
-**Tools ▸ HAF ▸ Animation Lab** (2026-07-18). Docks as a **tab next to the Universal Model Factory**, so the pair
+**Tools ▸ HAF ▸ Animation Lab** (2026-07-18). Docks as a **tab next to the Model Factory**, so the pair
 presents as one tabbed dialog. The design rule: **the Factory owns the MODEL** (identity, pawn, model file, transform,
 size, geometry/shading, static runtime flags), **the Lab owns the ANIMATION** — every setting lives in exactly one of
 the two windows, and jump buttons hand context across ("Edit in Animation Lab" in the Factory loads the entry here).

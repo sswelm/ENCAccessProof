@@ -21,7 +21,7 @@ model *types* loaded, not units on screen.
 
 > **Two halves, one contract.** The **HAF Authoring Tools** (bake, in the Unity editor) and a **runtime plugin**
 > (inject, in the game) talk only through a small JSON pack registry — so the tooling and the injector stay fully
-> decoupled, and the registry is the public API other mods build against. *("Universal Model Factory" names one
+> decoupled, and the registry is the public API other mods build against. *("Model Factory" names one
 > window of the suite — the historical first one; in-editor the whole suite lives under `Tools ▸ HAF`.)*
 
 ## The four injection axes
@@ -132,7 +132,7 @@ Full detail — the shared-buffer ceiling, texture flip, per-model isolation, li
 [**Capabilities.md**](docs/Capabilities.md).
 
 ## How it works
-**Editor — the Universal Model Factory** (`baker/`, *Tools ▸ Universal Model Factory*): pick a target unit + a model
+**Editor — the Model Factory** (`baker/`, *Tools ▸ Model Factory*): pick a target unit + a model
 file, set transform / size / shading, **Bake**. Static models bake an Amplitude `Skeleton` on the proven single-bone
 vehicle rig + a packed atlas; ticking **Animated** takes a parallel path (`UniversalBaker.BuildAnimated`) that keeps the
 model's **own armature + clip** (Blender slims it, then bakes `Skeleton` + `ClipCollection` + atlas, with the clip
