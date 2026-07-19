@@ -38,11 +38,24 @@ A copy-ready starting point is [`haf-pack.example.json`](haf-pack.example.json).
 ## Where it goes
 
 - **ENC's base registry:** `BepInEx/config/enc_models.json` (loaded first, as `modId` `enc`).
-- **Your pack:** drop your `*.json` in **`BepInEx/config/haf_packs/`**. Every `.json` there is discovered, sorted by filename.
+- **Your pack, self-contained (recommended, since 2026-07-19):** one directory in `haf_packs/`:
+
+  ```
+  BepInEx/config/haf_packs/
+    mymod/
+      pack.json       ← your registry (default modId = the folder name)
+      sounds/         ← your custom WAVs   (soundFile / soundStartFile / soundStopFile)
+      skins/          ← your retexture PNGs (textureFile)
+  ```
+
+- **Or a flat file:** `haf_packs/mymod.json` — file-based assets then resolve from a sibling folder
+  `haf_packs/mymod/` (`sounds/`, `skins/`), if present.
 
 > **Assets:** baked mesh/skeleton/atlas resolve by Amplitude **GUID**, so they work from any mod's bundle the game loads —
-> the runtime doesn't care which mod shipped them. *File-based* assets (custom WAVs, PNG skins) currently resolve from the
-> shared `enc_sounds/` and `enc_skins/` folders by filename; per-pack asset folders are a planned refinement.
+> the runtime doesn't care which mod shipped them. *File-based* assets (custom WAVs, PNG skins) resolve **relative to the
+> owning pack first** (`sounds/` / `skins/` in your pack folder), falling back to the legacy shared `enc_sounds/` and
+> `enc_skins/` folders — so old packs keep working, and a new pack ships as one self-contained directory that never
+> collides with another mod's filenames.
 
 ## How packs merge (resolution ENFORCED since 2026-07-19)
 

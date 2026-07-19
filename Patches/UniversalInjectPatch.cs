@@ -74,6 +74,7 @@ namespace ENCAccessProof
         public float soundStopVolume = 1f;     // move-stop one-shot volume
         public UnityEngine.AudioClip customClip, customStartClip, customStopClip;    // loaded once from the three files
         public bool customClipTried;                                                 // don't retry a failed load every poll
+        public string assetDir = "";     // owning pack's asset root (set at registry load, never parsed from JSON): WAVs/PNGs resolve from <assetDir>/sounds|skins first, then the legacy shared enc_sounds/enc_skins
         public readonly Dictionary<int, UnityEngine.AudioSource> customSources = new Dictionary<int, UnityEngine.AudioSource>();  // sub-pawn instance id -> our looping AudioSource (played while moving)
         public readonly Dictionary<int, float> loopHoldUntil = new Dictionary<int, float>();   // instance id -> Time.time to hold the travel loop off until (so the spool-up one-shot isn't masked)
         public readonly Dictionary<int, UnityEngine.Vector3> engineLastPos = new Dictionary<int, UnityEngine.Vector3>();  // sub-pawn instance id -> last render pos
@@ -101,6 +102,7 @@ namespace ENCAccessProof
         class Pack
         {
             public string modId = "", file = "";
+            public string assetDir = "";              // per-pack ASSET ROOT (2026-07-19): file-based assets (WAVs in sounds/, PNGs in skins/) resolve here FIRST, then fall back to the legacy shared enc_sounds/enc_skins — so a third-party pack ships self-contained instead of feeling like an ENC extension. "" (the base pack) = legacy folders only.
             public int schemaVersion;
             public List<string> dependsOn = new List<string>();
             public List<string> loadAfter = new List<string>();
@@ -129,7 +131,17 @@ namespace ENCAccessProof
                 if (File.Exists(basePath)) files.Add(basePath);
                 var packDir = Path.Combine(Paths.ConfigPath, "haf_packs");
                 if (Directory.Exists(packDir))
-                    files.AddRange(Directory.GetFiles(packDir, "*.json").OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+                {
+                    var found = new List<string>(Directory.GetFiles(packDir, "*.json"));
+                    // Subdirectory packs (2026-07-19): haf_packs/<mymod>/pack.json — the pack's own folder is its
+                    // asset root (sounds/, skins/ inside it), so a pack ships as ONE self-contained directory.
+                    foreach (var dir in Directory.GetDirectories(packDir))
+                    {
+                        var pj = Path.Combine(dir, "pack.json");
+                        if (File.Exists(pj)) found.Add(pj);
+                    }
+                    files.AddRange(found.OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+                }
                 if (files.Count == 0) { Plugin.Log.LogInfo("[Uni] no registry at " + basePath + " and no haf_packs/*.json"); loaded = true; return; }
 
                 var packs = new List<Pack>();
@@ -160,6 +172,7 @@ namespace ENCAccessProof
                 foreach (var pk in packs)
                     foreach (var e in pk.models)
                     {
+                        e.assetDir = pk.assetDir;   // file-based assets (WAV/PNG) resolve pack-relative first
                         if (!string.IsNullOrEmpty(e.pawnDescription) && ownerMod.TryGetValue(e.pawnDescription, out var held))
                         {
                             bool declared = false;
@@ -208,7 +221,19 @@ namespace ENCAccessProof
         static Pack ParsePack(string file, bool isBase)
         {
             var text = File.ReadAllText(file);
-            var pk = new Pack { file = file, modId = isBase ? "enc" : Path.GetFileNameWithoutExtension(file) };
+            bool isDirPack = !isBase && string.Equals(Path.GetFileName(file), "pack.json", StringComparison.OrdinalIgnoreCase);
+            var pk = new Pack
+            {
+                file = file,
+                // default modId: the DIRECTORY name for a subdirectory pack (every one is named pack.json — the
+                // filename would collide as "pack"), else the filename; an explicit "modId" key overrides below.
+                modId = isBase ? "enc" : isDirPack ? Path.GetFileName(Path.GetDirectoryName(file)) : Path.GetFileNameWithoutExtension(file),
+                // asset root: the pack's own directory for a subdirectory pack; for a flat haf_packs/<name>.json, a
+                // sibling folder of the same name (may not exist — resolution then falls through to the legacy
+                // shared folders); the base pack keeps the legacy enc_sounds/enc_skins.
+                assetDir = isBase ? "" : isDirPack ? Path.GetDirectoryName(file)
+                                                   : Path.Combine(Path.GetDirectoryName(file), Path.GetFileNameWithoutExtension(file)),
+            };
             try
             {
                 var root = JObject.Parse(text);
@@ -861,7 +886,7 @@ namespace ENCAccessProof
                 // Custom skin PNG takes precedence; otherwise the desaturated original is built in GreyIsolate/TickOne.
                 if (!string.IsNullOrEmpty(e.textureFile) && e.tex == null)
                 {
-                    e.tex = LoadSkinPng(e.textureFile, e.resourceName);
+                    e.tex = LoadSkinPng(e.textureFile, e.resourceName, e.assetDir);
                     if (e.tex != null && NeedsAdjust(e)) AdjustSkin(e.tex, e.desaturate, e.tintR, e.tintG, e.tintB);   // desaturate/tint the loaded PNG too
                 }
                 GreyIsolate(addon, animMgr, e);    // clone the body fragment's output layer (+ build the desaturated atlas if desaturate>0)
@@ -871,13 +896,19 @@ namespace ENCAccessProof
             catch (Exception ex) { Plugin.Log.LogError("[Skin] " + ex); }
         }
 
-        // Load a retexture PNG from BepInEx/config/enc_skins/<file> into a Texture2D (needs ImageConversionModule.LoadImage).
-        static UnityEngine.Texture2D LoadSkinPng(string file, string tag)
+        // Load a retexture PNG: the owning pack's <assetDir>/skins/<file> first (per-pack assets, 2026-07-19), then the
+        // legacy shared BepInEx/config/enc_skins/<file>. (Needs ImageConversionModule.LoadImage.)
+        static UnityEngine.Texture2D LoadSkinPng(string file, string tag, string assetDir = "")
         {
             try
             {
                 var path = Path.Combine(Paths.ConfigPath, "enc_skins", file);
-                if (!File.Exists(path)) { Plugin.Log.LogWarning($"[Skin] {tag}: retexture file not found: {path}"); return null; }
+                if (!string.IsNullOrEmpty(assetDir))
+                {
+                    var pp = Path.Combine(assetDir, "skins", file);
+                    if (File.Exists(pp)) path = pp;
+                }
+                if (!File.Exists(path)) { Plugin.Log.LogWarning($"[Skin] {tag}: retexture file not found: {path}" + (string.IsNullOrEmpty(assetDir) ? "" : $" (also tried {Path.Combine(assetDir, "skins")})")); return null; }
                 var t = new UnityEngine.Texture2D(2, 2, UnityEngine.TextureFormat.RGBA32, false) { name = tag + "_Skin" };
                 if (!UnityEngine.ImageConversion.LoadImage(t, File.ReadAllBytes(path))) { Plugin.Log.LogWarning($"[Skin] {tag}: LoadImage failed for {file} (not a PNG/JPG?)"); UnityEngine.Object.DestroyImmediate(t); return null; }
                 Plugin.Log.LogInfo($"[Skin] {tag}: loaded retexture '{file}' ({t.width}x{t.height})");
@@ -1866,9 +1897,9 @@ namespace ENCAccessProof
                     if (!e.customClipTried)
                     {
                         e.customClipTried = true;
-                        e.customClip = LoadCustom(e.soundFile, e.resourceName);
-                        e.customStartClip = LoadCustom(e.soundStartFile, e.resourceName + "_start");
-                        e.customStopClip = LoadCustom(e.soundStopFile, e.resourceName + "_stop");
+                        e.customClip = LoadCustom(e.soundFile, e.resourceName, e.assetDir);
+                        e.customStartClip = LoadCustom(e.soundStartFile, e.resourceName + "_start", e.assetDir);
+                        e.customStopClip = LoadCustom(e.soundStopFile, e.resourceName + "_stop", e.assetDir);
                     }
                 }
                 if (anyCustom) EnsureAudioListener();
@@ -1997,12 +2028,18 @@ namespace ENCAccessProof
             catch (Exception e) { Plugin.Log.LogWarning("[Sound] EnsureAudioListener: " + e.Message); }
         }
 
-        // Load a custom WAV from enc_sounds/<file> (null if unset/missing).
-        static UnityEngine.AudioClip LoadCustom(string file, string tag)
+        // Load a custom WAV: the owning pack's <assetDir>/sounds/<file> first (per-pack assets, 2026-07-19), then the
+        // legacy shared enc_sounds/<file>. Null if unset/missing.
+        static UnityEngine.AudioClip LoadCustom(string file, string tag, string assetDir = "")
         {
             if (string.IsNullOrEmpty(file)) return null;
+            if (!string.IsNullOrEmpty(assetDir))
+            {
+                var pp = Path.Combine(assetDir, "sounds", file);
+                if (File.Exists(pp)) return LoadWav(pp, tag);
+            }
             var p = Path.Combine(Paths.ConfigPath, "enc_sounds", file);
-            if (!File.Exists(p)) { Plugin.Log.LogWarning($"[Sound] file not found: {p}"); return null; }
+            if (!File.Exists(p)) { Plugin.Log.LogWarning($"[Sound] file not found: {p}" + (string.IsNullOrEmpty(assetDir) ? "" : $" (also tried {Path.Combine(assetDir, "sounds")})")); return null; }
             return LoadWav(p, tag);
         }
 
