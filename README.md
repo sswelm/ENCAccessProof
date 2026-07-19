@@ -41,14 +41,20 @@ baked animation ([Animated-Models.md](docs/Animated-Models.md)), engine or custo
 runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — all from the same JSON registry, no code.
 
 ## What works (proven in-game, in detail)
-- **STATE-DRIVEN characters — idle / run / after-move (2026-07-19).** The Combine soldier **idles standing and RUNS
-  while moving** — different clips per movement state, switched live by the runtime (a ~20×/s movement poll + per-pawn
-  pose selection on the proven Pose0 slot). Configured entirely in the Animation Lab: a **State-driven** toggle with
-  **Idle / Movement / After-movement** clip pickers; all roles bake against **one shared skeleton** in a single
-  Blender pass (every clip rebaked against the primary clip's frame-0 rest — per-role rests would displace the
-  non-primary clips). The bake-side war story: Blender's bone rename only syncs the *assigned* action's curve paths,
-  so dormant role clips exported as frozen statues until the paths were patched explicitly — caught by byte-level
-  pose-data analysis, fixed, and guarded by a tool-version cache-buster.
+- **STATE-DRIVEN characters — idle / run / after-move / combat stance / attack fire (2026-07-19).** The Combine
+  soldier **idles standing, RUNS while moving, holds a weapon-raised COMBAT STANCE while its army is locked in a
+  battle, and fires its ATTACK animation when it actually shoots** — five clips per model, switched live by the
+  runtime (a ~20×/s state poll + per-pawn pose selection on the proven Pose0 slot; priority attack > move >
+  after-move > combat > idle). The attack trigger is a hook on the game's own per-pawn ranged-fire sequence, so
+  every battle volley animates the exact shooting pawn; an **Attack repeats** knob loops a short recoil-pop clip
+  into sustained automatic fire (the soldier's 0.17s `shootAR2s` × 18 ≈ 3 s of fire, runtime-only — no re-bake).
+  Configured entirely in the Animation Lab: a **State-driven** toggle with **Idle / Movement / After-movement /
+  Attack / Combat-idle** clip pickers; all roles bake against **one shared skeleton** in a single Blender pass
+  (every clip rebaked against the primary clip's frame-0 rest — per-role rests would displace the non-primary
+  clips; single-frame stance clips are auto-padded so Unity's importer can't drop them). The bake-side war story:
+  Blender's bone rename only syncs the *assigned* action's curve paths, so dormant role clips exported as frozen
+  statues until the paths were patched explicitly — caught by byte-level pose-data analysis, fixed, and guarded by
+  a tool-version cache-buster.
 - **Animated custom models — a first, one-click.** A quadcopter drone injected onto a land unit renders full-size,
   textured, and **spins its own propellers from its own baked animation** — for any number of instances. Tick
   **Animated**, press Bake.

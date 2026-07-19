@@ -114,6 +114,23 @@ Per bone, per pose slot (`ApplyPose` → `GetPoseTRS`):
   `ceil(frames/2) × 3` uints per curve). A healthy clip shows a MIX of varying and constant curve blocks (animated
   vs still bones); ALL-constant blocks = a frozen bake. This check runs from PowerShell in seconds and settled in
   minutes what in-game observation could not.
+- **The ATTACK trigger** (fifth state role): a Harmony postfix on
+  `Amplitude.Mercury.Presentation.PawnRangedFightSequence.InitializeCommon` — **all five constructors funnel
+  through it** (battle volleys, unit-target shots, district bombards), and the sequence is built on the
+  presentation/main thread, so the shooter's `Transform` is read directly into the entry's fire windows (no
+  sim-thread GUID queue like the artillery hook needs). The window spans `attackRepeats × clipDuration` and the
+  pose Time is fed UNCLAMPED — the sampler's `Repeat(Time,1)` wraps each pass, replaying the clip back-to-back.
+  **Trap:** the plugin registers hooks from an EXPLICIT list in `Plugin.cs` (per-hook isolation); a new
+  `[HarmonyPatch]` class that isn't added there fails **100% silently** — no TargetMethod log at all.
+- **Battles spawn a SECOND PresentationUnit per combatant** on its combat tile
+  (`Presentation.PresentationBattleReportController.Battles → AllUnits → PresentationUnit`), while the map army's
+  own unit stays at the STACK position — 27.7u away in the field log, far outside the 4u sample-match radius. The
+  state poll walks BOTH collections (battle samples always `combat=true`, and the two bookkeeping streams are
+  key-salted: same sim GUID, two objects at different positions would ping-pong the movement detector into a
+  permanent "moving"). The COMBAT-IDLE state reads `PresentationArmy.IsLockedByBattle` on the map walk.
+- **Single-frame stance clips** (`CombatIdle1`, range 0..0) are auto-padded to 2 identical frames by the conversion
+  rebake — Unity's FBX importer can drop a zero-length animation whole. Amplitude then bakes FrameCount 1, which
+  pins the GPU sampler to frame 0 at any Time: a held pose, exactly what a stance wants.
 
 ## 5. Multi-instance & lifecycle notes
 

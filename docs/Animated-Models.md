@@ -52,13 +52,23 @@ in the engine as-is, which is where the "not possible" consensus came from).
 - **If the result is mis-oriented:** add a Rotation and probe one axis at a time — and judge **in-game**, not in the
   preview (the preview's orientation is meaningless for animated models).
 
-## State-driven characters (idle / run / after-move)
+## State-driven characters (idle / run / after-move / combat / attack)
 
-A character can play **different clips per movement state**: tick **"State-driven"** in the Animation Lab and pick
+A character can play **different clips per state**: tick **"State-driven"** in the Animation Lab and pick
 an **Idle clip** (plays standing), a **Movement clip** (loops while the unit travels — a run cycle), and optionally
-an **After-movement clip** (played once on stopping, then back to Idle). All clips come from the same model file and
-bake against **one shared skeleton** in a single pass — pick, bake, done. This is what makes a humanoid read as a
-*unit* instead of a statue gliding across the map.
+an **After-movement clip** (played once on stopping, then back to Idle), an **Attack clip** (played when the unit
+fires a ranged attack — the runtime hooks the game's own per-pawn fire sequence, so the exact shooting pawn
+animates in battles and bombards alike), and a **Combat-idle clip** (a weapon-raised stance that replaces Idle
+while the army is locked in a battle, from deployment to resolution — a single-frame pose clip works and is
+auto-padded at bake time). Priority: attack > movement > after-move > combat-idle > idle.
+
+Source clips are often authored as a single trigger-pull pop (the soldier's `shootAR2s` is 0.17 s) — the sim fires
+once per attack, so at face value that's a blip. The **Attack repeats** slider replays the clip N times per trigger
+(window = N × clip duration; 18 ≈ 3 s of sustained fire) and is **runtime-only**: change it, *Save (no bake)*,
+rebuild the mod — no re-bake.
+
+All clips come from the same model file and bake against **one shared skeleton** in a single pass — pick, bake,
+done. This is what makes a humanoid read as a *unit* instead of a statue gliding across the map.
 
 ## What this unlocks
 
