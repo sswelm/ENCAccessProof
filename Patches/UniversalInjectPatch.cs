@@ -1792,20 +1792,23 @@ namespace ENCAccessProof
                 var fresh = new Dictionary<ModelEntry, List<StateSample>>();
                 var seen = new Dictionary<ModelEntry, HashSet<long>>();
                 foreach (var e in list) if (e.animStateDriven && e.moveAnimId >= 0) { fresh[e] = new List<StateSample>(); seen[e] = new HashSet<long>(); }
-                foreach (var army in armies)
+                // One sampler for BOTH walks below. keySalt separates the map-army and battle bookkeeping for the
+                // same sim unit: during a battle the army's PresentationUnit still exists at the STACK position while
+                // the battle deploys a SECOND PresentationUnit on its combat tile — same GUID, different objects. A
+                // shared key would ping-pong stateLastPos between the two positions and read as permanently "moving".
+                void SampleUnit(object unit, bool combat, long keySalt)
                 {
-                    if (army == null) continue;
-                    var unit = GetMember(army, "PresentationUnit");
-                    if (unit == null) continue;
+                    if (unit == null) return;
                     string uname = GetMember(GetMember(unit, "UnitDefinition"), "Name")?.ToString() ?? "";
-                    if (uname.Length == 0) continue;
+                    if (uname.Length == 0) return;
                     ModelEntry e = null;
                     foreach (var x in list)
                         if (x.animStateDriven && x.moveAnimId >= 0 && x.pawnDescription.Length > 0
                             && uname.IndexOf(CoreDesc(x.pawnDescription), StringComparison.OrdinalIgnoreCase) >= 0) { e = x; break; }
-                    if (e == null) continue;
+                    if (e == null) return;
                     long guid = GuidToLong(GetMember(unit, "GUID"));
-                    if (guid == 0) continue;
+                    if (guid == 0) return;
+                    guid = unchecked(guid ^ keySalt);
                     var pawnList = (GetMember(unit, "Pawns") as System.Collections.IEnumerable)?.Cast<object>().ToList();
                     UnityEngine.Vector3 upos = UnityEngine.Vector3.zero; bool hasPos = false;
                     if (pawnList != null)
@@ -1821,21 +1824,37 @@ namespace ENCAccessProof
                     if (wasMoving != moving)
                     {
                         if (wasMoving && !moving) e.stateStoppedAt[guid] = now;   // the AFTER one-shot window starts here
-                        Plugin.Log.LogInfo($"[State] '{e.resourceName}' unit {guid} moving={moving}");
+                        Plugin.Log.LogInfo($"[State] '{e.resourceName}' unit {guid} moving={moving}{(combat ? " (battle)" : "")}");
                     }
                     e.stateMoving[guid] = moving;
                     float stoppedAt = e.stateStoppedAt.TryGetValue(guid, out var sAt) ? sAt : -1f;
-                    // COMBAT stance: PresentationArmy.IsLockedByBattle (public bool on exactly the objects this walk
-                    // iterates) is true from battle deployment until resolution — the pose hook swaps IDLE for the
-                    // combat-idle clip while it holds. Reflection-safe: a missing member just reads false.
-                    bool combat = false;
-                    try { combat = GetMember(army, "IsLockedByBattle") is bool b && b; } catch { }
                     seen[e].Add(guid);
                     if (pawnList != null)
                         foreach (var pawn in pawnList)
                             if (GetMember(pawn, "Transform") is UnityEngine.Transform tr)
                                 fresh[e].Add(new StateSample { pos = tr.position, moving = moving, stoppedAt = stoppedAt, combat = combat });
                 }
+                foreach (var army in armies)
+                {
+                    if (army == null) continue;
+                    // COMBAT stance: PresentationArmy.IsLockedByBattle (public bool on exactly the objects this walk
+                    // iterates) is true from battle deployment until resolution — the pose hook swaps IDLE for the
+                    // combat-idle clip while it holds. Reflection-safe: a missing member just reads false.
+                    bool combat = false;
+                    try { combat = GetMember(army, "IsLockedByBattle") is bool b && b; } catch { }
+                    SampleUnit(GetMember(army, "PresentationUnit"), combat, 0L);
+                }
+                // BATTLE-DEPLOYED units: a battle spawns its own PresentationBattleUnit list whose PresentationUnits
+                // live on the combat tiles — the army walk's sample sits at the STACK position (27u+ away in the
+                // field report), so without this walk a deployed pawn never matches (no stance, no movement state).
+                // Presentation.PresentationBattleReportController (a PresentationBattleController) -> Battles ->
+                // AllUnits -> PresentationUnit (PresentationUnitHolder, same shape as the army's). Always combat=true.
+                var bctl = CachedField(presType, "PresentationBattleReportController")?.GetValue(null);
+                if (GetMember(bctl, "Battles") is System.Collections.IEnumerable battles)
+                    foreach (var b in battles)
+                        if (GetMember(b, "AllUnits") is System.Collections.IEnumerable allUnits)
+                            foreach (var bu in allUnits)
+                                SampleUnit(GetMember(bu, "PresentationUnit"), true, unchecked((long)0x5AAB5AAB5AAB5AABUL));
                 foreach (var e in fresh.Keys)
                 {
                     lock (e.stateSamples) { e.stateSamples.Clear(); e.stateSamples.AddRange(fresh[e]); }
