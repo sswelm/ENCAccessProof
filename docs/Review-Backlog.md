@@ -83,6 +83,15 @@ by when they'll bite.
   contradicts the settled Factory-lists-all design; 3-strike registry give-up latches per-process ("this session" log
   text is wrong); Hk_AudioTrace postfix unguarded + per-event string scans; 4u fire-radius / 3u deploy-match adjacency.
 
+## Queued for the package release (not review findings — branding/packaging debt)
+
+- **Umbrella naming (external doc review, 2026-07-19):** the editor suite's documented name is now **HAF Authoring
+  Tools** with the Model Factory as one module (README updated). The invasive half is deferred to the package push:
+  rename the in-editor menu root `Tools ▸ ENC` → `Tools ▸ HAF`, sweep window titles, and update every
+  `Tools ▸ ENC ▸ …` reference across the docs in the same commit. Deferred deliberately — it breaks daily muscle
+  memory and dozens of doc references, so it should land once, atomically, at the release boundary (alongside the
+  other known package-push items: path decoupling, package scaffolding).
+
 ## Verified clean (don't re-litigate without new evidence)
 
 GUID nibble-swap encoding + keep-GUID re-bake; registry corrupt-guard/atomic-write/backup lifecycle; two-window

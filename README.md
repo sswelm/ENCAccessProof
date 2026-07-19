@@ -3,11 +3,12 @@
 **Give any Humankind unit — or district, pawn prop, or projectile — your own 3D model, texture, and sound. No
 executable patching, no per-model code.** *(Formerly **ENC Access Proof**.)*
 
-HAF augments [Humankind](https://www.games2gether.com/amplitude-studios/humankind) with custom unit assets. You **bake**
-an ordinary model (`.glb` / `.fbx` / `.obj` / `.blend`) in a Unity editor tool — the **Universal Model Factory** — and a
-data-driven BepInEx plugin **injects** it onto a live unit in-game: correct geometry, correct texture, **its own
-animation**, and movement audio, all driven by a JSON registry. Adding a model is just baking it — there is no code to
-write per model.
+HAF augments [Humankind](https://www.games2gether.com/amplitude-studios/humankind) with custom assets. You **bake**
+an ordinary model (`.glb` / `.fbx` / `.obj` / `.blend`) in the **HAF Authoring Tools** — a suite of Unity editor
+windows: the **Model Factory** (the model itself), the **Animation Lab** (clips + behaviors), the **District
+Factory**, **Prop Lab**, **Projectile Lab**, and **Unit Retexture / Unit Sound** — and a data-driven BepInEx plugin
+**injects** the result onto the live game: correct geometry, correct texture, **its own animation**, and movement
+audio, all driven by a JSON registry. Adding a model is just baking it — there is no code to write per model.
 
 **It's multi-mod by design.** The runtime merges asset **packs** from many mods at once, so any modder ships their own
 config + assets and joins *without editing anyone else's files*. **ENC** is the reference pack (a set of modern-era
@@ -18,9 +19,11 @@ renaissance in Humankind modding. See [**Multi-Mod.md**](docs/Multi-Mod.md).
 Custom units ride the game's own GPU-instanced renderer, so **instances are free** — the cost is the number of distinct
 model *types* loaded, not units on screen.
 
-> **Two halves, one contract.** An **editor Factory** (bake) and a **runtime plugin** (inject) that talk only through a
-> small JSON pack registry — so the tooling and the injector stay fully decoupled, and the registry is the public API
-> other mods build against.
+> **Two halves, one contract.** The **HAF Authoring Tools** (bake, in the Unity editor) and a **runtime plugin**
+> (inject, in the game) talk only through a small JSON pack registry — so the tooling and the injector stay fully
+> decoupled, and the registry is the public API other mods build against. *("Universal Model Factory" names one
+> window of the suite — the historical first one; in-editor the whole suite currently lives under `Tools ▸ ENC`,
+> a menu root scheduled to become `Tools ▸ HAF` at the package release.)*
 
 ## The four injection axes
 
