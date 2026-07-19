@@ -1007,7 +1007,21 @@ namespace ENCAccessProof
                 Array.Copy(frags, narr, frags.Length);
                 narr.SetValue(item, frags.Length);
                 SetMember(addon, "FragmentEntries", narr);
-                Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop '{meshName}' glued to bone '{boneName}' (boneIndex {bidx}, encoded {enc})");
+                // CRITICAL: the GPU pawn DESCRIPTOR (per definition: StartFragment + FragmentCount into the fragment
+                // buffer) is snapshotted from FragmentEntries at RegisterPawnDefinition time — an append after that
+                // snapshot exists in the array but the renderer still draws the OLD fragment count (the M60 was
+                // "glued" yet invisible). UpdateDescriptorBufferContent is the game's own full rebuild: it re-packs
+                // every definition's fragments contiguously and flags the buffer dirty (uploaded next computation).
+                try
+                {
+                    var pmType = AccessTools.TypeByName("Amplitude.Mercury.Animation.PawnManager");
+                    var pm = pmType?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                             ?? AccessTools.Field(pmType, "Instance")?.GetValue(null);
+                    if (pm != null) AccessTools.Method(pmType, "UpdateDescriptorBufferContent")?.Invoke(pm, null);
+                    else Plugin.Log.LogWarning("[Props] PawnManager.Instance not found — descriptor not refreshed (prop may stay invisible)");
+                }
+                catch (Exception ex) { Plugin.Log.LogWarning("[Props] descriptor refresh: " + ex.Message); }
+                Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop '{meshName}' glued to bone '{boneName}' (boneIndex {bidx}, encoded {enc}) + descriptor refreshed");
             }
             catch (Exception ex) { Plugin.Log.LogError("[Props] InjectHandProp: " + ex); }
         }
