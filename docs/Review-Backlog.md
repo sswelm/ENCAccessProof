@@ -43,8 +43,9 @@ by when they'll bite.
   when the game recreates the material); the `[Grey] no _MainTex` retry warns once; the audio-trace postfix gained
   the try/catch every other patch body has. NOT done (deliberately): GetMember boxing elimination — it needs typed
   delegates over reflected structs, high risk for marginal gain; revisit only if profiling shows it matters.
-  **Verify in-game**: soldier idles/turns, howitzer deploys/fires, drone loops, retexture units stay skinned, engine
-  sounds fire — then watch a big battle for stutter.
+  **VERIFIED in-game same day**: full animation sweep clean including the drone attack (fire-once path — exercises
+  the queue prune, the descId-fallback loop, and the pose-name arrays in one action). Residual: informally watch a
+  BIG late-game battle for stutter (the improvement claim, as opposed to the no-regression claim).
 - ~~**Plugin unbounded per-instance dictionaries**~~ — FIXED 2026-07-19 (cross-session): all per-instance maps
   (`deployProgress`/`deployLastPos`/`customSources`/`loopHoldUntil`/`engineLastPos`/`engineMoving`, plus static
   `deployMoveState` and `respawnBase`/`respawnCount`) clear on session re-arm, and `deployLastPos` joined the
