@@ -43,13 +43,27 @@ public class ModelFactoryWindow : EditorWindow
         w.RefreshList();
     }
 
-    void OnEnable() { RefreshList(); LoadPreview(cur.resourceName); }
-    void OnDisable() { DestroyPreview(); }
+    void OnEnable()
+    {
+        RefreshList(); LoadPreview(cur.resourceName);
+        // Tear the preview editor down BEFORE the domain unloads (and before editor quit). Destroying it from
+        // OnDisable DURING a reload is too late: Unity's GameObjectInspector.OnDisable then runs against an
+        // already-Disposed SerializedObject and logs "NullReferenceException: SerializedObject of SerializedProperty
+        // has been Disposed" — logged INSIDE DestroyImmediate by Unity itself, so our try/catch never sees it.
+        // Destroying at beforeAssemblyReload, while everything is still alive, is clean; OnDisable then no-ops.
+        AssemblyReloadEvents.beforeAssemblyReload += DestroyPreview;
+        EditorApplication.quitting += DestroyPreview;
+    }
+    void OnDisable()
+    {
+        AssemblyReloadEvents.beforeAssemblyReload -= DestroyPreview;
+        EditorApplication.quitting -= DestroyPreview;
+        DestroyPreview();
+    }
 
-    // Destroy the interactive preview editor safely. On a domain reload / window close, Unity's own
-    // GameObjectInspector.OnDisable can throw "SerializedObject ... has been Disposed" as it tears down a prefab
-    // preview (esp. one with an Animator) — its internals are already half-disposed and out of our control. Swallow it;
-    // the editor is being destroyed anyway.
+    // Destroy the interactive preview editor safely. The try/catch covers a plain window close where Unity's
+    // GameObjectInspector teardown can still throw for reasons of its own; the domain-reload variant of that
+    // failure is prevented at the source by the beforeAssemblyReload hook above.
     void DestroyPreview()
     {
         if (previewEditor == null) return;
