@@ -56,6 +56,8 @@ namespace ENCAccessProof
         public string handPropGuid = "";  // the <name>_Collection Amplitude guid "a,b,c,d" (Prop Lab prints + clipboards it)
         public string handPropMat = "";   // borrowed material guid "a,b,c,d"; "" = the shared EQ_DLC04_Weapons material
         public string handPropBone = "";  // bone-name SUBSTRING on OUR skeleton (bones are renamed b###_<orig>); "" = "R_Hand"
+        public string handPropAngles = "";// draw-time rotation "x,y,z" (deg) stamped onto the collection's FxMeshContent.ImportAngles BEFORE encoding — the ONLY angles the pawn-fragment path reads. "" = keep the baked value. Runtime-only: change + relaunch, no bake/rebuild.
+        public bool propProbe;            // TEMP diagnostic: one-shot GPU-descriptor dump for the hand-prop investigation
         public readonly Dictionary<long, UnityEngine.Vector3> stateLastPos = new Dictionary<long, UnityEngine.Vector3>();  // MAIN thread poll: unit GUID -> last render pos
         public readonly Dictionary<long, bool> stateMoving = new Dictionary<long, bool>();                                 // unit GUID -> was moving last poll (detects the moving->stopped flip)
         public readonly Dictionary<long, float> stateStoppedAt = new Dictionary<long, float>();                            // unit GUID -> Time.time the unit stopped moving
@@ -417,6 +419,7 @@ namespace ENCAccessProof
                                 handPropGuid = (string)m["handPropGuid"] ?? "",
                                 handPropMat = (string)m["handPropMat"] ?? "",
                                 handPropBone = (string)m["handPropBone"] ?? "",
+                                handPropAngles = (string)m["handPropAngles"] ?? "",
                                 respawnAfterLoad = (bool?)m["respawnAfterLoad"] ?? false,
                                 freezeDonorAnim = (bool?)m["freezeDonorAnim"] ?? false,
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
@@ -485,6 +488,7 @@ namespace ENCAccessProof
                 var hpg = Regex.Matches(text, "\"handPropGuid\"\\s*:\\s*\"([^\"]*)\"");     // parity: hand-prop collection guid csv
                 var hpm = Regex.Matches(text, "\"handPropMat\"\\s*:\\s*\"([^\"]*)\"");      // parity: hand-prop borrowed material guid csv
                 var hpb = Regex.Matches(text, "\"handPropBone\"\\s*:\\s*\"([^\"]*)\"");     // parity: hand-prop bone-name substring
+                var hpa = Regex.Matches(text, "\"handPropAngles\"\\s*:\\s*\"([^\"]*)\"");   // parity: hand-prop draw-time import angles csv
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
                 int n = Math.Min(pd.Count, Math.Min(sk.Count, at.Count));
@@ -531,6 +535,7 @@ namespace ENCAccessProof
                         handPropGuid = i < hpg.Count ? hpg[i].Groups[1].Value : "",
                         handPropMat = i < hpm.Count ? hpm[i].Groups[1].Value : "",
                         handPropBone = i < hpb.Count ? hpb[i].Groups[1].Value : "",
+                        handPropAngles = i < hpa.Count ? hpa[i].Groups[1].Value : "",
                     });
                 }
                 Plugin.Log.LogInfo($"[Uni] read {text.Length} chars; parsed {entries.Count} model(s) via regex [" + string.Join(", ", entries.Select(e => e.resourceName + "->" + e.pawnDescription)) + "]");
@@ -971,6 +976,36 @@ namespace ENCAccessProof
                         { var a = b.LoadAsset(propName + "_Collection"); if (a != null && mcType.IsInstanceOfType(a)) { mc = a; break; } }
                     if (Dead(mc)) { Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: collection not loadable (guid {e.handPropGuid}, name '{propName}_Collection') — no weapon this session"); return; }
                     try { animMgr.GetType().GetMethod("RegisterMeshCollection", BindingFlags.Public | BindingFlags.Instance)?.Invoke(animMgr, new[] { mc }); } catch { }
+                }
+                // 1b) draw-time IMPORT ANGLES override (registry "x,y,z"): the fragment encoder reads the collection's
+                //     FxMeshContent.ImportAngles — NOT the FxMesh asset's own angles — and encoding happens in our
+                //     FragmentEntry.Load below, so stamping the loaded collection HERE makes the knob runtime-only
+                //     (change + relaunch; no prop re-bake, no mod rebuild).
+                if (!string.IsNullOrEmpty(e.handPropAngles))
+                {
+                    var av = (e.handPropAngles ?? "").Split(',');
+                    if (av.Length == 3
+                        && float.TryParse(av[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ax)
+                        && float.TryParse(av[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ay)
+                        && float.TryParse(av[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float az))
+                    {
+                        bool stamped = false;
+                        if (GetMember(mc, "skinnedMeshInfos") is Array sis)
+                            foreach (var si in sis)
+                            {
+                                if ((GetMember(si, "MeshName")?.ToString() ?? "") != meshName) continue;
+                                var fmc = GetMember(si, "FxMeshContent");
+                                if (fmc != null)
+                                {
+                                    var iaF = AccessTools.Field(fmc.GetType(), "ImportAngles");
+                                    if (iaF != null && iaF.FieldType == typeof(UnityEngine.Vector3))
+                                    { iaF.SetValue(fmc, new UnityEngine.Vector3(ax, ay, az)); stamped = true; }
+                                }
+                                break;
+                            }
+                        Plugin.Log.LogInfo($"[Props] '{e.resourceName}' hand prop import angles ({ax},{ay},{az}) {(stamped ? "stamped" : "NOT stamped — FxMeshContent not found")}");
+                    }
+                    else Plugin.Log.LogWarning($"[Props] '{e.resourceName}' hand prop: bad angles '{e.handPropAngles}' (want \"x,y,z\")");
                 }
                 // 2) the output layer from the borrowed material ("" = the shared EQ_DLC04_Weapons, sling-verified)
                 var mg = Csv(string.IsNullOrEmpty(e.handPropMat) ? "1356489961,1316891353,-864888678,1241300466" : e.handPropMat);
@@ -1528,6 +1563,37 @@ namespace ENCAccessProof
             ApplyScale(e, entry);
             ctx.pawnEntries.SetValue(entry, ctx.idx);
             LogPoseHookOnce(ctx, e, pose0);
+            // TEMP hand-prop probe (one-shot): what does the GPU descriptor THIS pawn references actually say at
+            // render time? Disambiguates persistent vs per-frame-temporary descriptors and whether our appended
+            // fragment survives to the slot the pawn draws from.
+            if (!e.propProbe && !string.IsNullOrEmpty(e.handPropGuid))
+            {
+                e.propProbe = true;
+                try
+                {
+                    var pmType = AccessTools.TypeByName("Amplitude.Mercury.Animation.PawnManager");
+                    var pm = pmType?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null)
+                             ?? AccessTools.Field(pmType, "Instance")?.GetValue(null);
+                    int pc = Convert.ToInt32(AccessTools.Field(pmType, "persistentPawnDefinitionCount")?.GetValue(pm) ?? -1);
+                    int tc = Convert.ToInt32(AccessTools.Field(pmType, "temporaryPawnDefinitionCount")?.GetValue(pm) ?? -1);
+                    string d = "-", f = "-";
+                    if (AccessTools.Field(pmType, "gpuPawnDescriptorEntries")?.GetValue(pm) is Array descs
+                        && ctx.descId >= 0 && ctx.descId < descs.Length)
+                    {
+                        var de = descs.GetValue(ctx.descId); var dT = de.GetType();
+                        uint st = (uint)dT.GetField("StartFragment").GetValue(de);
+                        uint cn = (uint)dT.GetField("FragmentCount").GetValue(de);
+                        d = $"bones={dT.GetField("BonesCount").GetValue(de)} start={st} count={cn}";
+                        if (cn > 0 && AccessTools.Field(pmType, "gpuPawnDescriptorFragmentEntries")?.GetValue(pm) is Array gf && st + cn <= gf.Length)
+                        {
+                            var fe = gf.GetValue((int)(st + cn - 1)); var fT = fe.GetType();
+                            f = $"enc={fT.GetField("EncodedMeshAndVisualParticleCountFxMeshIndex").GetValue(fe)} bone={fT.GetField("BoneIndex").GetValue(fe)} layer={fT.GetField("FxOutputLayerIndex").GetValue(fe)}";
+                        }
+                    }
+                    Plugin.Log.LogInfo($"[Props][probe] '{e.resourceName}' descId={ctx.descId} persistentDefs={pc} tempDefs={tc} desc({d}) lastFrag({f})");
+                }
+                catch (Exception ex) { Plugin.Log.LogWarning("[Props][probe] " + ex.Message); }
+            }
         }
 
         // The normalized pose time for one animated pawn, per the model's behavior: continuous loop (a spinning prop),
