@@ -93,8 +93,9 @@ by when they'll bite.
   instructional docs swept (Framework-Review's dated history rows keep their period-correct `Tools ▸ ENC` paths).
   **Deliberately NOT migrated** (framework/pack split, decided 07-14 and reaffirmed 07-19): `enc_models.json` /
   `enc_sounds` / `enc_skins` are ENC-the-PACK's files — packs are branded, only the framework is neutral, and a
-  third-party pack never touches an `enc_*` path. Still open for the package release: hardcoded paths, package
-  scaffolding, the `ENCAccessProof` C# namespace (invisible externally; rename at leisure).
+  third-party pack never touches an `enc_*` path. **Verified in-game same day** (first session clean: new identity
+  loads, settings carried, units/districts/audio normal). Still open for the package release: hardcoded paths,
+  package scaffolding, the `ENCAccessProof` C# namespace (invisible externally; rename at leisure).
 
 ## Verified clean (don't re-litigate without new evidence)
 
