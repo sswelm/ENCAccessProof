@@ -203,9 +203,16 @@ public static class UniversalBaker
         bool wantAfter = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipAfter);
         bool roleFbxMissing = cfg.animStateDriven &&
             (!File.Exists(Path.Combine(projRoot, moveFbxRel)) || (wantAfter && !File.Exists(Path.Combine(projRoot, afterFbxRel))));
+        // TOOL-VERSION CACHE-BUSTER (2026-07-19): a cached slim FBX older than rig_anim.py itself is stale — a
+        // pipeline fix would otherwise be silently skipped by the reuse path and re-wrap the old (possibly broken)
+        // FBX (exactly how the frozen-runner fix got bypassed on its first bake).
+        string rigScript = Path.Combine(projRoot, "Tools", "rig_anim.py");
+        bool toolNewer = File.Exists(rigScript) && File.Exists(fbxFull) &&
+                         File.GetLastWriteTimeUtc(rigScript) > File.GetLastWriteTimeUtc(fbxFull);
+        if (toolNewer) Debug.Log($"[Factory] {name}: rig_anim.py is newer than the cached slim FBX — re-slimming (tool changed).");
 
         // --- 1) Blender: slim the rigged model (keep armature + clip, clamp frame range, optional bone strip, albedo) ---
-        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !File.Exists(fbxFull) || roleFbxMissing))
+        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !File.Exists(fbxFull) || roleFbxMissing || toolNewer))
         {
             int target = cfg.targetTris > 0 ? cfg.targetTris : 12000;   // animated skins want to stay well under the shared buffer
             string albedoOut = Path.Combine(fsDir, name + "_albedo.png");
