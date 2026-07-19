@@ -534,6 +534,12 @@ so it does not matter where you press Bake.
   (window = repeats × clip duration). The sim fires ONCE per attack, so a short recoil-pop source clip (`shootAR2s`
   = 0.17 s) reads as a blip at 1; **18 ≈ 3 s of sustained automatic fire** (verified in-game). **RUNTIME-ONLY**:
   *Save (no bake)* + rebuild the mod is enough — no re-bake.
+- **Clip slicing** — every clip field (the primary Clip/Idle included) accepts `clipName[start..end]`: the range is
+  cut from the source clip at bake time, `start>end` plays it REVERSED, a single frame becomes a held stance
+  (auto-padded). See the artillery worked recipe in [Animated-Models.md](Animated-Models.md).
+- **Clear aim layer (artillery)** — runtime-only toggle: clears the game's procedural bone-rotation layer for this
+  model. Artillery donors stream aim/wheel junk that twists the rig (the legacy Fire/Deploy behaviors cleared it
+  implicitly); characters must leave it OFF — the layer carries their facing.
 - **Clip name** *(Pick)* — which clip to bake when the model has several (a Sketchfab model often ships `hover`,
   `exploded_view`, …). **Pick** lists the clips read from the model (glb/gltf). Empty = the model's first/assigned clip.
   With State-driven ON this field is the **Idle clip**.

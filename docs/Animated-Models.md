@@ -70,6 +70,26 @@ rebuild the mod — no re-bake.
 All clips come from the same model file and bake against **one shared skeleton** in a single pass — pick, bake,
 done. This is what makes a humanoid read as a *unit* instead of a statue gliding across the map.
 
+### Clip slicing — one long clip, many states
+
+Any clip field accepts a **frame range**: `deploy[0..180]`. The slice is cut from the source clip at bake time —
+no Blender work needed. `start > end` plays the segment **reversed** (a fold from an unfold); a single frame
+(`deploy[180..180]`) becomes a **held stance**. Many downloadable models ship one long clip containing several
+motions in sequence — slicing turns that single timeline into a full state set.
+
+**Worked recipe — artillery on one clip** (a deploy timeline `0..180` with a recoil tail `180..250`):
+
+| State | Clip spec | Meaning |
+|---|---|---|
+| Idle | `deploy[180..180]` | held deployed stance |
+| Movement | `deploy[0..0]` | held folded/travel stance |
+| Pre-movement | `deploy[180..0]` | folds when it starts moving (reversed) |
+| After-movement | `deploy[0..180]` | unfolds when it stops |
+| Attack | `deploy[180..250]` + Attack repeats 1 | the recoil kick on fire |
+
+Plus **Clear aim layer (artillery) ON** — vehicle/artillery donors stream aim & wheel junk into the game's
+procedural bone layer that must be cleared (characters leave it OFF; that layer carries their facing).
+
 ## What this unlocks
 
 New infantry, animated creatures, robots, crewed artillery, fantasy units, nonstandard skeletons — anything whose
