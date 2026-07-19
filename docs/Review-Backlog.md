@@ -7,13 +7,13 @@ by when they'll bite.
 
 ## Needs a decision first
 
-- **Gate the rest-fold on the `convertRig` flag?** The rest-normalization currently triggers on the *presence* of
-  `pose.bones[...].location` fcurves regardless of the flag — so a legacy-path re-bake of a location-keyed source
-  (every `deploy_convert.py` output: the howitzer) still routes through the fold, which contradicts the documented
-  "flag off = byte-identical" contract. Escalated by the round-1 hard-fail fix: a legacy model with location keys
-  **plus shape keys (glTF morph targets) now aborts the bake** instead of warning. Gating the fold on the flag fixes
-  both, but changes what a howitzer re-bake produces (the shipped howitzer was baked WITH the fold and verified) —
-  needs an in-game check after the change. Decision pending with the user.
+- ~~**Gate the rest-fold on the `convertRig` flag?**~~ — DECIDED + IMPLEMENTED 2026-07-19: **split gating.** The
+  destructive rest-fold (rest rewrite + visual rebake) is now conversion-path only (`_loc0 and convert_rig`) — a
+  legacy model with location keys + shape keys no longer aborts, and legacy means *no rig manipulation*. The
+  location-STRIP stays on BOTH paths deliberately: every verified legacy bake (drone, howitzer) went through it, and
+  un-stripping risked re-introducing the drone's unscaled-translation wobble. Rationale: legacy rigs have a sane rest
+  by definition, and for them the fold was a near-no-op (frame-0 pose ≈ rest) — so gating it off converges on the
+  same output. **Verify on the next howitzer/drone re-bake in-game** (smoke test re-run recommended after this).
 
 ## Worth fixing before the next model of the affected kind
 

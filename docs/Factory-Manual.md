@@ -634,12 +634,16 @@ defects to get one soldier standing).
 Everything below runs inside the Bake's Blender step (`Tools/rig_anim.py`) whenever **"Convert raw rig"** is ticked
 in the Animation Lab:
 
-1. **Rest normalization + visual rebake** *(the key step for type-3 rigs)* — snapshots every bone's visual matrix on
-   every frame, applies the armature modifier at frame 0 (the assembled body becomes the bind mesh), applies the
-   frame-0 pose as the new rest, re-binds, then re-derives the ENTIRE clip as pure rotations against the new rest.
-   Console proof: `RIGANIM rest-normalized + rebaked N frames x M bones ... frame-0 residual = 0.0001…` — the
-   residual must be ~0.
+1. **Rest normalization + visual rebake** *(the key step for type-3 rigs; conversion-path ONLY since 2026-07-19)* —
+   snapshots every bone's visual matrix on every frame, applies the armature modifier at frame 0 (the assembled body
+   becomes the bind mesh), applies the frame-0 pose as the new rest, re-binds, then re-derives the ENTIRE clip as
+   pure rotations against the new rest. Console proof: `RIGANIM rest-normalized + rebaked N frames x M bones ...
+   frame-0 residual = 0.0001…` — the residual must be ~0. (It used to trigger on location-key *presence* even with
+   the flag off, quietly reaching into legacy re-bakes of `deploy_convert.py` outputs; now the flag alone decides.)
 2. **Location-curve strip** — whatever translations remain are removed (Amplitude can't play them anyway).
+   **Runs on BOTH paths, deliberately**: every verified legacy bake (drone, howitzer) went through it, and
+   un-stripping could re-introduce the drone's unscaled-translation wobble — so "legacy byte-identical" means
+   *no rig manipulation* (no fold / rename / collapse / scale-fold), with this strip as the one shared step.
 3. **No-op root collapse** — unanimated, unweighted, single-child root bones (`_rootJoint`) are deleted for depth.
 4. **Topological bone rename** — every bone prefixed `b###_` in hierarchy order, so alphabetical = topological.
 5. **Rotation + scale folded into the data** — your Rotation value and all node scales are baked into vertices +

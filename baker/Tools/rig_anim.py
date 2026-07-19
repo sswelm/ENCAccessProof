@@ -135,8 +135,16 @@ try:
         if _dp.startswith("pose.bones") and _dp.endswith(".location"):
             _b = _dp.split('["', 1)[1].split('"]', 1)[0]
             _loc0.setdefault(_b, [0.0, 0.0, 0.0])[_fc.array_index] = _fc.evaluate(act.frame_range[0])
-    if _loc0:
-        # REST NORMALIZATION + VISUAL REBAKE. Auto-rigs can ship a SCRAMBLED rest pose that the clip's location keys
+    if _loc0 and convert_rig:
+        # REST NORMALIZATION + VISUAL REBAKE — CONVERSION PATH ONLY (gating decision 2026-07-19). This block rewrites
+        # the rest pose and re-derives the whole clip: exactly the manipulation the legacy contract promises NOT to
+        # do, and it used to run on location-key PRESENCE alone — so a legacy re-bake of any deploy_convert output
+        # (nla.bake writes location keys on every bone) silently routed through it, and after the hard-fail hardening
+        # a legacy model with location keys + shape keys ABORTED instead of baking. Legacy rigs have a sane rest by
+        # definition (that's what makes them legacy); the fold at a sane rest is a near-no-op they don't need. The
+        # location-STRIP below stays on BOTH paths deliberately: every verified legacy bake (drone, howitzer) went
+        # through it, and un-stripping could re-introduce the drone's unscaled-translation wobble.
+        # Auto-rigs can ship a SCRAMBLED rest pose that the clip's location keys
         # ASSEMBLE into the actual body every frame (the Combine soldier: frame-0 posed positions sit up to 91 units
         # from their rests on a 73-unit rig — the 129 location curves are structural, not decorative). Amplitude
         # can't play location keys, so the fix is to make the clip's FIRST VISUAL POSE the new rest and re-derive the
@@ -236,7 +244,9 @@ except Exception as _e:
 # ~2 world units and the head rips off in-game ("the movement gets exaggerated") while Unity's own preview plays the
 # same FBX fine. Rotations are scale-free; bone REST offsets come from the (properly scaled) skeleton, so a
 # rotation-driven rig looks identical without these curves. (This generalizes the drone's old wobble fix, which
-# stripped to rotation-only 'prop' curves by hand.)
+# stripped to rotation-only 'prop' curves by hand.) DELIBERATELY UNGATED — runs on BOTH paths: every verified legacy
+# bake went through it, and Amplitude can't play the keys anyway (the 2026-07-19 gating decision moved only the
+# destructive rest-fold above behind the convert flag).
 _locs = 0
 for coll, fc in all_fcurve_owners(act):
     if fc.data_path.startswith("pose.bones") and fc.data_path.endswith(".location"):
