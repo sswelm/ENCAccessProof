@@ -696,7 +696,12 @@ namespace ENCAccessProof
                 // TEXTURE-ONLY override: keep the vanilla mesh, just isolate this unit's output layer and repaint its skin
                 // — either a hot-loaded PNG (textureFile) or a desaturated copy of its own atlas (desaturate). Returns
                 // before any skeleton repoint. The isolation leaves the emblematic original untouched (shared layer).
-                if (NeedsAdjust(e) || !string.IsNullOrEmpty(e.textureFile)) { ApplyTextureOnly(addon, animMgr, e, name); return; }
+                // A CUSTOM MODEL entry (non-zero skeleton guid) must NOT take this path: it carries its OWN baked atlas,
+                // and a textureFile/adjust on it is a recolour of THAT atlas (applied in ApplyTexture), not a donor-layer
+                // repaint — diverting here would paint the vanilla donor layer and return before the mesh is even repointed
+                // (symptom: the custom mech stayed its baked colour). Only true texture-only entries (no skeleton) divert.
+                bool isModelEntry = !(e.sa == 0 && e.sb == 0 && e.sc == 0 && e.sd == 0);
+                if (!isModelEntry && (NeedsAdjust(e) || !string.IsNullOrEmpty(e.textureFile))) { ApplyTextureOnly(addon, animMgr, e, name); return; }
 
                 // One-shot diagnostic (BEFORE we swap): dump the DONOR skeleton / mesh-collection sub-meshes, so we can
                 // find parts that aren't separate fragments (e.g. a helicopter rotor baked as its own skinned sub-mesh).
@@ -1190,7 +1195,24 @@ namespace ENCAccessProof
         {
             try
             {
-                if (e.tex == null) e.tex = LoadAtlas(e.ta, e.tb, e.tc, e.td, e.resourceName);
+                if (e.tex == null)
+                {
+                    // A custom model's skin is its baked atlas — UNLESS a textureFile recolour is set on the model entry,
+                    // then hot-load THAT PNG instead (recolour a custom model without a re-bake; same enc_skins PNG the
+                    // Unit Retexture window writes). Desaturate/RGB then adjust the loaded PNG. Falls back to the baked
+                    // atlas if the PNG is missing. (Adjust-only with no PNG stays on the baked atlas — that path isn't
+                    // CPU-readable for AdjustSkin, so a model recolour goes through a PNG.)
+                    if (!string.IsNullOrEmpty(e.textureFile))
+                    {
+                        e.tex = LoadSkinPng(e.textureFile, e.resourceName, e.assetDir);
+                        if (e.tex != null && NeedsAdjust(e))
+                        {
+                            AdjustSkin(e.tex, e.desaturate, e.tintR, e.tintG, e.tintB);
+                            Plugin.Log.LogInfo($"[Skin] {e.resourceName}: adjustments applied to retexture (desat {UnityEngine.Mathf.Clamp01(e.desaturate):0.00}, rgb {e.tintR:+0;-0;0}/{e.tintG:+0;-0;0}/{e.tintB:+0;-0;0})");
+                        }
+                    }
+                    if (e.tex == null) e.tex = LoadAtlas(e.ta, e.tb, e.tc, e.td, e.resourceName);
+                }
                 // isolated path: paint ONLY our private clone (the host layer + real units keep their own skin)
                 if (e.isolatedLayer != null) { e.hostOutputLayer = e.isolatedLayer; TickOne(e); return; }
                 // fallback (no clone): the shared host layer
@@ -1242,7 +1264,10 @@ namespace ENCAccessProof
                     if (File.Exists(pp)) path = pp;
                 }
                 if (!File.Exists(path)) { Plugin.Log.LogWarning($"[Skin] {tag}: retexture file not found: {path}" + (string.IsNullOrEmpty(assetDir) ? "" : $" (also tried {Path.Combine(assetDir, "skins")})")); return null; }
-                var t = new UnityEngine.Texture2D(2, 2, UnityEngine.TextureFormat.RGBA32, false) { name = tag + "_Skin" };
+                // mipChain TRUE: the baked atlas ships with mips, and a hot-loaded PNG without them undersamples at map
+                // zoom (each screen pixel picks 1 raw texel instead of an average) — a dark high-contrast skin renders
+                // as noisy near-black. LoadImage fills the chain; AdjustSkin's Apply() rebuilds it after the pixel pass.
+                var t = new UnityEngine.Texture2D(2, 2, UnityEngine.TextureFormat.RGBA32, true) { name = tag + "_Skin" };
                 if (!UnityEngine.ImageConversion.LoadImage(t, File.ReadAllBytes(path))) { Plugin.Log.LogWarning($"[Skin] {tag}: LoadImage failed for {file} (not a PNG/JPG?)"); UnityEngine.Object.DestroyImmediate(t); return null; }
                 Plugin.Log.LogInfo($"[Skin] {tag}: loaded retexture '{file}' ({t.width}x{t.height})");
                 return t;
