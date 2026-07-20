@@ -536,8 +536,11 @@ repointing an entry at a new source, and a **▶ Play clip** button — THE reci
 RAW model file's **entire source animation** (every take, full length, no conversion, no slicing) with
 play/scrub, **single-frame stepping** (|◄ ►| buttons, ←/→ keys, Shift = ±10 frames), and *set current* frame
 capture. This is where every frame number in a recipe comes from — deploy start/end, barrel ready-frame, recoil
-range: step through the source, note the frames, type them into the fields. Confirm copies the picked `a..b`
-range to the clipboard; Cancel just closes. **After every compile/domain reload the window RE-LOADS the selected entry
+range: step through the source, capture the frames with *set current* (each field also has a *go ►* jump back to
+its frame). A **Speed /N** field (2026-07-20) sits after the End field: the frame-skip step baked into the slice
+(`/2` = every 2nd frame = 2× faster — this is where walk pace is authored, since pacing is bake-only), and **► Play
+previews at that stepped pace**, so a gait is judged in the dialog before any bake. **Confirm writes the full spec —
+`clip[start..end/N]` — straight into the clip field it was opened from**; Cancel just closes. **After every compile/domain reload the window RE-LOADS the selected entry
 from the registry** (2026-07-19) — the file is the single source of truth; unsaved form edits from before a compile
 are deliberately dropped (*Save (no bake)* first if you want to keep them). The **↻ Reload** button does the same
 explicitly — the escape hatch from any stale window copy (re-selecting the *same* entry in the dropdown does
