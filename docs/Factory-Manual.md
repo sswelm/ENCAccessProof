@@ -401,6 +401,11 @@ Everything is a plain registry entry (no assets, no mod rebuild). Section 3 of t
 - **Replacement PNG** *(optional)* — `textureFile`: a PNG filename in `BepInEx\config\enc_skins\`. The plugin hot-loads
   it at runtime. Leave it empty to adjust the unit's OWN atlas (or, when editing an entry, to keep its current skin).
 - **Adjustments** (applied on top of whichever skin above — the PNG *or* the own atlas):
+  - **Brightness (gamma)** *(2026-07-21, applied FIRST; 1 = unchanged, >1 lighter, <1 darker)* — a gamma lift:
+    multiplicative along a curve that raises dark/mid tones most while pinning black and white, so a dark skin
+    actually lightens without washing out. **This is the knob for "reads too dark in-game"** — the RGB sliders are
+    *additive* (every pixel shifted equally) and go flat-grey long before they meaningfully lighten a dark atlas
+    (+30 lifts a near-black 18 to only 48; gamma 1.5 lifts it ~2.4×). Registry field `brightness`.
   - **Desaturate** (0–1) — pull each pixel toward its brightness; 1 = full grey. Also neutralises the civ-colour tint.
   - **Red / Green / Blue** (−255…+255 each) — additive per-channel colour offset. Equal negatives = darken, equal
     positives = brighten, one channel = tint (e.g. "Desaturate 1 + Blue +40" = a cool steel-grey). All 0 = no change.

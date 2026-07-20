@@ -31,6 +31,7 @@ namespace ENCAccessProof
         public UnityEngine.Vector3 position;  // ANIMATED models: applied as a runtime world offset in the pose hook (z = height/up). Static models bake position into the mesh at Bake time instead, so this is only read for animated entries.
         public float scale = 1f;              // ANIMATED models: runtime multiplier on the pawn's ObjectSpace.Scale (default 1 = unchanged). Lets us fix an animated model baked at the wrong scale WITHOUT a re-bake (e.g. the howitzer's 100x FBX unit-conversion oversize -> set 0.01). Config-only field; absent = 1.
         public float desaturate = 0f;         // TEXTURE-ONLY GREY variant: 0 = off. >0 = DON'T repoint the mesh; isolate this unit's output layer and paint a DESATURATED copy of its OWN atlas (1 = full grey) while the civ-colour tint is neutralised. Makes a Common copy read as a bland grey version of an emblematic unit; the original is untouched (they share the layer, so the isolation clone is essential). No bake / no custom model needed.
+        public float brightness = 1f;         // UNIVERSAL skin brightness GAMMA (1 = unchanged, >1 lighter, <1 darker). Applied FIRST (before desaturate/tint) to whatever skin the unit gets. Multiplicative in the dark range, so a near-black atlas actually lightens — the additive tint tops out (+30 lifts 18 to only 48; gamma 1.5 lifts it ~2.4x). Managed by the Unit Retexture window.
         public string textureFile = "";       // TEXTURE-ONLY RETEXTURE: a PNG filename in BepInEx/config/enc_skins/. When set, the plugin loads that PNG and paints it onto the unit's ISOLATED output layer (same isolation as desaturate — original untouched, vanilla mesh kept). Hot-loaded at runtime, no bake/rebuild. Takes precedence over desaturate. Painted on a dump of the unit's own atlas (round-trips via PNG). Managed by the Unit Retexture editor window.
         public float tintR = 0f;              // UNIVERSAL skin colour offset, red channel (-255..+255, 0 = none). Added AFTER desaturate to whatever skin this unit ends up with — the loaded textureFile PNG, OR a copy of its own atlas. Equal negative R/G/B = darken; equal positive = brighten; one channel tints.
         public float tintG = 0f;              // ... green channel (-255..+255).
@@ -417,6 +418,7 @@ namespace ENCAccessProof
                                 iea = A(cid, 0), ieb = A(cid, 1), iec = A(cid, 2), ied = A(cid, 3),
                                 position = new UnityEngine.Vector3(Fp(p, "x"), Fp(p, "y"), Fp(p, "z")),
                                 scale = m["scale"] != null ? (float)m["scale"] : 1f,
+                                brightness = m["brightness"] != null ? (float)m["brightness"] : 1f,
                                 desaturate = m["desaturate"] != null ? (float)m["desaturate"] : 0f,
                                 tintR = m["tintR"] != null ? (float)m["tintR"] : 0f,
                                 tintG = m["tintG"] != null ? (float)m["tintG"] : 0f,
@@ -490,6 +492,7 @@ namespace ENCAccessProof
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
                 var rsp = Regex.Matches(text, "\"recoilSpeed\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: recoil-on-fire playback speed multiplier (default 1)
                 var sc = Regex.Matches(text, "\"scale\"\\s*:\\s*(-?[\\d.eE+]+)");           // runtime ObjectSpace scale multiplier (default 1)
+                var bri = Regex.Matches(text, "\"brightness\"\\s*:\\s*(-?[\\d.eE+]+)");     // universal skin brightness gamma (default 1 = unchanged)
                 var des = Regex.Matches(text, "\"desaturate\"\\s*:\\s*(-?[\\d.eE+]+)");     // texture-only grey strength (default 0 = off)
                 var tR = Regex.Matches(text, "\"tintR\"\\s*:\\s*(-?[\\d.eE+]+)");           // universal skin colour offset R (-255..255)
                 var tG = Regex.Matches(text, "\"tintG\"\\s*:\\s*(-?[\\d.eE+]+)");           // ... G
@@ -540,6 +543,7 @@ namespace ENCAccessProof
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
                         recoilSpeed = i < rsp.Count && float.TryParse(rsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _rsp) ? _rsp : 1f,
                         scale = i < sc.Count && float.TryParse(sc[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sc) ? _sc : 1f,
+                        brightness = i < bri.Count && float.TryParse(bri[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _bri) ? _bri : 1f,
                         desaturate = i < des.Count && float.TryParse(des[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _des) ? _des : 0f,
                         tintR = i < tR.Count && float.TryParse(tR[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _tr) ? _tr : 0f,
                         tintG = i < tG.Count && float.TryParse(tG[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _tg) ? _tg : 0f,
@@ -1207,8 +1211,8 @@ namespace ENCAccessProof
                         e.tex = LoadSkinPng(e.textureFile, e.resourceName, e.assetDir);
                         if (e.tex != null && NeedsAdjust(e))
                         {
-                            AdjustSkin(e.tex, e.desaturate, e.tintR, e.tintG, e.tintB);
-                            Plugin.Log.LogInfo($"[Skin] {e.resourceName}: adjustments applied to retexture (desat {UnityEngine.Mathf.Clamp01(e.desaturate):0.00}, rgb {e.tintR:+0;-0;0}/{e.tintG:+0;-0;0}/{e.tintB:+0;-0;0})");
+                            AdjustSkin(e.tex, e.brightness, e.desaturate, e.tintR, e.tintG, e.tintB);
+                            Plugin.Log.LogInfo($"[Skin] {e.resourceName}: adjustments applied to retexture (gamma {e.brightness:0.00}, desat {UnityEngine.Mathf.Clamp01(e.desaturate):0.00}, rgb {e.tintR:+0;-0;0}/{e.tintG:+0;-0;0}/{e.tintB:+0;-0;0})");
                         }
                     }
                     if (e.tex == null) e.tex = LoadAtlas(e.ta, e.tb, e.tc, e.td, e.resourceName);
@@ -1242,7 +1246,7 @@ namespace ENCAccessProof
                 if (!string.IsNullOrEmpty(e.textureFile) && e.tex == null)
                 {
                     e.tex = LoadSkinPng(e.textureFile, e.resourceName, e.assetDir);
-                    if (e.tex != null && NeedsAdjust(e)) AdjustSkin(e.tex, e.desaturate, e.tintR, e.tintG, e.tintB);   // desaturate/tint the loaded PNG too
+                    if (e.tex != null && NeedsAdjust(e)) AdjustSkin(e.tex, e.brightness, e.desaturate, e.tintR, e.tintG, e.tintB);   // brighten/desaturate/tint the loaded PNG too
                 }
                 GreyIsolate(addon, animMgr, e);    // clone the body fragment's output layer (+ build the desaturated atlas if desaturate>0)
                 ApplyTexture(e, animMgr);          // paint e.tex on the isolated clone + neutralise the civ-colour/overlay maps (TickOne)
@@ -1301,7 +1305,7 @@ namespace ENCAccessProof
                     var mn = mnField?.GetValue(item) as string;
                     if (string.IsNullOrEmpty(e.layerHint) || mn != e.layerHint) continue;   // only the body layer
                     var host = folField.GetValue(item);
-                    if (e.tex == null && host != null && NeedsAdjust(e)) e.tex = BuildAdjustedAtlas(host, e.desaturate, e.tintR, e.tintG, e.tintB, e.resourceName);   // adjust the ORIGINAL skin, once (skipped when a custom PNG already set e.tex)
+                    if (e.tex == null && host != null && NeedsAdjust(e)) e.tex = BuildAdjustedAtlas(host, e.brightness, e.desaturate, e.tintR, e.tintG, e.tintB, e.resourceName);   // adjust the ORIGINAL skin, once (skipped when a custom PNG already set e.tex)
                     if (e.isolatedLayer == null && host is UnityEngine.Object ho && ho != null)
                     {
                         var clone = UnityEngine.Object.Instantiate(ho); clone.name = e.resourceName + "_GreyLayer"; e.isolatedLayer = clone;
@@ -1321,7 +1325,7 @@ namespace ENCAccessProof
         // Read the output layer's current _MainTex and return an ADJUSTED copy (AdjustSkin: desaturate toward luminance by
         // `desat`, then add the R/G/B colour offset -255..+255). Blits through a RenderTexture first (the host atlas isn't
         // CPU-readable). The civ-colour tint is killed separately by TickOne (_ColorMask -> black).
-        static UnityEngine.Texture2D BuildAdjustedAtlas(object hostLayer, float desat, float tR, float tG, float tB, string tag)
+        static UnityEngine.Texture2D BuildAdjustedAtlas(object hostLayer, float brightness, float desat, float tR, float tG, float tB, string tag)
         {
             try
             {
@@ -1344,21 +1348,32 @@ namespace ENCAccessProof
                 var t = new UnityEngine.Texture2D(w, h, UnityEngine.TextureFormat.RGBA32, false) { name = tag + "_Grey" };
                 t.ReadPixels(new UnityEngine.Rect(0, 0, w, h), 0, 0); t.Apply();
                 UnityEngine.RenderTexture.active = prev; UnityEngine.RenderTexture.ReleaseTemporary(rt);
-                AdjustSkin(t, desat, tR, tG, tB);
-                Plugin.Log.LogInfo($"[Grey] {tag}: adjusted atlas {w}x{h} (desat {UnityEngine.Mathf.Clamp01(desat):0.00}, rgb {tR:+0;-0;0}/{tG:+0;-0;0}/{tB:+0;-0;0})");
+                AdjustSkin(t, brightness, desat, tR, tG, tB);
+                Plugin.Log.LogInfo($"[Grey] {tag}: adjusted atlas {w}x{h} (gamma {brightness:0.00}, desat {UnityEngine.Mathf.Clamp01(desat):0.00}, rgb {tR:+0;-0;0}/{tG:+0;-0;0}/{tB:+0;-0;0})");
                 return t;
             }
             catch (Exception e) { Plugin.Log.LogError("[Grey] build atlas: " + e); return null; }
         }
 
-        // Apply the universal skin adjustments in place: pull each pixel toward its luminance by `desat` (1 = full grey),
-        // then add the per-channel colour offset tR/tG/tB (-255..+255). Shared by the own-atlas path and the PNG path.
-        static void AdjustSkin(UnityEngine.Texture2D t, float desat, float tR, float tG, float tB)
+        // Apply the universal skin adjustments in place, in this order: (1) BRIGHTNESS — a gamma lift (1 = unchanged;
+        // LUT, endpoint-preserving, multiplicative in the dark range — the only adjust that meaningfully lightens a
+        // near-black atlas), (2) pull each pixel toward its luminance by `desat` (1 = full grey), (3) add the
+        // per-channel colour offset tR/tG/tB (-255..+255). Shared by the own-atlas path and the PNG path. The editor's
+        // Retexture-window preview mirrors this math exactly — keep them in lockstep.
+        static void AdjustSkin(UnityEngine.Texture2D t, float brightness, float desat, float tR, float tG, float tB)
         {
             var px = t.GetPixels32();
             float s = UnityEngine.Mathf.Clamp01(desat);
+            byte[] lut = null;
+            if (UnityEngine.Mathf.Abs(brightness - 1f) > 0.001f)
+            {
+                float inv = 1f / UnityEngine.Mathf.Clamp(brightness, 0.2f, 4f);
+                lut = new byte[256];
+                for (int v = 0; v < 256; v++) lut[v] = (byte)UnityEngine.Mathf.Clamp(UnityEngine.Mathf.RoundToInt(255f * UnityEngine.Mathf.Pow(v / 255f, inv)), 0, 255);
+            }
             for (int i = 0; i < px.Length; i++)
             {
+                if (lut != null) { px[i].r = lut[px[i].r]; px[i].g = lut[px[i].g]; px[i].b = lut[px[i].b]; }
                 float lum = px[i].r * 0.299f + px[i].g * 0.587f + px[i].b * 0.114f;
                 px[i].r = (byte)UnityEngine.Mathf.Clamp((px[i].r + (lum - px[i].r) * s) + tR, 0, 255);
                 px[i].g = (byte)UnityEngine.Mathf.Clamp((px[i].g + (lum - px[i].g) * s) + tG, 0, 255);
@@ -1367,8 +1382,8 @@ namespace ENCAccessProof
             t.SetPixels32(px); t.Apply();
         }
 
-        // True if this entry carries any texture adjustment (desaturate or a non-zero colour offset).
-        static bool NeedsAdjust(ModelEntry e) => e.desaturate > 0f || e.tintR != 0f || e.tintG != 0f || e.tintB != 0f;
+        // True if this entry carries any texture adjustment (brightness gamma, desaturate or a non-zero colour offset).
+        static bool NeedsAdjust(ModelEntry e) => e.desaturate > 0f || e.tintR != 0f || e.tintG != 0f || e.tintB != 0f || UnityEngine.Mathf.Abs(e.brightness - 1f) > 0.001f;
 
         // ---- animated models: register our ClipCollection + override the pawn's pose to play it ----
 
@@ -2326,7 +2341,7 @@ namespace ENCAccessProof
             // GREY retry: if the skin wasn't ready when ApplyGrey ran (build returned null), build it now from the
             // isolated layer's still-original _MainTex. Runs at most until the first successful build (then e.tex latches).
             if (NeedsAdjust(e) && e.tex == null && e.isolatedLayer != null)
-                e.tex = BuildAdjustedAtlas(e.isolatedLayer, e.desaturate, e.tintR, e.tintG, e.tintB, e.resourceName);
+                e.tex = BuildAdjustedAtlas(e.isolatedLayer, e.brightness, e.desaturate, e.tintR, e.tintG, e.tintB, e.resourceName);
             if (e.hostOutputLayer == null || e.tex == null) return;
             try
             {

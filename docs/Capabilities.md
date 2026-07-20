@@ -115,7 +115,9 @@ see the [Factory Manual](Factory-Manual.md).
   **(2026-07-20)** `textureFile` + adjustments work on **custom (baked) model entries** too — the plugin hot-loads the
   PNG *in place of the baked atlas*, so a custom model is recoloured without a re-bake (adjust-only needs a PNG: the
   baked atlas isn't CPU-readable) — and the window gained a **live preview** of the exact skin it will inject (same
-  pixel math as the plugin's `AdjustSkin`). See the manual's §12.
+  pixel math as the plugin's `AdjustSkin`). **(2026-07-21)** A **Brightness (gamma)** adjustment (`brightness`, 1 =
+  unchanged) joins desaturate/tint — multiplicative, endpoint-pinned, the knob that actually lightens a dark skin
+  (the additive RGB offsets wash out first). See the manual's §12.
 - **Skin controls at bake time.** The injection ships a *flat* albedo (donor PBR — normal/metallic/roughness —
   neutralized so the donor's camo can't bleed through), which reads muddy for a source that leaned on shine or a dark
   texture. **Albedo brightness** and **Albedo saturation** sliders correct that into the baked atlas; a **Keep black**
