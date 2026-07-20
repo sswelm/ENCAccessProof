@@ -1,4 +1,4 @@
-// ModelFactoryWindow.cs (ENC editor) — Tools > Universal Model Factory.
+// ModelFactoryWindow.cs (ENC editor) — Tools > Model Factory.
 // Create a NEW 3D resource or pick an existing one, choose a target pawn description + a model file (.glb/.obj/.fbx),
 // and configure EVERYTHING we learned makes a model work: rotation, position (z = waterline), size, normals mode,
 // smoothing angle, conversion grid. Press Bake -> skeleton + atlas + a JSON registry entry the in-game plugin reads.
@@ -35,16 +35,17 @@ public class ModelFactoryWindow : EditorWindow
     List<string> animClips = new List<string>();                                   // clip names read from the model (Clip picker)
     List<KeyValuePair<string, int>> animBonePrefixes = new List<KeyValuePair<string, int>>();  // bone-name prefix -> count (Bones picker)
 
-    [MenuItem("Tools/HAF/Universal Model Factory")]
+    [MenuItem("Tools/HAF/Model Factory")]
     static void Open()
     {
-        var w = GetWindow<ModelFactoryWindow>(false, "Universal Model Factory");
+        var w = GetWindow<ModelFactoryWindow>(false, "Model Factory");
         w.minSize = new Vector2(500, 470);
         w.RefreshList();
     }
 
     void OnEnable()
     {
+        titleContent = new GUIContent("Model Factory");   // rename any pre-existing docked instance: Unity caches the tab title in the window's serialized state, so the GetWindow title alone never reaches already-open windows
         RefreshList(); LoadPreview(cur.resourceName);
         // Tear the preview editor down BEFORE the domain unloads (and before editor quit). Destroying it from
         // OnDisable DURING a reload is too late: Unity's GameObjectInspector.OnDisable then runs against an
@@ -139,7 +140,7 @@ public class ModelFactoryWindow : EditorWindow
         // "Animated (own rig + clip)") aren't clipped. Scales with window width so fields still get room when widened.
         EditorGUIUtility.labelWidth = Mathf.Clamp(position.width * 0.42f, 210f, 320f);
         GUILayout.Space(10f);
-        EditorGUILayout.LabelField("Universal Model Factory", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("Model Factory", EditorStyles.boldLabel);
         EditorGUILayout.Space();
 
         DrawSettings();
@@ -216,7 +217,7 @@ public class ModelFactoryWindow : EditorWindow
         if (cur.animated)
         {
             var beh = new List<string>();
-            if (cur.animStateDriven) beh.Add($"STATE-DRIVEN (idle '{cur.animClip}', move '{cur.animClipMove}'{(string.IsNullOrWhiteSpace(cur.animClipAfter) ? "" : $", after '{cur.animClipAfter}'")})");
+            if (cur.animStateDriven) beh.Add($"STATE-DRIVEN (idle '{cur.animClip}', move '{cur.animClipMove}'{(string.IsNullOrWhiteSpace(cur.animClipAfter) ? "" : $", after '{cur.animClipAfter}'")}{(string.IsNullOrWhiteSpace(cur.animClipAttack) ? "" : $", attack '{cur.animClipAttack}'")}{(string.IsNullOrWhiteSpace(cur.animClipCombat) ? "" : $", combat '{cur.animClipCombat}'")})");
             else if (!string.IsNullOrWhiteSpace(cur.animClip)) beh.Add("clip '" + cur.animClip + "'");
             if (!string.IsNullOrWhiteSpace(cur.animateBones)) beh.Add("bones '" + cur.animateBones + "'");
             if (cur.convertRig) beh.Add("raw-rig conversion");
@@ -636,6 +637,14 @@ public class ModelFactoryWindow : EditorWindow
         catch { trueSize = 0f; return false; }
     }
 
+    // clip name -> human length ("frames 0..250 (10.4s @24fps)"), PER FILE — the Pick dropdowns append it so slicing
+    // ranges (clip[start..end]) are discoverable without opening Blender. Keyed "file|clip" because SEVERAL windows
+    // (Factory + Lab, both visible) inspect DIFFERENT files: a single last-writer dict got wiped by whichever window
+    // inspected last, so the other window's dropdown showed plain names.
+    internal static readonly Dictionary<string, string> ClipLengths = new Dictionary<string, string>();
+    internal static string ClipLengthOf(string file, string clip)
+        => ClipLengths.TryGetValue((file ?? "") + "|" + clip, out var len) ? len : null;
+
     internal static (List<string>, List<KeyValuePair<string, int>>) InspectModel(string file)
     {
         var clips = new List<string>();
@@ -654,6 +663,24 @@ public class ModelFactoryWindow : EditorWindow
                 var root = JObject.Parse(json);
                 clips = (root["animations"] as JArray)?.Select(a => (string)a["name"])
                     .Where(n => !string.IsNullOrEmpty(n)).Distinct().ToList() ?? new List<string>();
+                // Clip LENGTHS for the Pick dropdowns — the answer to "how do I know the frame range for a
+                // clip[start..end] slice?" glTF stores times in SECONDS; frames assume the Blender-standard 24 fps
+                // export (verified exact on every model so far: deploy 10.417s=250f, Idle1 14.208s=341f).
+                var accsJ = root["accessors"] as JArray;
+                if (root["animations"] is JArray animsJ && accsJ != null)
+                    foreach (var a in animsJ)
+                    {
+                        string nm = (string)a["name"]; if (string.IsNullOrEmpty(nm)) continue;
+                        float maxSec = 0f;
+                        foreach (var s in (a["samplers"] as JArray ?? new JArray()))
+                        {
+                            var ii = (int?)s["input"];
+                            if (ii == null || ii < 0 || ii >= accsJ.Count) continue;
+                            if (accsJ[ii.Value]?["max"] is JArray mxa && mxa.Count > 0)
+                                maxSec = Mathf.Max(maxSec, (float)mxa[0]);
+                        }
+                        if (maxSec > 0f) ClipLengths[file + "|" + nm] = $"frames 0..{Mathf.RoundToInt(maxSec * 24f)}  ({maxSec:0.0}s @24fps)";
+                    }
                 var nodes = root["nodes"] as JArray;
                 var joints = new HashSet<int>();
                 if (root["skins"] is JArray skins)
@@ -665,8 +692,9 @@ public class ModelFactoryWindow : EditorWindow
                     : (nodes?.Select(n => (string)n?["name"]) ?? Enumerable.Empty<string>());
                 boneNames = bn.Where(n => !string.IsNullOrEmpty(n)).ToList();
             }
-            catch   // truncated / odd JSON -> zero-dependency bracket-matching fallback (glTF-specific)
+            catch (Exception ix)   // truncated / odd JSON -> zero-dependency bracket-matching fallback (glTF-specific)
             {
+                Debug.LogWarning("[Factory] InspectModel: structured parse failed (" + ix.Message + ") — name-only fallback, no clip lengths.");
                 clips = NamesInArray(json, "\"animations\"\\s*:\\s*\\[").Distinct().ToList();
                 boneNames = NamesInArray(json, "\"nodes\"\\s*:\\s*\\[(?=\\s*\\{)");
             }
@@ -855,6 +883,10 @@ public class ModelFactoryWindow : EditorWindow
             || cur.animStateDriven != e.animStateDriven
             || (cur.animClipMove ?? "") != (e.animClipMove ?? "")
             || (cur.animClipAfter ?? "") != (e.animClipAfter ?? "")
+            || (cur.animClipAttack ?? "") != (e.animClipAttack ?? "")
+            || (cur.animClipCombat ?? "") != (e.animClipCombat ?? "")
+            || (cur.animClipPreMove ?? "") != (e.animClipPreMove ?? "")
+            || (cur.animClipIdle ?? "") != (e.animClipIdle ?? "")
             || (cur.modelFile ?? "") != (e.modelFile ?? "");
     }
 
@@ -870,7 +902,10 @@ public class ModelFactoryWindow : EditorWindow
         atlasMaxDim = cur.atlasMaxDim <= 0 ? 512 : cur.atlasMaxDim,
         stripParts = cur.stripParts,
         animated = cur.animated, animClip = (cur.animClip ?? "").Trim(), animateBones = (cur.animateBones ?? "").Trim(), animUnitFix = cur.animUnitFix, convertRig = cur.convertRig,
-        animStateDriven = cur.animStateDriven, animClipMove = (cur.animClipMove ?? "").Trim(), animClipAfter = (cur.animClipAfter ?? "").Trim(),
+        deployConvert = cur.deployConvert, deployStart = cur.deployStart, deployEnd = cur.deployEnd,
+        deployStrip = (cur.deployStrip ?? "").Trim(), deployReadyFrame = (cur.deployReadyFrame ?? "").Trim(), deployLegScale = (cur.deployLegScale ?? "").Trim(), deployBarrelScale = (cur.deployBarrelScale ?? "").Trim(),
+        deployRecoil = (cur.deployRecoil ?? "").Trim(), deployRecoilStep = (cur.deployRecoilStep ?? "").Trim(), deployRecoilMag = (cur.deployRecoilMag ?? "").Trim(), deployArcR = (cur.deployArcR ?? "").Trim(), deployRecoilReturn = (cur.deployRecoilReturn ?? "").Trim(), deploySlamDeg = (cur.deploySlamDeg ?? "").Trim(), deploySlamSettle = (cur.deploySlamSettle ?? "").Trim(),
+        animStateDriven = cur.animStateDriven, animClipMove = (cur.animClipMove ?? "").Trim(), animClipAfter = (cur.animClipAfter ?? "").Trim(), animClipAttack = (cur.animClipAttack ?? "").Trim(), animClipCombat = (cur.animClipCombat ?? "").Trim(), animClipPreMove = (cur.animClipPreMove ?? "").Trim(), animClipIdle = (cur.animClipIdle ?? "").Trim(),
         keepTexture = cur.reuseExtracted   // on the ANIMATED path the checkbox's ONLY meaning is 'protect the hand-edited extracted texture'
     };
 
@@ -881,6 +916,7 @@ public class ModelFactoryWindow : EditorWindow
         // and SaveAsPrefabAsset's OnPostprocessAllAssets fires InstantiateForAnimatorPreview(null) -> ArgumentException. Destroying
         // it up front means nothing watches the prefab while it's deleted; we rebuild the preview after the bake.
         LoadPreview(null);
+        AnimationLabWindow.InvalidateFitPreviews();   // the Lab's combined fit view would go stale (magenta) on this bake — retire it; its Refresh rebuilds
         // Trim the text fields ON cur ITSELF, not just into the bake config: Upsert(cur) below persists cur, and a
         // pasted trailing space in pawnDescription used to bake fine but write the untrimmed string to the registry —
         // the plugin's substring match then never fired: "Baked ✓", model silently never injected (review finding E1).
@@ -902,8 +938,13 @@ public class ModelFactoryWindow : EditorWindow
             {
                 cur.animClip = regE.animClip; cur.animateBones = regE.animateBones; cur.animUnitFix = regE.animUnitFix;
                 cur.convertRig = regE.convertRig;
-                cur.animStateDriven = regE.animStateDriven; cur.animClipMove = regE.animClipMove; cur.animClipAfter = regE.animClipAfter;
-                cur.clipMove = regE.clipMove; cur.clipAfter = regE.clipAfter;
+                cur.deployConvert = regE.deployConvert; cur.deployStart = regE.deployStart; cur.deployEnd = regE.deployEnd;
+                cur.deployStrip = regE.deployStrip; cur.deployReadyFrame = regE.deployReadyFrame; cur.deployLegScale = regE.deployLegScale; cur.deployBarrelScale = regE.deployBarrelScale;
+                cur.deployRecoil = regE.deployRecoil; cur.deployRecoilStep = regE.deployRecoilStep; cur.deployRecoilMag = regE.deployRecoilMag; cur.deployArcR = regE.deployArcR; cur.deployRecoilReturn = regE.deployRecoilReturn; cur.deploySlamDeg = regE.deploySlamDeg; cur.deploySlamSettle = regE.deploySlamSettle;
+                cur.animStateDriven = regE.animStateDriven; cur.animClipMove = regE.animClipMove; cur.animClipAfter = regE.animClipAfter; cur.animClipAttack = regE.animClipAttack; cur.animClipCombat = regE.animClipCombat; cur.animClipPreMove = regE.animClipPreMove; cur.animClipIdle = regE.animClipIdle;
+                cur.clipMove = regE.clipMove; cur.clipAfter = regE.clipAfter; cur.clipAttack = regE.clipAttack; cur.clipCombat = regE.clipCombat; cur.clipPreMove = regE.clipPreMove; cur.clipIdle = regE.clipIdle;
+                cur.attackRepeats = regE.attackRepeats; cur.clearAimLayer = regE.clearAimLayer;
+                cur.handPropName = regE.handPropName; cur.handPropGuid = regE.handPropGuid; cur.handPropMat = regE.handPropMat; cur.handPropBone = regE.handPropBone; cur.handPropAngles = regE.handPropAngles;
                 cur.fireOnAttack = regE.fireOnAttack; cur.deployOnStop = regE.deployOnStop;
                 cur.deployPoseTime = regE.deployPoseTime; cur.deploySpeed = regE.deploySpeed; cur.recoilSpeed = regE.recoilSpeed;
                 // Unit Retexture / Unit Sound ownership — same rule as the Lab fields: this window can't even display
@@ -951,6 +992,10 @@ public class ModelFactoryWindow : EditorWindow
         cur.clip = cfg.animated ? ModelRegistry.ParseGuid(r.clipGuid) : new int[4];   // static models carry {0,0,0,0}
         cur.clipMove = cfg.animated && cfg.animStateDriven ? ModelRegistry.ParseGuid(r.clipMoveGuid) : new int[4];
         cur.clipAfter = cfg.animated && cfg.animStateDriven && !string.IsNullOrEmpty(r.clipAfterGuid) ? ModelRegistry.ParseGuid(r.clipAfterGuid) : new int[4];
+        cur.clipAttack = cfg.animated && cfg.animStateDriven && !string.IsNullOrEmpty(r.clipAttackGuid) ? ModelRegistry.ParseGuid(r.clipAttackGuid) : new int[4];
+        cur.clipCombat = cfg.animated && cfg.animStateDriven && !string.IsNullOrEmpty(r.clipCombatGuid) ? ModelRegistry.ParseGuid(r.clipCombatGuid) : new int[4];
+        cur.clipPreMove = cfg.animated && cfg.animStateDriven && !string.IsNullOrEmpty(r.clipPreMoveGuid) ? ModelRegistry.ParseGuid(r.clipPreMoveGuid) : new int[4];
+        cur.clipIdle = cfg.animated && cfg.animStateDriven && !string.IsNullOrEmpty(r.clipIdleGuid) ? ModelRegistry.ParseGuid(r.clipIdleGuid) : new int[4];   // was DROPPED — a Factory bake shipped a dead idle-override GUID (the "forgot to deploy" trap); mirrors the Lab's capture
         bool saved = ModelRegistry.Upsert(cur);
         RefreshList();
         selected = System.Array.IndexOf(existing, cur.resourceName); if (selected < 0) selected = 0;
@@ -969,6 +1014,7 @@ public class ModelFactoryWindow : EditorWindow
             : $"Baked '{cur.resourceName}' -> '{cur.pawnDescription}'  (raw bbox {r.bbox})\nskeleton {r.skeletonGuid}\nNow rebuild the mod + relaunch.";
         Debug.Log("[Factory] " + status);
         LoadPreview(cur.resourceName, forceReimport: true);   // show the just-baked model (force reimport so it isn't stale)
+        AnimationLabWindow.RebuildFitPreviews();              // rebuild the Lab's (fit) preview from the fresh assets
     }
 }
 

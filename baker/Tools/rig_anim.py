@@ -75,20 +75,71 @@ if arm is None:
     print("RIGANIM ERROR: no armature found — the model is not rigged, use the normal (static) bake instead")
     sys.exit(1)
 
-# pick an action: the named clip if given, else the one already on the armature, else the first in the file
-act = None
-if clip_name:
-    act = bpy.data.actions.get(clip_name)
-    if act is None:
-        print("RIGANIM ERROR: clip '%s' not found. Available: %s" % (clip_name, [a.name for a in bpy.data.actions]))
-        sys.exit(1)
-if act is None and arm.animation_data and arm.animation_data.action:
-    act = arm.animation_data.action
-if act is None and len(bpy.data.actions):
-    act = bpy.data.actions[0]
-if act is None:
-    print("RIGANIM ERROR: no animation action found in the model")
-    sys.exit(1)
+# BONE-PARENT -> SKIN-WEIGHT CONVERSION (mech finding 2026-07-20): many downloaded mech/vehicle rigs never SKIN their
+# meshes (vertex weights); they RIGIDLY HANG each part off a bone via Blender bone-parenting (parent_type='BONE'),
+# often through intermediate empties or parent meshes (bone -> empty -> mesh, or bone -> mesh -> child mesh). Blender
+# animates that fine, but our pipeline JOINS all meshes into ONE skinned mesh and rebinds via VERTEX WEIGHTS —
+# bone-parenting carries NO weights, so the join drops every part's bone and all verts fall to bone #0 (Unity warns
+# "N verts with no weight -> assigned to bone #0"); the whole model then collapses onto the root bone in-game — it
+# lies flat and the arms fling up. Fix: BEFORE the join, convert each part's bone-parenting into a FULL-WEIGHT vertex
+# group on its governing bone + an armature modifier, so the join preserves per-part bone binding. Walk the parent
+# chain to find the governing bone (a child hung off a bone-parented mesh follows that same bone). BIND AT REST so the
+# armature deform is identity there — otherwise the modifier double-applies the current pose on top of the parented
+# position. Gated to convertRig (properly skinned rigs need none of this); a no-op when nothing is bone-parented.
+if convert_rig:
+    def _governing_bone(o):
+        cur = o
+        while cur is not None and cur.parent is not None:
+            if cur.parent_type == 'BONE' and cur.parent.type == 'ARMATURE' and cur.parent_bone:
+                return cur.parent_bone
+            cur = cur.parent
+        return None
+    _bp = [o for o in bpy.context.scene.objects if o.type == 'MESH' and _governing_bone(o) is not None]
+    if _bp:
+        _root_bone = next((b.name for b in arm.data.bones if b.parent is None), None)
+        _prev_pp = arm.data.pose_position
+        arm.data.pose_position = 'REST'                        # bind against rest: bone delta is identity there
+        bpy.context.view_layer.update()
+        _plan = [(o, _governing_bone(o), o.matrix_world.copy()) for o in _bp]   # capture bone + rest world BEFORE reparenting
+        _bound = 0
+        for _o, _bone, _mw in _plan:
+            _tgt = _bone if arm.data.bones.get(_bone) else _root_bone
+            if _tgt is None:
+                continue
+            _o.parent = arm                                   # re-home onto the armature OBJECT (not the bone)
+            _o.parent_type = 'OBJECT'
+            _o.parent_bone = ''
+            _o.matrix_parent_inverse = Matrix()               # clear the old bone-parent inverse ...
+            _o.matrix_world = _mw                             # ... then pin the rest-pose world position exactly
+            _vg = _o.vertex_groups.get(_tgt) or _o.vertex_groups.new(name=_tgt)
+            _vg.add(list(range(len(_o.data.vertices))), 1.0, 'REPLACE')
+            if not any(md.type == 'ARMATURE' for md in _o.modifiers):
+                _am = _o.modifiers.new("Armature", 'ARMATURE'); _am.object = arm
+            _bound += 1
+        arm.data.pose_position = _prev_pp
+        bpy.context.view_layer.update()
+        print("RIGANIM bone-parent->skin: bound %d rigidly-hung mesh(es) full-weight to their governing bones (was: no weights -> bone #0)" % _bound)
+
+# FLATTEN WRAPPER EMPTIES (mech finding 2026-07-20): glTF/FBX sources often wrap the rig in a parent empty (a
+# "group"/scene-root) carrying a NON-IDENTITY scale — the Light Assault Mech's was 0.010. convertRig's later
+# transform_apply only bakes an object's OWN transform, never an inherited parent scale, so that wrapper survived
+# to the export as a scaled root node. Unity folds it into the mesh, but Amplitude's skeleton import reads bind
+# poses WITHOUT it → the skeleton sits ~100× off the mesh and every rigid single-bone vert flings into a "wing".
+# Un-parent the rig from any EMPTY (KEEP_TRANSFORM bakes the empty's transform onto the object, where convertRig's
+# transform_apply then folds it into the data) and delete the empties → identity export nodes. Gated to convertRig
+# so the legacy byte-identical path is untouched; a no-op for rigs without wrapper empties (the soldier).
+if convert_rig:
+    _wrapped = [o for o in bpy.context.scene.objects if o.type in ('MESH', 'ARMATURE') and o.parent is not None and o.parent.type == 'EMPTY']
+    for _o in _wrapped:
+        _mw = _o.matrix_world.copy()
+        _o.parent = None
+        _o.matrix_world = _mw
+    _empties = [o for o in list(bpy.data.objects) if o.type == 'EMPTY']
+    for _e in _empties:
+        bpy.data.objects.remove(_e, do_unlink=True)
+    if _empties:
+        print("RIGANIM flattened %d wrapper empt%s; rig reparented to root for identity export nodes" % (len(_empties), "y" if len(_empties) == 1 else "ies"))
+
 if not arm.animation_data:
     arm.animation_data_create()
 def assign_action(a):
@@ -98,15 +149,125 @@ def assign_action(a):
             arm.animation_data.action_slot = a.slots[0]   # Blender 5.x slotted actions
     except Exception as e:
         print("RIGANIM slot warn:", e)
+
+# BONE CAP (mech finding, 2026-07-20): Amplitude's GPU crowd-skinning caps at 256 bones; verts weighted to a bone
+# index >255 get garbage transforms and stretch into huge "wing" spikes in-game (invisible in Blender, which has no
+# limit). Detailed mech/robot rigs blow past it (the Light Assault Mech had 332 bones; 4084 verts / 5.6% flung).
+# Fix: merge LEAF bones (no surviving children) into their nearest surviving ancestor — transferring their skin
+# weights so the geometry follows the parent limb — prioritizing mechanical DETAIL (pistons/tubes/_end/targets),
+# until under a safe budget. No-op for rigs already under it (soldier 62, howitzer ~27), so proven models are
+# byte-identical. The important limb/gun bones are never leaves, so the animation is preserved.
+_BONE_LIMIT = 240
+if len(arm.data.bones) > _BONE_LIMIT:
+    _skmesh = [m for m in bpy.data.objects if m.type == 'MESH' and m.find_armature() == arm]
+    # which bones actually deform the mesh? Only those need to survive with a low index. The rest — IK targets,
+    # _end markers, control bones — carry NO skin weight, so removing them NEVER moves a vertex (unlike transferring
+    # weights, which corrupted the bind shape: a first attempt flung 350 verts). Remove zero-weight LEAF bones
+    # iteratively (a leaf has no children, so deleting it can't break a weighted descendant's hierarchy or its
+    # animation); each pass may expose new zero-weight leaves as their children go. Stops when under the cap or when
+    # only weighted bones + their zero-weight ANCESTORS remain (those are load-bearing and kept).
+    _weighted = set()
+    for _m in _skmesh:
+        _vgn = {vg.index: vg.name for vg in _m.vertex_groups}
+        for _v in _m.data.vertices:
+            for _g in _v.groups:
+                if _g.weight > 0.001:
+                    _weighted.add(_vgn.get(_g.group))
+    _removed = 0
+    bpy.context.view_layer.objects.active = arm
+    while len(arm.data.bones) > _BONE_LIMIT:
+        _leaves = [b.name for b in arm.data.bones if len(b.children) == 0 and b.name not in _weighted]
+        if not _leaves:
+            break                                     # only weighted bones + their load-bearing ancestors remain
+        bpy.ops.object.mode_set(mode='EDIT')
+        for _n in _leaves:                            # remove every zero-weight leaf this pass (all safe to delete)
+            _eb = arm.data.edit_bones.get(_n)
+            if _eb:
+                arm.data.edit_bones.remove(_eb); _removed += 1
+        bpy.ops.object.mode_set(mode='OBJECT')        # a parent may become a new zero-weight leaf next pass
+    print("RIGANIM bone-cap: removed %d zero-weight leaf bones -> %d bones (Amplitude 256-bone GPU limit; weighted bones untouched)" % (_removed, len(arm.data.bones)))
+
+# CLIP SLICING (howitzer migration take 2, 2026-07-19): a clip name may carry a FRAME RANGE — "deploy[0..180]" —
+# and optionally a SPEED STEP — "deploy[179..0/3]" = every 3rd source frame, so the slice plays 3× faster (BAKE-ONLY
+# pacing: a 7.5 s authored fold outlasts a one-tile map move; at /3 it completes in 2.5 s — the runtime deliberately
+# plays clips at face value, no speed knobs). The slice is synthesized as a NEW action by sampling the SOURCE
+# action's evaluated pose basis per frame INSIDE THIS session (the same pipeline that provably bakes the source
+# right) — the Blender import→export round-trip retrofit (add_role_clips.py) altered the clip-vs-rest relationship
+# and baked flipped/inverse in-game; never round-trip a converted GLB. start>end = REVERSED (a fold from an
+# unfold); single frame = padded to 2 identical frames (a held stance; 0-length clips can be dropped by importers).
+_slice_re = __import__("re").compile(r"^(.*)\[(\d+)\.\.(\d+)(?:/(\d+))?\]$")
+def resolve_clip(spec, tag):
+    m = _slice_re.match(spec.strip())
+    if not m:
+        a = bpy.data.actions.get(spec)
+        if a is None:
+            print("RIGANIM ERROR: clip '%s' (%s) not found. Available: %s" % (spec, tag, [a.name for a in bpy.data.actions]))
+            sys.exit(1)
+        return a
+    src_name, f0, f1 = m.group(1), int(m.group(2)), int(m.group(3))
+    step = max(1, int(m.group(4))) if m.group(4) else 1
+    src = bpy.data.actions.get(src_name)
+    if src is None:
+        print("RIGANIM ERROR: slice source '%s' (%s) not found. Available: %s" % (src_name, tag, [a.name for a in bpy.data.actions]))
+        sys.exit(1)
+    frames = list(range(f0, f1 + 1, step)) if f1 >= f0 else list(range(f0, f1 - 1, -step))
+    if frames[-1] != f1:
+        frames.append(f1)                                # always land exactly on the end frame (the held pose)
+    if len(frames) == 1:
+        frames = frames * 2                              # held stance: 2 identical frames
+    new_name = "%s_%s_%d_%d_%d" % (src_name, tag, f0, f1, step)
+    old = bpy.data.actions.get(new_name)
+    if old is not None:
+        return old                                       # same slice requested by two roles -> share it
+    # SCENE-STATE HYGIENE (the byte-gate finding, 2026-07-19): slicing SETS pose values on every bone; any channel
+    # the PRIMARY action doesn't key then evaluates to those leftovers in the primary's own export — the sandbox
+    # primary baked byte-identical to the proven legacy clip for ~100 frames and then diverged. Save every bone's
+    # pose (and rotation mode) and RESTORE it before returning, so role processing is invisible to every other export.
+    saved = {pb.name: (pb.location.copy(), pb.rotation_quaternion.copy(), pb.scale.copy(), pb.rotation_mode) for pb in arm.pose.bones}
+    assign_action(src)
+    for pb in arm.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+    snap = {}
+    lo, hi = min(frames), max(frames)
+    for f in range(lo, hi + 1):                          # snapshot the evaluated basis over the span once
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
+        snap[f] = {pb.name: pb.matrix_basis.decompose() for pb in arm.pose.bones}
+    a = bpy.data.actions.new(new_name)
+    assign_action(a)
+    try: arm.animation_data.action_slot = a.slots.new(id_type='OBJECT', name=arm.name)
+    except Exception: pass
+    for i, f in enumerate(frames):
+        for pb in arm.pose.bones:
+            loc, rot, _s = snap[f][pb.name]
+            pb.location = loc
+            pb.rotation_quaternion = rot
+            pb.keyframe_insert('location', frame=i)
+            pb.keyframe_insert('rotation_quaternion', frame=i)
+    for pb in arm.pose.bones:                            # restore the found pose exactly (mode LAST-set wins, so set it first)
+        if pb.name in saved:
+            l, q, s, mode = saved[pb.name]
+            pb.rotation_mode = mode
+            pb.location = l; pb.rotation_quaternion = q; pb.scale = s
+    print("RIGANIM sliced '%s' -> '%s' (%d frames%s)" % (spec, new_name, len(frames), ", reversed" if f1 < f0 else ""))
+    return a
+
+# pick an action: the named clip (slice-aware) if given, else the one already on the armature, else the first
+act = None
+if clip_name:
+    act = resolve_clip(clip_name, "primary")
+if act is None and arm.animation_data and arm.animation_data.action:
+    act = arm.animation_data.action
+if act is None and len(bpy.data.actions):
+    act = bpy.data.actions[0]
+if act is None:
+    print("RIGANIM ERROR: no animation action found in the model")
+    sys.exit(1)
 assign_action(act)
-# resolve the state-role clips BEFORE pruning actions (a role may share the primary clip, e.g. after = idle)
+# resolve the state-role clips (slice-aware) BEFORE pruning actions (a role may share the primary clip)
 role_acts = {}   # role -> action
 for _r, _cn in role_specs:
-    _a = bpy.data.actions.get(_cn)
-    if _a is None:
-        print("RIGANIM ERROR: state clip '%s' (role '%s') not found. Available: %s" % (_cn, _r, [a.name for a in bpy.data.actions]))
-        sys.exit(1)
-    role_acts[_r] = _a
+    role_acts[_r] = resolve_clip(_cn, _r)
 keep_names = set([act.name] + [a.name for a in role_acts.values()])
 for a in list(bpy.data.actions):
     if a.name not in keep_names:
@@ -252,6 +413,13 @@ try:
             try: arm.animation_data.action_slot = _na.slots.new(id_type='OBJECT', name=arm.name)
             except Exception: pass
             _frames = sorted(_snaps[_oa].keys())
+            # SINGLE-FRAME clip (a held stance like CombatIdle1, range 0..0): also key the same pose at frame+1 —
+            # a zero-length animation can be dropped whole by Unity's FBX importer, which would fail the role's
+            # ClipCollection bake downstream. Two identical frames = a valid (visually static) clip everywhere.
+            if len(_frames) == 1:
+                _frames = [_frames[0], _frames[0] + 1]
+                _snaps[_oa][_frames[1]] = _snaps[_oa][_frames[0]]
+                print("RIGANIM single-frame clip '%s' padded to 2 identical frames (stance)" % _oa.name)
             for _f in _frames:
                 _world = _snaps[_oa][_f]
                 for pb in arm.pose.bones:
@@ -539,6 +707,12 @@ def _export_one(_a, _o):
     _fs, _fe = [int(round(v)) for v in _a.frame_range]
     bpy.context.scene.frame_start = _fs
     bpy.context.scene.frame_end = _fe
+    # PIN THE EXPORT-TIME POSE (2026-07-19): the FBX's node defaults — which downstream become the imported
+    # prefab's default pose and thereby the REFERENCE the engine encodes clips against — used to be whatever
+    # frame the last processing step happened to leave the scene on (arbitrary). Evaluate the clip's own first
+    # frame before every export so the reference is deterministic: the primary's frame 0 = the travel/rest pose.
+    bpy.context.scene.frame_set(_fs)
+    bpy.context.view_layer.update()
     _d = os.path.dirname(_o)
     if _d and not os.path.isdir(_d):
         os.makedirs(_d)

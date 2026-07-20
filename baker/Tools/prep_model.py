@@ -83,5 +83,10 @@ if target > 0:
         after += tri_count(o.data)
     print("PREP reduce: tris %d -> %d (target %d, ratio %.4f)" % (before, after, target, ratio))
 
+# T6: an over-broad strip (or a bad reduce) can leave NO meshes -> an empty GLB that "succeeds" here and then fails
+# cryptically much later in the bake. The reduce branch already guards; strip-only did not. Fail loudly with a pointer.
+if not [o for o in bpy.context.scene.objects if o.type == 'MESH']:
+    print("PREP_ERR no mesh left to export — the strip list %s removed everything (or the source had no mesh). Check the Strip parts names." % subs)
+    sys.exit(1)
 bpy.ops.export_scene.gltf(filepath=outp, export_format='GLB', use_selection=False)
 print("PREP wrote %s" % outp)

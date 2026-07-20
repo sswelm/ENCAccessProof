@@ -41,16 +41,23 @@ public struct BakeConfig
     public string  animateBones;    // ANIMATED only: comma-separated bone-name prefixes to keep animation on (e.g. "prop,rotor"); empty = keep the whole clip
     public bool    animUnitFix;     // ANIMATED only: if the model bakes ~100x too big & floats (a metre->cm FBX unit scale), tick this — the baker measures the FBX at its true scale (useFileScale off) then bakes with the unit scale on, so Size = in-game units. Per-model because different rig exports embed different unit scales (some need it, some break with it).
     public bool    convertRig;      // ANIMATED only: route the Blender step through the RAW-RIG CONVERSION (rest-normalize + rebake, root collapse, topological rename, rotation/scale fold, clean-unit export). THE pipeline switch — rotationEuler is just a rotation again (applied only on this path; the legacy path stays byte-identical).
+    public bool    deployConvert;   // ANIMATED only: run Tools/deploy_convert.py on modelFile first (rigid-parts source -> bone-per-part rig) and bake the converted GLB. All knobs below mirror ModelDef.deploy* (see ModelRegistry.cs for semantics).
+    public int     deployStart, deployEnd;
+    public string  deployStrip, deployReadyFrame, deployLegScale, deployBarrelScale, deployRecoil, deployRecoilStep, deployRecoilMag, deployArcR, deployRecoilReturn, deploySlamDeg, deploySlamSettle;
     public bool    animStateDriven; // ANIMATED only (Phase 2): bake one ClipCollection PER ROLE (idle = animClip, move = animClipMove, optional after = animClipAfter), all sharing the ONE baked skeleton — the runtime picks per state.
     public string  animClipMove;    // STATE-DRIVEN only: the MOVEMENT clip name (required when animStateDriven)
     public string  animClipAfter;   // STATE-DRIVEN only: the optional AFTER-MOVEMENT one-shot clip name ("" = none)
+    public string  animClipAttack;  // STATE-DRIVEN only: the optional ATTACK one-shot clip name ("" = none) — played once when the unit ranged-attacks
+    public string  animClipCombat;  // STATE-DRIVEN only: the optional COMBAT-IDLE stance clip name ("" = none) — replaces Idle while the army is in a battle
+    public string  animClipPreMove; // STATE-DRIVEN only: the optional PRE-MOVEMENT one-shot clip name ("" = none) — played once when the unit starts moving
+    public string  animClipIdle;    // STATE-DRIVEN only: the optional IDLE-OVERRIDE clip ("" = idle plays animClip). For stance idles — the primary stays the FULL reference clip; see ModelRegistry.animClipIdle.
     public bool    keepTexture;     // ANIMATED only: when the Blender step re-runs, DON'T regenerate the extracted albedo (protects hand-edited textures). This is the 'Reuse extracted files' checkbox's ONLY effect on the animated path — geometry caching is automatic (the windows re-slim exactly when a Blender-step setting changed).
 }
 
 public struct BakeResult
 {
     public bool ok; public string error; public string skeletonGuid, atlasGuid, clipGuid; public Vector3 bbox;
-    public string clipMoveGuid, clipAfterGuid;   // STATE-DRIVEN only: the per-role ClipCollection GUIDs ("" when not baked)
+    public string clipMoveGuid, clipAfterGuid, clipAttackGuid, clipCombatGuid, clipPreMoveGuid, clipIdleGuid;   // STATE-DRIVEN only: the per-role ClipCollection GUIDs ("" when not baked)
 }
 
 public static class UniversalBaker
@@ -93,7 +100,10 @@ public static class UniversalBaker
     // "_ClipsPoseData.bytes" (the clip's baked pose stream, written by ClipCollection.Reimport next to _Clips) was
     // missing from this list, so a failed animated re-bake could restore an OLD _Clips next to NEW pose bytes.
     static readonly string[] OutputSuffixes = { "_ModelMesh.asset", "_Atlas.asset", "_Mat.mat", "_Model.prefab", "_Skeleton.asset", "_Clips.asset", "_ClipsPoseData.bytes",
-                                                "_ClipsMove.asset", "_ClipsMovePoseData.bytes", "_ClipsAfter.asset", "_ClipsAfterPoseData.bytes" };   // state-driven role collections
+                                                "_ClipsMove.asset", "_ClipsMovePoseData.bytes", "_ClipsAfter.asset", "_ClipsAfterPoseData.bytes",
+                                                "_ClipsAttack.asset", "_ClipsAttackPoseData.bytes",
+                                                "_ClipsCombat.asset", "_ClipsCombatPoseData.bytes",
+                                                "_ClipsPreMove.asset", "_ClipsPreMovePoseData.bytes" };   // state-driven role collections
 
     // CROSS-PATH SWEEP: each bake path deletes-then-recreates only its OWN assets, so re-baking a model on the OTHER
     // path (animated <-> static) used to orphan the previous path's outputs in shipped Resources — Unity force-ships
@@ -159,6 +169,77 @@ public static class UniversalBaker
         finally { DiscardBackup(b); }
     }
 
+    // DEPLOY CONVERSION AS PART OF THE RECIPE (2026-07-19, user-designed): run Tools/deploy_convert.py on the RAW
+    // source and return the converted GLB path — every knob lives on the entry, so the whole pipeline (raw Sketchfab
+    // file -> bone-per-part rig -> bake) reproduces from the registry alone; no hand-run Blender commands whose
+    // arguments only live in someone's shell history (the M114's leg re-key was exactly such a lost step).
+    // Cached on an args+source+tool fingerprint (sidecar .args.txt) — reconverts exactly when an input changed.
+    // Returns cfg.modelFile untouched when deployConvert is off; null + error on failure.
+    public static string DeployConvertedPath(string resourceName) =>
+        Path.Combine(Application.dataPath, "FactorySource", resourceName ?? "", "deploy_converted.glb");
+
+    public static string EnsureDeployConverted(BakeConfig cfg, out string error)
+    {
+        error = "";
+        if (!cfg.deployConvert) return cfg.modelFile;
+        if (string.IsNullOrWhiteSpace(cfg.modelFile) || !File.Exists(cfg.modelFile))
+        { error = "deploy conversion: the model file must point at the RAW source (.glb) — not found: " + cfg.modelFile; return null; }
+        if (cfg.deployEnd <= 0)
+        { error = "deploy conversion: 'Deploy end frame' is required (the source frame where the deploy motion completes — scrub the raw file in the ▶ picker to find it)."; return null; }
+        string projRoot = Directory.GetParent(Application.dataPath).FullName;
+        string script = Path.Combine(projRoot, "Tools", "deploy_convert.py");
+        if (!File.Exists(script)) { error = "deploy conversion: Tools/deploy_convert.py not found."; return null; }
+        string outDir = Path.Combine(Application.dataPath, "FactorySource", cfg.resourceName);
+        Directory.CreateDirectory(outDir);
+        string outFull = Path.Combine(outDir, "deploy_converted.glb");
+        string sidecar = Path.Combine(outDir, "deploy_converted.args.txt");
+
+        // recoil range "start..end" -> two ints ("" = no recoil tail)
+        string rs = "", re = "";
+        string recoil = (cfg.deployRecoil ?? "").Trim();
+        if (recoil.Length > 0)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(recoil, @"^(\d+)\s*\.\.\s*(\d+)$");
+            if (!m.Success) { error = "deploy conversion: recoil range must look like 440..510 (source frames), got '" + recoil + "'."; return null; }
+            rs = m.Groups[1].Value; re = m.Groups[2].Value;
+            if (int.Parse(rs) >= int.Parse(re))
+            { error = $"deploy conversion: recoil range start must be BEFORE end — got {recoil} (reversed). The fire window runs forward in source frames (e.g. 443..543)."; return null; }
+        }
+        string key = string.Join("|", cfg.modelFile, File.GetLastWriteTimeUtc(cfg.modelFile).Ticks.ToString(),
+            File.GetLastWriteTimeUtc(script).Ticks.ToString(), cfg.deployStart.ToString(), cfg.deployEnd.ToString(),
+            (cfg.deployStrip ?? "").Trim(), (cfg.deployReadyFrame ?? "").Trim(), (cfg.deployLegScale ?? "").Trim(),
+            (cfg.deployBarrelScale ?? "").Trim(), rs, re, (cfg.deployRecoilStep ?? "").Trim(), (cfg.deployRecoilMag ?? "").Trim(), (cfg.deployArcR ?? "").Trim(), (cfg.deployRecoilReturn ?? "").Trim(), (cfg.deploySlamDeg ?? "").Trim(), (cfg.deploySlamSettle ?? "").Trim());
+        if (File.Exists(outFull) && File.Exists(sidecar) && File.ReadAllText(sidecar) == key)
+            return outFull;   // unchanged inputs — reuse (the slim step's own source-newer buster keys off this file's mtime)
+
+        try
+        {
+            EditorUtility.DisplayProgressBar("Model Factory", "Deploy conversion (Blender): rigid parts → bone-per-part rig…", 0.3f);
+            var p = new System.Diagnostics.Process();
+            p.StartInfo.FileName = FindBlender();
+            p.StartInfo.Arguments = $"--background --python \"{script}\" -- \"{cfg.modelFile}\" \"{outFull}\" " +
+                $"{cfg.deployStart} {cfg.deployEnd} \"{(cfg.deployStrip ?? "").Trim()}\" \"{(cfg.deployReadyFrame ?? "").Trim()}\" " +
+                $"\"{(cfg.deployLegScale ?? "").Trim()}\" \"{(cfg.deployBarrelScale ?? "").Trim()}\" " +
+                $"\"{rs}\" \"{re}\" \"{(cfg.deployRecoilStep ?? "").Trim()}\" \"{(cfg.deployRecoilMag ?? "").Trim()}\" \"{(cfg.deployArcR ?? "").Trim()}\" \"{(cfg.deployRecoilReturn ?? "").Trim()}\" \"{(cfg.deploySlamDeg ?? "").Trim()}\" \"{(cfg.deploySlamSettle ?? "").Trim()}\"";
+            p.StartInfo.UseShellExecute = false; p.StartInfo.CreateNoWindow = true;
+            p.StartInfo.RedirectStandardOutput = true; p.StartInfo.RedirectStandardError = true;
+            p.Start();
+            // Drain BOTH pipes concurrently (RunBounded): the old sequential ReadToEnd(stdout) then ReadToEnd(stderr)
+            // deadlocks when Blender — very chatty on stderr — fills the stderr pipe buffer while we block on stdout.
+            if (!RunBounded(p, 300000, out string so, out string _)) { error = "deploy conversion: Blender timed out (5 min)."; return null; }
+            foreach (var line in so.Split('\n')) if (line.StartsWith("DEPLOY")) Debug.Log("[Factory] " + line.Trim());
+            // Blender exits 0 even when the python script DIES on an exception — a crashed conversion then left the
+            // OLD converted GLB in place and the bake silently slimmed stale roles (the reversed-recoil incident).
+            // Success = the script's own final marker, nothing less.
+            if (!File.Exists(outFull) || p.ExitCode != 0 || !so.Contains("DEPLOY wrote:"))
+            { error = "deploy conversion FAILED (script did not complete — see Console for the DEPLOY log / traceback)."; Debug.LogError("[Factory] deploy_convert output:\n" + so); return null; }
+            File.WriteAllText(sidecar, key);
+            return outFull;
+        }
+        catch (Exception e) { error = "deploy conversion: " + e.Message; return null; }
+        finally { EditorUtility.ClearProgressBar(); }
+    }
+
     static BakeResult BuildAnimatedInner(BakeConfig cfg)
     {
         if (string.IsNullOrEmpty(cfg.resourceName)) return Fail("resourceName is required");
@@ -169,6 +250,15 @@ public static class UniversalBaker
                 return Fail($"resource name '{cfg.resourceName}' contains an invalid character ('{c}'). " +
                             "Use letters, digits, '_' or '-' only — no spaces (e.g. 'AttackHelicopter').");
         if (!BlenderAvailable()) return Fail("Animated import needs Blender installed (auto-detected, or set EditorPrefs 'ENC.blenderPath').");
+        if (cfg.deployConvert)
+        {
+            // recipe-driven pre-step: convert the raw rigid-parts source, then bake the CONVERTED rig. Overwriting
+            // cfg.modelFile (a struct copy) routes every downstream step — the source-newer cache buster included —
+            // through the converted file, so a knob change reconverts AND re-slims with no extra plumbing.
+            string conv = EnsureDeployConverted(cfg, out string convErr);
+            if (conv == null) return Fail(convErr);
+            cfg.modelFile = conv;
+        }
         string name = cfg.resourceName;
         float size = cfg.size > 0f ? cfg.size : 5f;
 
@@ -200,9 +290,21 @@ public static class UniversalBaker
             return Fail("state-driven: the MOVEMENT clip is required (pick it in the Animation Lab).");
         string moveFbxRel = resDir + "/anim_move/" + name + "_anim.fbx";
         string afterFbxRel = resDir + "/anim_after/" + name + "_anim.fbx";
+        string attackFbxRel = resDir + "/anim_attack/" + name + "_anim.fbx";
+        string combatFbxRel = resDir + "/anim_combat/" + name + "_anim.fbx";
+        string preMoveFbxRel = resDir + "/anim_premove/" + name + "_anim.fbx";
+        string idleFbxRel = resDir + "/anim_idle/" + name + "_anim.fbx";
         bool wantAfter = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipAfter);
+        bool wantAttack = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipAttack);
+        bool wantCombat = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipCombat);
+        bool wantPreMove = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipPreMove);
+        bool wantIdle = cfg.animStateDriven && !string.IsNullOrWhiteSpace(cfg.animClipIdle);
         bool roleFbxMissing = cfg.animStateDriven &&
-            (!File.Exists(Path.Combine(projRoot, moveFbxRel)) || (wantAfter && !File.Exists(Path.Combine(projRoot, afterFbxRel))));
+            (!File.Exists(Path.Combine(projRoot, moveFbxRel)) || (wantAfter && !File.Exists(Path.Combine(projRoot, afterFbxRel)))
+                                                              || (wantAttack && !File.Exists(Path.Combine(projRoot, attackFbxRel)))
+                                                              || (wantCombat && !File.Exists(Path.Combine(projRoot, combatFbxRel)))
+                                                              || (wantPreMove && !File.Exists(Path.Combine(projRoot, preMoveFbxRel)))
+                                                              || (wantIdle && !File.Exists(Path.Combine(projRoot, idleFbxRel))));
         // TOOL-VERSION CACHE-BUSTER (2026-07-19): a cached slim FBX older than rig_anim.py itself is stale — a
         // pipeline fix would otherwise be silently skipped by the reuse path and re-wrap the old (possibly broken)
         // FBX (exactly how the frozen-runner fix got bypassed on its first bake).
@@ -210,9 +312,16 @@ public static class UniversalBaker
         bool toolNewer = File.Exists(rigScript) && File.Exists(fbxFull) &&
                          File.GetLastWriteTimeUtc(rigScript) > File.GetLastWriteTimeUtc(fbxFull);
         if (toolNewer) Debug.Log($"[Factory] {name}: rig_anim.py is newer than the cached slim FBX — re-slimming (tool changed).");
+        // SOURCE-FILE CACHE-BUSTER (2026-07-19): same trap class as the tool buster — the slim cache keyed only on
+        // SETTINGS, so replacing the source model file with identical settings silently reused the OLD slim (the
+        // howitzer re-baked from a stale migration-era FBX after its GLB was restored). Re-slim when the source
+        // model is newer than the cached FBX.
+        bool srcNewer = !string.IsNullOrEmpty(cfg.modelFile) && File.Exists(cfg.modelFile) && File.Exists(fbxFull) &&
+                        File.GetLastWriteTimeUtc(cfg.modelFile) > File.GetLastWriteTimeUtc(fbxFull);
+        if (srcNewer) Debug.Log($"[Factory] {name}: the source model file is newer than the cached slim FBX — re-slimming (source changed).");
 
         // --- 1) Blender: slim the rigged model (keep armature + clip, clamp frame range, optional bone strip, albedo) ---
-        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !File.Exists(fbxFull) || roleFbxMissing || toolNewer))
+        if (!string.IsNullOrEmpty(cfg.modelFile) && (!cfg.reuseExtracted || !File.Exists(fbxFull) || roleFbxMissing || toolNewer || srcNewer))
         {
             int target = cfg.targetTris > 0 ? cfg.targetTris : 12000;   // animated skins want to stay well under the shared buffer
             string albedoOut = Path.Combine(fsDir, name + "_albedo.png");
@@ -227,6 +336,10 @@ public static class UniversalBaker
             {
                 stateRoles = "move=" + cfg.animClipMove.Trim();
                 if (wantAfter) stateRoles += ";after=" + cfg.animClipAfter.Trim();
+                if (wantAttack) stateRoles += ";attack=" + cfg.animClipAttack.Trim();
+                if (wantCombat) stateRoles += ";combat=" + cfg.animClipCombat.Trim();
+                if (wantPreMove) stateRoles += ";premove=" + cfg.animClipPreMove.Trim();
+                if (wantIdle) stateRoles += ";idle=" + cfg.animClipIdle.Trim();
             }
             if (!RigAnimViaBlender(cfg.modelFile, fbxFull, target, cfg.animateBones ?? "", cfg.animClip ?? "", albedoOut, keepMats, cfg.rotationEuler, cfg.convertRig, stateRoles))
                 return Fail("Blender animated slim failed (see console). Is the model rigged with the named animation clip(s)?");
@@ -243,12 +356,51 @@ public static class UniversalBaker
                 if (!File.Exists(Path.Combine(projRoot, afterFbxRel))) return Fail("state-driven: the Blender step produced no After FBX (" + afterFbxRel + ") — check the After clip name.");
                 AssetDatabase.ImportAsset(afterFbxRel, ImportAssetOptions.ForceUpdate);
             }
+            if (wantAttack)
+            {
+                if (!File.Exists(Path.Combine(projRoot, attackFbxRel))) return Fail("state-driven: the Blender step produced no Attack FBX (" + attackFbxRel + ") — check the Attack clip name.");
+                AssetDatabase.ImportAsset(attackFbxRel, ImportAssetOptions.ForceUpdate);
+            }
+            if (wantCombat)
+            {
+                if (!File.Exists(Path.Combine(projRoot, combatFbxRel))) return Fail("state-driven: the Blender step produced no Combat FBX (" + combatFbxRel + ") — check the Combat-idle clip name.");
+                AssetDatabase.ImportAsset(combatFbxRel, ImportAssetOptions.ForceUpdate);
+            }
+            if (wantPreMove)
+            {
+                if (!File.Exists(Path.Combine(projRoot, preMoveFbxRel))) return Fail("state-driven: the Blender step produced no Pre-movement FBX (" + preMoveFbxRel + ") — check the Pre-movement clip name.");
+                AssetDatabase.ImportAsset(preMoveFbxRel, ImportAssetOptions.ForceUpdate);
+            }
+            if (wantIdle)
+            {
+                if (!File.Exists(Path.Combine(projRoot, idleFbxRel))) return Fail("state-driven: the Blender step produced no Idle-override FBX (" + idleFbxRel + ") — check the Idle clip name.");
+                AssetDatabase.ImportAsset(idleFbxRel, ImportAssetOptions.ForceUpdate);
+            }
         }
 
         // Decide multi-material EARLY (from the MTL on disk) — a multi-material bake rebuilds/merges the skinned mesh
         // (BuildMultiAtlasAndRemap below) and Amplitude's skeleton importer rejects that rebuilt mesh if tangents were
         // stripped, so the tangent optimization is limited to single-material models (Amplitude reads their mesh as-is).
         string fsResDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, resDir);
+        // The MTL + per-material albedos come from the glbconv extraction — which the ANIMATED path never ran: it
+        // silently piggybacked on files left behind by an earlier static-style extraction (the original howitzer had
+        // them; a FRESH resource dir does not, and the bake quietly fell back to a single atlas — every part sampled
+        // material 0: the sandbox howitzer's borked wheel/legs). Generate them here when Multi/Auto needs them,
+        // stale-checked against the (possibly deploy-converted) model file; 'Keep extracted texture' protects
+        // hand-edited albedos exactly like the single-albedo path.
+        if ((cfg.materialMode == MaterialMode.Multi || cfg.materialMode == MaterialMode.Auto)
+            && !string.IsNullOrEmpty(cfg.modelFile) && File.Exists(cfg.modelFile)
+            && (cfg.modelFile.EndsWith(".glb", StringComparison.OrdinalIgnoreCase) || cfg.modelFile.EndsWith(".gltf", StringComparison.OrdinalIgnoreCase)))
+        {
+            string mtlPath = Path.Combine(fsResDir, name + ".mtl");
+            bool mtlFresh = File.Exists(mtlPath) && File.GetLastWriteTimeUtc(cfg.modelFile) <= File.GetLastWriteTimeUtc(mtlPath);
+            if (!mtlFresh && !(cfg.keepTexture && File.Exists(mtlPath)))
+            {
+                Debug.Log($"[Factory] {name}: extracting per-material albedos (glbconv) for the multi-material animated atlas…");
+                if (!ConvertGlb(cfg.modelFile, fsResDir, name, 0))
+                    Debug.LogWarning($"[Factory] {name}: glbconv extraction FAILED — a multi-material model will fall back to a SINGLE atlas (every part samples material 0). See the [glbconv] Console error.");
+            }
+        }
         var orderedAlb = LoadOrderedAlbedos(fsResDir, name);   // MTL-ordered (materialName -> albedo texture)
         // Need >1 REAL albedo to pack a multi-material atlas. Multi/Auto with 0-1 albedos (e.g. a fresh extraction that
         // didn't regenerate the per-material albedos, or a misconfig) falls back to a single atlas instead of building a
@@ -293,7 +445,13 @@ public static class UniversalBaker
         {
             // Mirror the PRIMARY FBX's final import settings onto every role FBX (same rig, different clip): the
             // clip bake samples the imported scene, so scale/rig settings must match the skeleton's source exactly.
-            foreach (var roleRel in wantAfter ? new[] { moveFbxRel, afterFbxRel } : new[] { moveFbxRel })
+            var roleRels = new List<string> { moveFbxRel };
+            if (wantAfter) roleRels.Add(afterFbxRel);
+            if (wantAttack) roleRels.Add(attackFbxRel);
+            if (wantCombat) roleRels.Add(combatFbxRel);
+            if (wantPreMove) roleRels.Add(preMoveFbxRel);
+            if (wantIdle) roleRels.Add(idleFbxRel);
+            foreach (var roleRel in roleRels)
             {
                 var rimp = AssetImporter.GetAtPath(roleRel) as ModelImporter;
                 if (rimp == null) return Fail("could not get ModelImporter for " + roleRel);
@@ -372,7 +530,7 @@ public static class UniversalBaker
         }
         string cerr = BakeClipCollection(animDir, "_Clips", out var clipColl);
         if (cerr != null) return Fail(cerr);
-        UnityEngine.Object clipMoveColl = null, clipAfterColl = null;
+        UnityEngine.Object clipMoveColl = null, clipAfterColl = null, clipAttackColl = null, clipCombatColl = null, clipPreMoveColl = null, clipIdleColl = null;
         if (cfg.animStateDriven)
         {
             cerr = BakeClipCollection(resDir + "/anim_move", "_ClipsMove", out clipMoveColl);
@@ -381,6 +539,26 @@ public static class UniversalBaker
             {
                 cerr = BakeClipCollection(resDir + "/anim_after", "_ClipsAfter", out clipAfterColl);
                 if (cerr != null) return Fail("After clip collection: " + cerr);
+            }
+            if (wantAttack)
+            {
+                cerr = BakeClipCollection(resDir + "/anim_attack", "_ClipsAttack", out clipAttackColl);
+                if (cerr != null) return Fail("Attack clip collection: " + cerr);
+            }
+            if (wantCombat)
+            {
+                cerr = BakeClipCollection(resDir + "/anim_combat", "_ClipsCombat", out clipCombatColl);
+                if (cerr != null) return Fail("Combat clip collection: " + cerr);
+            }
+            if (wantPreMove)
+            {
+                cerr = BakeClipCollection(resDir + "/anim_premove", "_ClipsPreMove", out clipPreMoveColl);
+                if (cerr != null) return Fail("Pre-movement clip collection: " + cerr);
+            }
+            if (wantIdle)
+            {
+                cerr = BakeClipCollection(resDir + "/anim_idle", "_ClipsIdle", out clipIdleColl);
+                if (cerr != null) return Fail("Idle-override clip collection: " + cerr);
             }
         }
         AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
@@ -396,7 +574,7 @@ public static class UniversalBaker
         // an empty GUID means the SDK skeleton/clip bake produced nothing — fail loudly rather than write a dead registry entry.
         if (string.IsNullOrEmpty(skelGuid) || skelGuid == "0,0,0,0") return Fail($"{name}: skeleton bake produced an empty GUID (SetPrefab/Reimport did nothing).");
         if (string.IsNullOrEmpty(clipGuid) || clipGuid == "0,0,0,0") return Fail($"{name}: ClipCollection GUID is empty — the model has no bakeable clip (check the Clip name / that it's actually animated).");
-        string clipMoveGuid = "", clipAfterGuid = "";
+        string clipMoveGuid = "", clipAfterGuid = "", clipAttackGuid = "", clipCombatGuid = "", clipPreMoveGuid = "", clipIdleGuid = "";
         if (cfg.animStateDriven)
         {
             clipMoveGuid = AmplitudeGuid(clipMoveColl);
@@ -406,11 +584,31 @@ public static class UniversalBaker
                 clipAfterGuid = AmplitudeGuid(clipAfterColl);
                 if (string.IsNullOrEmpty(clipAfterGuid) || clipAfterGuid == "0,0,0,0") return Fail($"{name}: AFTER ClipCollection GUID is empty — check the After clip name.");
             }
+            if (wantAttack)
+            {
+                clipAttackGuid = AmplitudeGuid(clipAttackColl);
+                if (string.IsNullOrEmpty(clipAttackGuid) || clipAttackGuid == "0,0,0,0") return Fail($"{name}: ATTACK ClipCollection GUID is empty — check the Attack clip name.");
+            }
+            if (wantCombat)
+            {
+                clipCombatGuid = AmplitudeGuid(clipCombatColl);
+                if (string.IsNullOrEmpty(clipCombatGuid) || clipCombatGuid == "0,0,0,0") return Fail($"{name}: COMBAT ClipCollection GUID is empty — check the Combat-idle clip name.");
+            }
+            if (wantPreMove)
+            {
+                clipPreMoveGuid = AmplitudeGuid(clipPreMoveColl);
+                if (string.IsNullOrEmpty(clipPreMoveGuid) || clipPreMoveGuid == "0,0,0,0") return Fail($"{name}: PRE-MOVEMENT ClipCollection GUID is empty — check the Pre-movement clip name.");
+            }
+            if (wantIdle)
+            {
+                clipIdleGuid = AmplitudeGuid(clipIdleColl);
+                if (string.IsNullOrEmpty(clipIdleGuid) || clipIdleGuid == "0,0,0,0") return Fail($"{name}: IDLE-OVERRIDE ClipCollection GUID is empty — check the Idle clip name.");
+            }
         }
         Debug.Log($"[Factory] {name} ANIMATED DONE. skeleton={skelGuid} clip={clipGuid} atlas={atlasGuid}" +
-                  (cfg.animStateDriven ? $" [state-driven: move={clipMoveGuid}{(wantAfter ? " after=" + clipAfterGuid : "")}]" : ""));
+                  (cfg.animStateDriven ? $" [state-driven: move={clipMoveGuid}{(wantAfter ? " after=" + clipAfterGuid : "")}{(wantAttack ? " attack=" + clipAttackGuid : "")}{(wantCombat ? " combat=" + clipCombatGuid : "")}{(wantPreMove ? " premove=" + clipPreMoveGuid : "")}{(wantIdle ? " idle=" + clipIdleGuid : "")}]" : ""));
         return new BakeResult { ok = true, skeletonGuid = skelGuid, atlasGuid = atlasGuid, clipGuid = clipGuid, bbox = Vector3.zero,
-                                clipMoveGuid = clipMoveGuid, clipAfterGuid = clipAfterGuid };
+                                clipMoveGuid = clipMoveGuid, clipAfterGuid = clipAfterGuid, clipAttackGuid = clipAttackGuid, clipCombatGuid = clipCombatGuid, clipPreMoveGuid = clipPreMoveGuid, clipIdleGuid = clipIdleGuid };
     }
 
     // Longest axis of the FBX's combined mesh bounds (native scale), so we can compute the Scale Factor that hits `size`.
@@ -1204,7 +1402,7 @@ public static class UniversalBaker
     // (reading stdout-then-stderr on this thread deadlocks: the child fills its ~4KB stderr pipe buffer, blocks writing,
     // never exits, stdout never EOFs, and we hang forever). The wait is bounded, so a hung child can't freeze the editor.
     // Returns false (after killing the child) on timeout; otherwise the process has exited and stdout/stderr are filled.
-    static bool RunBounded(System.Diagnostics.Process p, int timeoutMs, out string stdout, out string stderr)
+    internal static bool RunBounded(System.Diagnostics.Process p, int timeoutMs, out string stdout, out string stderr)
     {
         stdout = ""; stderr = "";
         var outTask = System.Threading.Tasks.Task.Run(() => p.StandardOutput.ReadToEnd());
