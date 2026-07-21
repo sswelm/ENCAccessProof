@@ -3466,8 +3466,8 @@ namespace ENCAccessProof
         }
 
         static readonly List<object> propPending = new List<object>();   // parsed GUIDs not yet registered (per-session)
-        static bool propParsed; static int propWait;
-        internal static void RearmPropRegistration() { propParsed = false; propPending.Clear(); }   // AnimationLoad cleared the manager's list — register ours again
+        static bool propParsed; static int propWait; static bool propTickArmed; static int propTick;
+        internal static void RearmPropRegistration() { propParsed = false; propPending.Clear(); propTickArmed = true; }   // AnimationLoad cleared the manager's list — register ours again
         static void ParsePropGuidsIFN()
         {
             if (propParsed) return;
@@ -3534,6 +3534,11 @@ namespace ENCAccessProof
         {
             try
             {
+                // Until the first AnimationLoad the mod bundle isn't mounted, so every catalog request is a
+                // guaranteed miss that LogErrors into the Amplitude diagnostics (64+ red lines per boot). The
+                // loud AnimationLoad postfix is the registration moment that works; this tick only repairs
+                // late failures after it — armed there, and paced to ~1 attempt/second.
+                if (!propTickArmed || (++propTick % 60) != 0) return;
                 ParsePropGuidsIFN();
                 if (propPending.Count == 0) return;
                 var amType = AccessTools.TypeByName("Amplitude.Mercury.Animation.AnimationManager");
