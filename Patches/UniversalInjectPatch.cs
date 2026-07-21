@@ -2917,7 +2917,9 @@ namespace ENCAccessProof
         static object ParseGuidCsv(string gs)
         {
             if (string.IsNullOrEmpty(gs)) return null;
-            var p = gs.Split(new[] { ',', ' ', '\t', ';', '-' }, StringSplitOptions.RemoveEmptyEntries);
+            // NO '-' in the separators: the components are SIGNED ints, and splitting on '-' silently strips the
+            // sign (a negative 'a' produced a corrupted GUID and a catalog miss — found via the Sling_Collection).
+            var p = gs.Split(new[] { ',', ' ', '\t', ';' }, StringSplitOptions.RemoveEmptyEntries);
             if (p.Length == 4 && int.TryParse(p[0], out var a) && int.TryParse(p[1], out var b) && int.TryParse(p[2], out var c) && int.TryParse(p[3], out var d))
                 return MakeGuid(a, b, c, d);
             Plugin.Log.LogError($"[District] GUID must be four ints \"a,b,c,d\" (got '{gs}').");
