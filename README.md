@@ -130,6 +130,11 @@ runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — al
   a hot-loaded PNG or a live Desaturate + RGB adjust on its own atlas — isolated per unit, free on the vertex budget.
   Works on **baked custom models** too (the PNG replaces the baked atlas — recolour without a re-bake), with a live
   in-editor preview of the exact skin that will be injected.
+- **Backup &amp; Restore — a safety net for the un-versioned assets.** ENCReload's git tracks only `Assets/Databases`;
+  a **Backup and Restore** editor window snapshots everything else (editor tooling, source &amp; baked models, databases,
+  `Tools/`, and the live BepInEx runtime config) to a timestamped, manifest-backed folder on `D:`. Restore is guarded —
+  it auto-snapshots the current state first, copies back **additively** (never deletes work you've added since), and
+  verifies file counts. See [**Backup.md**](docs/Backup.md).
 - **Multi-mod — merge packs from many authors.** The runtime is a **Humankind Asset Framework** host, not just ENC's
   loader: it merges ENC's base registry with any number of third-party **packs** dropped in `BepInEx/config/haf_packs/`,
   so a modder augments their own units with a custom model / texture / sound by shipping just a config file + assets — **no
