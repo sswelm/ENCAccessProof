@@ -90,29 +90,32 @@ namespace ENCAccessProof
 
     // STATE-DRIVEN MELEE ATTACK trigger (2026-07-22): close-combat units (the Abomination animal) never fire a ranged
     // shot, so PawnRangedFightSequence never runs and their attack clip stayed silent (movement + the donor's maul/scratch
-    // SOUND played, no bite animation). FIRST try hooked PawnMeleeFightSequence's ctor — but that's a STRUCT, so Harmony
-    // only caught ~2 of many constructions (unreliable) and later swings didn't animate. The RELIABLE per-swing trigger is
-    // PawnActionMeleeStartFight.StartPawnAction() — a real class method (: PawnAction) that the fight choreography creates
-    // ON THE ATTACKER PAWN for EVERY swing (UnitActionMeleeFightSequence -> AddPawnMeleeFightSequence ->
-    // CreatePawnAction<PawnActionMeleeStartFight>(attackerPawn)). Read __instance.Pawn (the attacker) and arm the clip.
+    // SOUND played, no bite animation). Two false starts before the right seam:
+    //   1. PawnMeleeFightSequence's ctor — a STRUCT, Harmony caught it unreliably.
+    //   2. PawnActionMeleeStartFight.StartPawnAction() — runs ONCE per fight START, not per swing (log: 1 fire, 1 ATTACK,
+    //      while the fight had several swings/FX). The pose system was proven correct there (1 fire -> exactly 1 ATTACK).
+    // The REAL per-swing method is PawnActionMeleeStartFight.StartPairMeleeAttack() — called once per fight SEQUENCE
+    // (= per swing) from StartNewSequence, and it runs striker.AttackFSM.Start(...) (the actual bite). Read the private
+    // `striker` field (the pawn swinging THIS sequence — it's set to pair.AttackerPawn OR pair.DefenderPawn for a
+    // retaliation, NOT always this.Pawn), and arm that pawn's clip. Per-pawn restart in OnPawnAttack handles fast swings.
     [HarmonyPatch] internal static class Hk_PawnMeleeFight
     {
         static MethodBase TargetMethod()
         {
             var t = AccessTools.TypeByName("Amplitude.Mercury.Presentation.PawnActionMeleeStartFight");
-            var m = t != null ? AccessTools.Method(t, "StartPawnAction") : null;
-            if (m != null) Plugin.Log.LogInfo("[Fire] hooked PawnActionMeleeStartFight.StartPawnAction (state-driven melee attack, per swing)");
-            else Plugin.Log.LogWarning("[Fire] NOT found: PawnActionMeleeStartFight.StartPawnAction — melee attack clips won't trigger");
+            var m = t != null ? AccessTools.Method(t, "StartPairMeleeAttack") : null;
+            if (m != null) Plugin.Log.LogInfo("[Fire] hooked PawnActionMeleeStartFight.StartPairMeleeAttack (per-swing melee attack)");
+            else Plugin.Log.LogWarning("[Fire] NOT found: PawnActionMeleeStartFight.StartPairMeleeAttack — melee attack clips won't trigger");
             return m;
         }
         static void Postfix(object __instance)
         {
             try
             {
-                var attacker = FireProbe.Member(__instance, "Pawn");   // the attacking pawn this per-swing action runs on
-                if (attacker != null) UniversalInject.OnPawnAttack(attacker, "melee attack");
+                var striker = FireProbe.Member(__instance, "striker");   // the pawn actually swinging this sequence
+                if (striker != null) UniversalInject.OnPawnAttack(striker, "melee swing");
             }
-            catch (Exception e) { Plugin.Log.LogError("[Fire] melee-fight postfix: " + e); }
+            catch (Exception e) { Plugin.Log.LogError("[Fire] melee-swing postfix: " + e); }
         }
     }
 

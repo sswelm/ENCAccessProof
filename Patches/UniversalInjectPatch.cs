@@ -118,7 +118,7 @@ namespace ENCAccessProof
 
     // One in-flight one-shot: the world position of a pawn that just fired + when it started. The pose hook matches a
     // pawn to the nearest active fire by ObjectSpace position (both are Unity render coords), so only the firer animates.
-    internal struct FireInstance { public UnityEngine.Vector3 pos; public float startTime; }
+    internal struct FireInstance { public UnityEngine.Vector3 pos; public float startTime; public long pawnId; }
     // A pawn's render position + the (ramped) normalized pose time its unit should currently hold, for the gradual deploy.
     internal struct DeploySample { public UnityEngine.Vector3 pos; public float poseTime; }
 
@@ -2142,9 +2142,21 @@ namespace ENCAccessProof
                 var e = FindEntryForUnitDefinition(unitDef);
                 if (e == null || !e.animStateDriven || e.attackAnimId < 0) return;
                 if (!(GetMember(attacker, "Transform") is UnityEngine.Transform tr)) return;
+                // Key the fire by the ATTACKING PAWN's identity, and if that pawn already has an active fire, RESTART it
+                // (update start time + position) instead of stacking a second. Melee swings come faster than one attack
+                // window, and the pose hook plays the FIRST/oldest matching fire for the whole window — so without this a
+                // rapid second swing was swallowed by the first's window (looked like ONE long attack, or nothing when the
+                // window was tiny). Per-pawn restart = each swing replays the bite from frame 0. Object identity is stable
+                // per pawn for the session; distinct swarm pawns keep their own fires.
+                long pid = attacker.GetHashCode();
+                var fi = new FireInstance { pos = tr.position, startTime = UnityEngine.Time.time, pawnId = pid };
                 lock (e.activeFires)
-                    e.activeFires.Add(new FireInstance { pos = tr.position, startTime = UnityEngine.Time.time });
-                Plugin.Log.LogInfo($"[State] '{e.resourceName}' {how} at {tr.position.ToString("0.0")} — attack clip armed");
+                {
+                    int at = -1;
+                    for (int i = 0; i < e.activeFires.Count; i++) if (e.activeFires[i].pawnId == pid) { at = i; break; }
+                    if (at >= 0) e.activeFires[at] = fi; else e.activeFires.Add(fi);   // restart this pawn's bite, or arm a new one
+                }
+                Plugin.Log.LogInfo($"[State] '{e.resourceName}' {how} at {tr.position.ToString("0.0")} — attack clip armed (pawn {pid})");
             }
             catch (Exception ex) { Plugin.Log.LogError("[State] OnPawnAttack: " + ex); }
         }
