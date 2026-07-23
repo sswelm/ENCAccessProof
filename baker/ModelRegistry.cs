@@ -112,6 +112,12 @@ public class ModelDef
     public string soundAttackFile = "";  // RUNTIME (not baked): CUSTOM one-shot played ON ATTACK (each swing/shot) — a WAV in enc_sounds/. A DISTINCT, more VIOLENT sound than the idle growl; the plugin fires it from the attack hook with a per-pawn min-gap so rapid multi-swing fights don't machine-gun it.
     public float soundAttackVolume = 1f; // RUNTIME (not baked): attack one-shot volume (0..2).
     public float soundAttackOffset = 0f; // RUNTIME (not baked): seconds INTO the attack WAV where playback starts — skip a silent/windup lead-in so the impact lands on the swing. 0 = from the top.
+    public string soundDeathFile = "";   // RUNTIME (not baked): CUSTOM one-shot when a pawn of this unit DIES (rattle/scream) — a WAV in enc_sounds/. Per-entry min-gap so a wiped stack doesn't chorus.
+    public float soundDeathVolume = 1f;  // RUNTIME (not baked): death one-shot volume (0..2).
+    public float soundDeathOffset = 0f;  // RUNTIME (not baked): seconds into the death WAV (same semantics as the attack offset).
+    public string soundBattleFile = "";  // RUNTIME (not baked): CUSTOM WAR CRY one-shot when a battle STARTS with this unit in it — camera-anchored, one cry per battle.
+    public float soundBattleVolume = 1f; // RUNTIME (not baked): war-cry volume (0..2).
+    public float soundBattleOffset = 0f; // RUNTIME (not baked): seconds into the war-cry WAV.
 }
 
 // An explicit override of another pack's asset: "this pack intentionally replaces <modId>'s skin on <pawnDescription>."

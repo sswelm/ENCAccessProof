@@ -115,7 +115,14 @@ namespace ENCAccessProof
         public string soundAttackFile = "";    // CUSTOM one-shot played ON ATTACK (each swing/shot) — a WAV in enc_sounds/. A DISTINCT, more violent sound than the idle growl; fired from OnPawnAttack with a per-pawn min-gap so rapid multi-swing fights don't machine-gun it.
         public float soundAttackVolume = 1f;   // attack one-shot volume
         public float soundAttackOffset = 0f;   // seconds INTO the attack WAV where playback starts (skip a silent/windup lead-in so the impact lands on the swing); 0 = from the top
-        public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip, customAttackClip;    // loaded once from the files
+        public string soundDeathFile = "";     // CUSTOM one-shot on a pawn's DEATH (PresentationPawn.TriggerDeath) — the rattle/scream that closes the unit's audio arc. Per-entry min-gap so a wiped stack doesn't chorus five at once.
+        public float soundDeathVolume = 1f;    // death one-shot volume
+        public float soundDeathOffset = 0f;    // seconds into the death WAV (same semantics as the attack offset)
+        public string soundBattleFile = "";    // CUSTOM one-shot WAR CRY when a battle STARTS with this unit in it (SimulationEvent_BattleStarted; sim thread -> queued, played camera-anchored on the main thread). One cry per entry per battle.
+        public float soundBattleVolume = 1f;   // war-cry volume
+        public float soundBattleOffset = 0f;   // seconds into the war-cry WAV
+        public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip, customAttackClip, customDeathClip, customBattleClip;    // loaded once from the files
+        public float deathSoundNextAt, battleCryNextAt;   // per-entry min-gap clocks (a wiped stack / double battle shouldn't chorus)
         public readonly Dictionary<long, float> attackSoundNextAt = new Dictionary<long, float>();   // attacking-pawn id -> earliest Time.time it may play the attack sound again (min-gap)
         public bool customClipTried;                                                 // don't retry a failed load every poll
         public readonly Dictionary<int, float> idleNextAt = new Dictionary<int, float>();   // sub-pawn instance id -> Time.time of its next idle growl (jittered)
@@ -462,6 +469,12 @@ namespace ENCAccessProof
                                 soundAttackFile = (string)m["soundAttackFile"] ?? "",
                                 soundAttackVolume = m["soundAttackVolume"] != null ? (float)m["soundAttackVolume"] : 1f,
                                 soundAttackOffset = m["soundAttackOffset"] != null ? (float)m["soundAttackOffset"] : 0f,
+                                soundDeathFile = (string)m["soundDeathFile"] ?? "",
+                                soundDeathVolume = m["soundDeathVolume"] != null ? (float)m["soundDeathVolume"] : 1f,
+                                soundDeathOffset = m["soundDeathOffset"] != null ? (float)m["soundDeathOffset"] : 0f,
+                                soundBattleFile = (string)m["soundBattleFile"] ?? "",
+                                soundBattleVolume = m["soundBattleVolume"] != null ? (float)m["soundBattleVolume"] : 1f,
+                                soundBattleOffset = m["soundBattleOffset"] != null ? (float)m["soundBattleOffset"] : 0f,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
                                 attackRepeats = m["attackRepeats"] != null ? (int)m["attackRepeats"] : 1,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
@@ -514,6 +527,12 @@ namespace ENCAccessProof
                 var saf = Regex.Matches(text, "\"soundAttackFile\"\\s*:\\s*\"([^\"]*)\"");        // parity: custom WAV one-shot on attack
                 var sav = Regex.Matches(text, "\"soundAttackVolume\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: attack one-shot volume
                 var sao = Regex.Matches(text, "\"soundAttackOffset\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: attack one-shot start offset (s into the WAV)
+                var sdf = Regex.Matches(text, "\"soundDeathFile\"\\s*:\\s*\"([^\"]*)\"");         // parity: custom WAV one-shot on death
+                var sdv = Regex.Matches(text, "\"soundDeathVolume\"\\s*:\\s*(-?[\\d.eE+]+)");     // parity: death one-shot volume
+                var sdo = Regex.Matches(text, "\"soundDeathOffset\"\\s*:\\s*(-?[\\d.eE+]+)");     // parity: death one-shot start offset
+                var sbf = Regex.Matches(text, "\"soundBattleFile\"\\s*:\\s*\"([^\"]*)\"");        // parity: custom WAV war cry on battle start
+                var sbv = Regex.Matches(text, "\"soundBattleVolume\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: war-cry volume
+                var sbo = Regex.Matches(text, "\"soundBattleOffset\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: war-cry start offset
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
                 var arp = Regex.Matches(text, "\"attackRepeats\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: STATE-DRIVEN attack clip replay count per trigger (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
@@ -573,6 +592,12 @@ namespace ENCAccessProof
                         soundAttackFile = i < saf.Count ? saf[i].Groups[1].Value : "",
                         soundAttackVolume = i < sav.Count && float.TryParse(sav[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sav) ? _sav : 1f,
                         soundAttackOffset = i < sao.Count && float.TryParse(sao[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sao) ? _sao : 0f,
+                        soundDeathFile = i < sdf.Count ? sdf[i].Groups[1].Value : "",
+                        soundDeathVolume = i < sdv.Count && float.TryParse(sdv[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sdv) ? _sdv : 1f,
+                        soundDeathOffset = i < sdo.Count && float.TryParse(sdo[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sdo) ? _sdo : 0f,
+                        soundBattleFile = i < sbf.Count ? sbf[i].Groups[1].Value : "",
+                        soundBattleVolume = i < sbv.Count && float.TryParse(sbv[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sbv) ? _sbv : 1f,
+                        soundBattleOffset = i < sbo.Count && float.TryParse(sbo[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sbo) ? _sbo : 0f,
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
                         attackRepeats = i < arp.Count && int.TryParse(arp[i].Groups[1].Value, out var _arp) ? _arp : 1,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
@@ -2295,6 +2320,91 @@ namespace ENCAccessProof
 
         static string Tail(string s) => string.IsNullOrEmpty(s) ? "(none)" : (s.Length > 60 ? s.Substring(0, 60) : s);
 
+        // ---- DEATH CUE (2026-07-23): a one-shot when a pawn of ours starts dying. Seam: PresentationPawn.TriggerDeath —
+        // presentation-side, fired exactly once per dying pawn as its death FSM starts (IsDead is set inside it). A wiped
+        // stack dies pawn-by-pawn in a burst, so a short per-entry min-gap turns five simultaneous rattles into one. ----
+        internal static void OnPawnDeath(object pawn)
+        {
+            try
+            {
+                if (pawn == null || !Plugin.UniversalInjectOn.Value) return;
+                var list = entries;
+                if (list == null) return;
+                bool any = false;
+                foreach (var x in list) if (!string.IsNullOrEmpty(x.soundDeathFile)) { any = true; break; }
+                if (!any) return;
+                string ud = GetMember(GetMember(pawn, "PresentationUnit"), "UnitDefinition")?.ToString() ?? "";
+                var e = FindEntryForUnitDefinition(ud);
+                if (e == null || e.customDeathClip == null) return;
+                float now = UnityEngine.Time.time;
+                if (now < e.deathSoundNextAt) return;
+                e.deathSoundNextAt = now + 0.6f;
+                var tr = GetMember(pawn, "Transform") as UnityEngine.Transform;
+                PlayAttackOneShot(e.customDeathClip, tr != null ? tr.position : UnityEngine.Vector3.zero, e.soundDeathVolume, e.soundDeathOffset);
+                Plugin.Log.LogInfo($"[Sound] '{e.resourceName}' death cue");
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[Sound] OnPawnDeath: " + ex); }
+        }
+
+        // ---- BATTLE-START WAR CRY (2026-07-23). SimulationEvent_BattleStarted.Raise carries the Battle; walking
+        // AttackerGroup/DefenderGroup -> Contenders -> Units -> Unit.UnitDefinition finds OUR units in it (pure managed
+        // reads — safe on the sim thread). Matches are QUEUED and played on the main thread (Unity audio APIs), one cry
+        // per entry per battle, camera-anchored like the attack roar so it opens the battle audibly at any zoom. ----
+        static readonly System.Collections.Concurrent.ConcurrentQueue<ModelEntry> battleCryQueue = new System.Collections.Concurrent.ConcurrentQueue<ModelEntry>();
+        internal static void OnBattleStarted(object battle)
+        {
+            try
+            {
+                if (battle == null || !Plugin.UniversalInjectOn.Value) return;
+                var list = entries;
+                if (list == null) return;
+                bool any = false;
+                foreach (var x in list) if (!string.IsNullOrEmpty(x.soundBattleFile)) { any = true; break; }
+                if (!any) return;
+                var found = new HashSet<ModelEntry>();
+                foreach (var g in new[] { GetMember(battle, "AttackerGroup"), GetMember(battle, "DefenderGroup") })
+                {
+                    if (!(GetMember(g, "Contenders") is System.Collections.IEnumerable conts)) continue;
+                    foreach (var c in conts)
+                    {
+                        if (!(GetMember(c, "Units") is System.Collections.IEnumerable units)) continue;
+                        foreach (var bu in units)
+                        {
+                            string ud = GetMember(GetMember(bu, "Unit"), "UnitDefinition")?.ToString() ?? "";
+                            var e = FindEntryForUnitDefinition(ud);
+                            if (e != null && !string.IsNullOrEmpty(e.soundBattleFile)) found.Add(e);
+                        }
+                    }
+                }
+                foreach (var e in found)
+                {
+                    battleCryQueue.Enqueue(e);
+                    Plugin.Log.LogInfo($"[Sound] battle started with '{e.resourceName}' — war cry queued");
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogError("[Sound] OnBattleStarted: " + ex); }
+        }
+
+        // Main-thread drain (Plugin.Update). If an entry's clips haven't lazy-loaded yet (battle at load, before the
+        // first audio poll), the cry is left in the queue for a later frame rather than dropped.
+        internal static void ProcessBattleCries()
+        {
+            while (battleCryQueue.TryDequeue(out var e))
+            {
+                if (e.customBattleClip == null)
+                {
+                    if (!e.customClipTried) { battleCryQueue.Enqueue(e); return; }   // clips not loaded yet — retry next frame
+                    continue;                                                        // load ran and failed — drop, already logged
+                }
+                float now = UnityEngine.Time.time;
+                if (now < e.battleCryNextAt) continue;
+                e.battleCryNextAt = now + 2f;
+                var camPos = UnityEngine.Camera.main != null ? UnityEngine.Camera.main.transform.position : UnityEngine.Vector3.zero;
+                PlayAttackOneShot(e.customBattleClip, camPos, e.soundBattleVolume, e.soundBattleOffset);
+                Plugin.Log.LogInfo($"[Sound] '{e.resourceName}' war cry");
+            }
+        }
+
         // STATE-DRIVEN poll (main thread — Plugin.Update; Phase 2, 2026-07-19). For each animStateDriven model: per
         // unit, MOVEMENT = the render position actually changed since the last poll — the deploy poll's proven
         // settle-immune signal (wait-to-idle / turn-in-place after stopping does NOT move the tile position, so a
@@ -2800,7 +2910,7 @@ namespace ENCAccessProof
                 bool anyCustom = false;
                 foreach (var e in on)
                 {
-                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile) && string.IsNullOrEmpty(e.soundIdleFile) && string.IsNullOrEmpty(e.soundAttackFile)) continue;
+                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile) && string.IsNullOrEmpty(e.soundIdleFile) && string.IsNullOrEmpty(e.soundAttackFile) && string.IsNullOrEmpty(e.soundDeathFile) && string.IsNullOrEmpty(e.soundBattleFile)) continue;
                     anyCustom = true;
                     if (!e.customClipTried)
                     {
@@ -2810,6 +2920,8 @@ namespace ENCAccessProof
                         e.customStopClip = LoadCustom(e.soundStopFile, e.resourceName + "_stop", e.assetDir);
                         e.customIdleClip = LoadCustom(e.soundIdleFile, e.resourceName + "_idle", e.assetDir);
                         e.customAttackClip = LoadCustom(e.soundAttackFile, e.resourceName + "_attack", e.assetDir);
+                        e.customDeathClip = LoadCustom(e.soundDeathFile, e.resourceName + "_death", e.assetDir);
+                        e.customBattleClip = LoadCustom(e.soundBattleFile, e.resourceName + "_battle", e.assetDir);
                     }
                 }
                 if (anyCustom) EnsureAudioListener();

@@ -147,6 +147,8 @@ namespace ENCAccessProof
                 typeof(Hk_PawnMeleeFight),    // state-driven MELEE ATTACK: close-combat pawns (the Abomination animal) arm the attack-clip window (2026-07-22)
                 typeof(Hk_SilenceAudio),      // silenceDonorAudio: drop the borrowed donor's Wwise posts (idle growl + combat maul) on opted-in pawns (2026-07-23)
                 typeof(Hk_RotDiag_FaceEnemy), typeof(Hk_RotDiag_LookAt), typeof(Hk_RotDiag_FsmStart),   // adjacent-attack rotation diagnostic (2026-07-21): who asks our pawns to turn, and does the FSM start
+                typeof(Hk_PawnDeath),         // death cue: one-shot as a pawn of ours starts dying (2026-07-23)
+                typeof(Hk_BattleStarted),     // battle-start war cry: sim-thread match -> main-thread camera-anchored one-shot (2026-07-23)
                 typeof(Hk_AudioTrace),        // diagnostic: live-trace Wwise PostEvent (gated behind the F8 Audio Trace toggle)
                 typeof(Hk_DistrictRepoint),   // EXPERIMENTAL: replace one district's on-map visual (docs/District-Visuals.md)
                 typeof(Hk_DistrictBufferHeadroom), // EXPERIMENTAL: enlarge the shared 'Visual' mesh buffer so custom district meshes fit (opt-in)
@@ -179,6 +181,7 @@ namespace ENCAccessProof
                 UniversalInject.ProcessDeployState();   // deploy-on-stop: record which of our pawns' units are currently moving
                 UniversalInject.ProcessAnimStates();    // state-driven (Phase 2): publish per-unit moving/stopped for the idle/move/after clips
                 UniversalInject.ProcessEngineAudio();   // engine sound: fire the per-ship Start/Stop move sound on our units
+                UniversalInject.ProcessBattleCries();   // battle-start war cries queued by the sim-thread hook
                 UniversalInject.TickDistrictMeshSwap(); // EXPERIMENTAL district: per-frame swap our FxMesh into the live selector's leaf drawers
             }
             if (PropRegisterOn.Value)

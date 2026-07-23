@@ -500,8 +500,8 @@ engine/hover loop, use the **custom WAV** path (§14). The auto-capture fallback
 ## 14. Custom sound files & per-clip volume — the Sound Studio window
 
 **Tools ▸ HAF ▸ Sound Studio** collects a unit's whole audio profile into one dialog with collapsible sections — **Silence
-inherited donor sound**, **Idle growl** (file, volume, interval, one-voice radius), **Attack sound** (file, volume,
-start offset), **Movement**
+inherited donor sound**, **Idle growl** (file, volume, interval, one-voice radius), **Attack sound**, **Death sound**,
+**Battle start war cry** (each: file, volume, start offset), **Movement**
 (start/travel/stop), and **Wwise engine event**. Pick a pawn (or **Edit** one from the "Units with audio" list) and every
 knob round-trips; each WAV row has a ▶ preview. Everything below is one of those sections.
 
@@ -581,9 +581,26 @@ A **distinct, violent** one-shot for when the unit strikes — separate from the
   only) starts playback that many seconds *into* the WAV — clamped inside the clip; the per-attacker min-gap keys off what
   actually plays. The window's **▶ preview honors the offset**, so trim it by ear before ever launching the game.
 
+### 14d. Death sound (`soundDeathFile`)
+
+A one-shot **rattle/scream when a pawn of the unit dies** — closing the unit's audio arc (alive → fighting → gone).
+`soundDeathFile` / `soundDeathVolume` / `soundDeathOffset`. The trigger is `PresentationPawn.TriggerDeath` — the exact
+presentation-side moment a pawn's death animation starts, once per dying pawn. A **wiped stack dies pawn-by-pawn in a
+burst**, so the runtime enforces a short per-entry gap (~0.6 s): one rattle per beat instead of five at once. Plays at the
+dying pawn's position through the same camera-audible one-shot path as the attack roar.
+
+### 14e. Battle-start war cry (`soundBattleFile`)
+
+A one-shot **war cry the moment a battle begins** with this unit on either side. `soundBattleFile` / `soundBattleVolume` /
+`soundBattleOffset`. The trigger is the sim event `SimulationEvent_BattleStarted`: the hook walks the battle's
+attacker/defender groups for our unit definitions **on the sim thread** (managed reads only) and queues one cry per
+matching entry; the main thread plays it **camera-anchored** (like the attack cue) so it opens the battle audibly at any
+zoom. A per-entry gap keeps back-to-back battles from stacking cries.
+
 So the full "replace a creature's voice" recipe is: `silenceDonorAudio: true` + a `soundIdleFile` growl (interval + group
-radius to taste) + a `soundAttackFile` roar. All three are set per-unit in the Sound Studio window (§14) and persist in the
-registry. The Abomination ships all three: bear silenced, an occasional bear/croc snarl at idle, a beam-roar on the strike.
+radius to taste) + a `soundAttackFile` roar + a `soundDeathFile` rattle + a `soundBattleFile` war cry. All are set per-unit
+in the Sound Studio window (§14), every one with volume + start offset + ▶ preview, and persist in the registry. The
+Abomination ships the trio: bear silenced, an occasional bear/croc snarl at idle, a beam-roar on the strike.
 
 ---
 

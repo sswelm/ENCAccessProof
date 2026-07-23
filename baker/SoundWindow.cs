@@ -24,9 +24,11 @@ public class SoundWindow : EditorWindow
     bool engineSound = false; string engineStart = "", engineStop = "";   // game (Wwise) engine event alternative
     bool silenceDonor = false;   // suppress the borrowed donor's inherited Wwise sound (idle growl + combat maul)
     string idleFile = "", idlePath = ""; float idleVol = 1f, idleInterval = 11f, idleGroupRadius = 10f;   // occasional idle growl (one-shot on a timer) + one-voice-per-unit radius
-    string attackFile = "", attackPath = ""; float attackVol = 1f;   // violent one-shot on each attack
+    string attackFile = "", attackPath = ""; float attackVol = 1f, attackOffset = 0f;   // violent one-shot on each attack (+ seconds skipped into the WAV)
+    string deathFile = "", deathPath = ""; float deathVol = 1f, deathOffset = 0f;       // one-shot rattle/scream when a pawn dies
+    string battleFile = "", battlePath = ""; float battleVol = 1f, battleOffset = 0f;   // war-cry one-shot when a battle starts with this unit in it
     // foldout section state (creature-voice trio open by default; movement/wwise collapsed)
-    bool foldSilence = true, foldIdle = true, foldAttack = true, foldMove = false, foldWwise = false;
+    bool foldSilence = true, foldIdle = true, foldAttack = true, foldDeath = true, foldBattle = true, foldMove = false, foldWwise = false;
     Vector2 scroll; string status = "";
 
     static string SoundsDir => Path.Combine(ModelRegistry.ConfigDir, "enc_sounds");
@@ -73,7 +75,26 @@ public class SoundWindow : EditorWindow
         // ── Attack sound ──
         if (Section(ref foldAttack, "Attack sound (violent, on strike)"))
         {
-            WavVolRow("Attack", attackFile, ref attackPath, ref attackVol);        }
+            WavVolRow("Attack", attackFile, ref attackPath, ref attackVol, attackOffset);
+            attackOffset = EditorGUILayout.Slider(new GUIContent("  start offset (s)",
+                "Seconds INTO the WAV where playback starts — skip a silent or slow windup lead-in so the impact lands on the swing. " +
+                "0 = play from the top. The ▶ preview honors it, so you can dial it in by ear."), attackOffset, 0f, 5f);        }
+
+        // ── Death sound ──
+        if (Section(ref foldDeath, "Death sound (rattle/scream, when a pawn dies)"))
+        {
+            WavVolRow("Death", deathFile, ref deathPath, ref deathVol, deathOffset);
+            deathOffset = EditorGUILayout.Slider(new GUIContent("  start offset (s)",
+                "Seconds INTO the WAV where playback starts (skip a lead-in). The ▶ preview honors it. A wiped stack dies " +
+                "pawn-by-pawn — the runtime spaces the rattles out instead of playing five at once."), deathOffset, 0f, 5f);        }
+
+        // ── Battle-start war cry ──
+        if (Section(ref foldBattle, "Battle start (war cry, once when a battle begins)"))
+        {
+            WavVolRow("War cry", battleFile, ref battlePath, ref battleVol, battleOffset);
+            battleOffset = EditorGUILayout.Slider(new GUIContent("  start offset (s)",
+                "Seconds INTO the WAV where playback starts (skip a lead-in). The ▶ preview honors it. Plays ONCE per battle " +
+                "when this unit is on either side — camera-anchored so it opens the battle audibly at any zoom."), battleOffset, 0f, 5f);        }
 
         // ── Movement (start / travel / stop) ──
         if (Section(ref foldMove, "Movement (start / travel / stop)"))
@@ -115,7 +136,7 @@ public class SoundWindow : EditorWindow
                 if (GUILayout.Button("Edit", GUILayout.Width(46))) { LoadForPawn(m.pawnDescription, all); GUIUtility.ExitGUI(); }
                 if (GUILayout.Button("Clear", GUILayout.Width(52)))
                 {
-                    m.soundStartFile = m.soundFile = m.soundStopFile = m.soundIdleFile = m.soundAttackFile = ""; m.engineSound = false; m.engineStartEvent = m.engineStopEvent = ""; m.silenceDonorAudio = false;
+                    m.soundStartFile = m.soundFile = m.soundStopFile = m.soundIdleFile = m.soundAttackFile = m.soundDeathFile = m.soundBattleFile = ""; m.engineSound = false; m.engineStartEvent = m.engineStopEvent = ""; m.silenceDonorAudio = false;
                     ModelRegistry.Upsert(m); status = "Cleared audio on '" + m.pawnDescription + "'."; GUIUtility.ExitGUI();
                 }
             }
@@ -142,7 +163,9 @@ public class SoundWindow : EditorWindow
             engineSound = m.engineSound; engineStart = m.engineStartEvent; engineStop = m.engineStopEvent;
             silenceDonor = m.silenceDonorAudio;
             idleFile = m.soundIdleFile; idleVol = m.soundIdleVolume; idleInterval = m.soundIdleInterval; idleGroupRadius = m.soundIdleGroupRadius;
-            attackFile = m.soundAttackFile; attackVol = m.soundAttackVolume;
+            attackFile = m.soundAttackFile; attackVol = m.soundAttackVolume; attackOffset = m.soundAttackOffset;
+            deathFile = m.soundDeathFile; deathVol = m.soundDeathVolume; deathOffset = m.soundDeathOffset;
+            battleFile = m.soundBattleFile; battleVol = m.soundBattleVolume; battleOffset = m.soundBattleOffset;
         }
         else
         {
@@ -150,13 +173,15 @@ public class SoundWindow : EditorWindow
             startFile = loopFile = stopFile = ""; startVol = loopVol = stopVol = 1f;
             engineSound = false; engineStart = engineStop = ""; silenceDonor = false;
             idleFile = ""; idleVol = 1f; idleInterval = 11f; idleGroupRadius = 10f;
-            attackFile = ""; attackVol = 1f;
+            attackFile = ""; attackVol = 1f; attackOffset = 0f;
+            deathFile = ""; deathVol = 1f; deathOffset = 0f;
+            battleFile = ""; battleVol = 1f; battleOffset = 0f;
         }
-        idlePath = attackPath = "";
+        idlePath = attackPath = deathPath = battlePath = "";
         startPath = loopPath = stopPath = ""; status = "";
     }
 
-    void WavVolRow(string label, string current, ref string path, ref float vol)
+    void WavVolRow(string label, string current, ref string path, ref float vol, float previewOffset = 0f)
     {
         using (new EditorGUILayout.HorizontalScope())
         {
@@ -167,8 +192,8 @@ public class SoundWindow : EditorWindow
             EditorGUILayout.SelectableLabel(shown, EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight));
             string playPath = !string.IsNullOrEmpty(path) ? path : (string.IsNullOrEmpty(current) ? "" : Path.Combine(SoundsDir, current));
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(playPath) || !File.Exists(playPath)))
-                if (GUILayout.Button(new GUIContent("▶", "Preview this clip at the configured volume"), GUILayout.Width(26)))
-                    PreviewPlay(playPath, vol);
+                if (GUILayout.Button(new GUIContent("▶", "Preview this clip at the configured volume (and start offset, if set)"), GUILayout.Width(26)))
+                    PreviewPlay(playPath, vol, previewOffset);
             if (GUILayout.Button(string.IsNullOrEmpty(current) && string.IsNullOrEmpty(path) ? "Browse…" : "Replace…", GUILayout.Width(80)))
             {
                 var p = EditorUtility.OpenFilePanel("Pick a WAV", "", "wav");
@@ -212,9 +237,14 @@ public class SoundWindow : EditorWindow
             if (!CopyWav(stopPath, def.resourceName + "_stop", ref def.soundStopFile)) return;
             if (!CopyWav(idlePath, def.resourceName + "_idle", ref def.soundIdleFile)) return;
             if (!CopyWav(attackPath, def.resourceName + "_attack", ref def.soundAttackFile)) return;
+            if (!CopyWav(deathPath, def.resourceName + "_death", ref def.soundDeathFile)) return;
+            if (!CopyWav(battlePath, def.resourceName + "_battle", ref def.soundBattleFile)) return;
             def.soundStartVolume = startVol; def.soundVolume = loopVol; def.soundStopVolume = stopVol;
             def.soundIdleVolume = idleVol; def.soundIdleInterval = idleInterval; def.soundIdleGroupRadius = idleGroupRadius;
             def.soundAttackVolume = attackVol;
+            def.soundAttackOffset = Mathf.Max(0f, attackOffset);
+            def.soundDeathVolume = deathVol; def.soundDeathOffset = Mathf.Max(0f, deathOffset);
+            def.soundBattleVolume = battleVol; def.soundBattleOffset = Mathf.Max(0f, battleOffset);
             def.engineSound = engineSound;
             def.engineStartEvent = engineSound ? (engineStart ?? "").Trim() : "";
             def.engineStopEvent = engineSound ? (engineStop ?? "").Trim() : "";
@@ -239,7 +269,7 @@ public class SoundWindow : EditorWindow
         return true;
     }
 
-    static bool HasAudio(ModelDef m) => m.engineSound || m.silenceDonorAudio || !string.IsNullOrEmpty(m.soundFile) || !string.IsNullOrEmpty(m.soundStartFile) || !string.IsNullOrEmpty(m.soundStopFile) || !string.IsNullOrEmpty(m.soundIdleFile) || !string.IsNullOrEmpty(m.soundAttackFile);
+    static bool HasAudio(ModelDef m) => m.engineSound || m.silenceDonorAudio || !string.IsNullOrEmpty(m.soundFile) || !string.IsNullOrEmpty(m.soundStartFile) || !string.IsNullOrEmpty(m.soundStopFile) || !string.IsNullOrEmpty(m.soundIdleFile) || !string.IsNullOrEmpty(m.soundAttackFile) || !string.IsNullOrEmpty(m.soundDeathFile) || !string.IsNullOrEmpty(m.soundBattleFile);
     static string DescribeAudio(ModelDef m)
     {
         var p = new List<string>();
@@ -248,6 +278,8 @@ public class SoundWindow : EditorWindow
         if (!string.IsNullOrEmpty(m.soundStopFile)) p.Add("stop");
         if (!string.IsNullOrEmpty(m.soundIdleFile)) p.Add("idle");
         if (!string.IsNullOrEmpty(m.soundAttackFile)) p.Add("attack");
+        if (!string.IsNullOrEmpty(m.soundDeathFile)) p.Add("death");
+        if (!string.IsNullOrEmpty(m.soundBattleFile)) p.Add("warcry");
         if (m.engineSound) p.Add("wwise");
         if (m.silenceDonorAudio) p.Add("silenced");
         return p.Count > 0 ? string.Join("+", p) : "none";
@@ -269,11 +301,18 @@ public class SoundWindow : EditorWindow
 
     // AudioUtil.PlayPreviewClip only plays IMPORTED AudioClips (not runtime AudioClip.Create ones), so build a temporary,
     // volume-scaled 16-bit WAV under Assets/, import it, and preview that.
-    static void PreviewPlay(string srcPath, float volume)
+    static void PreviewPlay(string srcPath, float volume, float offsetSec = 0f)
     {
         PreviewStop();
         if (string.IsNullOrEmpty(srcPath) || !File.Exists(srcPath)) return;
         if (!ParseWav(srcPath, out var f, out int ch, out int rate)) { Debug.LogWarning("[ENC Sound] preview: WAV parse failed (need PCM WAV): " + srcPath); return; }
+        if (offsetSec > 0f)
+        {
+            // drop the skipped lead-in samples so the preview starts exactly where the runtime will
+            int skip = Mathf.Min(f.Length, Mathf.RoundToInt(offsetSec * rate) * ch);
+            if (skip >= f.Length) { Debug.LogWarning("[ENC Sound] preview: start offset is past the end of the clip"); return; }
+            if (skip > 0) { var g = new float[f.Length - skip]; Array.Copy(f, skip, g, 0, g.Length); f = g; }
+        }
         for (int i = 0; i < f.Length; i++) f[i] = Mathf.Clamp(f[i] * volume, -1f, 1f);
         try { WriteWav16(PreviewAsset, f, ch, rate); } catch (Exception e) { Debug.LogWarning("[ENC Sound] preview: write failed: " + e.Message); return; }
         AssetDatabase.ImportAsset(PreviewAsset, ImportAssetOptions.ForceSynchronousImport);

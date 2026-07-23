@@ -130,8 +130,11 @@ runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — al
   voice along (the Abomination's bear donor growled and mauled through every re-skin); `silenceDonorAudio` drops it at
   runtime. In its place: an **Idle growl** WAV on a jittered interval with a **one-voice radius** (a 5-stack snarls one
   pawn at a time, not in unison), and an **Attack sound** fired at attack *commit* — camera-anchored so it stays audible
-  at battle zoom, with a **start offset** that skips a WAV's silent windup so the impact lands on the swing. All in the
-  Sound Studio window, every knob ▶ previewable (the preview honors offset and volume). Verified in-game 2026-07-23.
+  at battle zoom, with a **start offset** that skips a WAV's silent windup so the impact lands on the swing. A **Death
+  sound** (rattle/scream as a pawn falls, spaced so a wiped stack doesn't chorus) and a **Battle-start war cry** (once,
+  the moment a battle begins with the unit in it) complete the arc: alive → to arms → fighting → gone. All in the
+  Sound Studio window, every clip with volume + start offset + ▶ preview. (Growl + attack verified in-game
+  2026-07-23; death + war cry are the newest additions.)
 - **Retexture / recolour without a bake.** A separate **Unit Retexture** window reskins an existing unit at runtime —
   a hot-loaded PNG or a live Desaturate + RGB adjust on its own atlas — isolated per unit, free on the vertex budget.
   Works on **baked custom models** too (the PNG replaces the baked atlas — recolour without a re-bake), with a live

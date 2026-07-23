@@ -205,4 +205,38 @@ namespace ENCAccessProof
             try { UniversalInject.OnRotationStartDiag(__instance, __result); } catch { }
         }
     }
+
+    // ---- DEATH CUE (2026-07-23): PresentationPawn.TriggerDeath fires exactly once per dying pawn, presentation-side,
+    // as its death FSM starts — the clean seam for a death rattle/scream (per-entry min-gap in the handler keeps a
+    // wiped stack from chorusing). ----
+    [HarmonyPatch] internal static class Hk_PawnDeath
+    {
+        static MethodBase TargetMethod()
+        {
+            var t = AccessTools.TypeByName("Amplitude.Mercury.Presentation.PresentationPawn");
+            var m = t != null ? AccessTools.Method(t, "TriggerDeath") : null;
+            if (m != null) Plugin.Log.LogInfo("[Sound] hooked PresentationPawn.TriggerDeath (death cue)");
+            else Plugin.Log.LogWarning("[Sound] NOT found: PresentationPawn.TriggerDeath — death sounds won't trigger");
+            return m;
+        }
+        static void Postfix(object __instance)
+        {
+            try { UniversalInject.OnPawnDeath(__instance); }
+            catch (Exception e) { Plugin.Log.LogError("[Sound] death postfix: " + e); }
+        }
+    }
+
+    // ---- BATTLE-START WAR CRY (2026-07-23): SimulationEvent_BattleStarted.Raise(sender, battle) on the SIM thread.
+    // The handler only does managed reads (walk the battle's groups for our unit definitions) and queues; the cry
+    // plays on the main thread via UniversalInject.ProcessBattleCries. ----
+    [HarmonyPatch] internal static class Hk_BattleStarted
+    {
+        static MethodBase TargetMethod() => FireProbe.Resolve("SimulationEvent_BattleStarted", "BattleStarted (war cry)");
+        // Raise(object sender, Battle battle) — __1 is the battle
+        static void Postfix(object __1)
+        {
+            try { UniversalInject.OnBattleStarted(__1); }
+            catch (Exception e) { Plugin.Log.LogError("[Sound] battle-start postfix: " + e); }
+        }
+    }
 }
