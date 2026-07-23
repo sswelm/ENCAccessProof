@@ -546,8 +546,18 @@ played as a **one-shot occasionally while the unit stands still** (not moving). 
 **`soundIdleInterval`** seconds (default 11), **jittered 0.6–1.4×** so a pack doesn't growl in unison, and **suppressed
 while moving** (the cadence reschedules when it stops). This mirrors how the game's own idle vocalisations play — periodic,
 not a continuous wall of sound. Registry keys: `soundIdleFile` / `soundIdleVolume` / `soundIdleInterval` (`≤0` disables).
-Same WAV requirements as §14 (16-bit PCM; mono = 3-D). So the full "replace a creature's voice" recipe is:
-`silenceDonorAudio: true` + a `soundIdleFile` growl (+ optionally a Travel loop / attack one-shot later).
+Same WAV requirements as §14 (16-bit PCM; mono = 3-D).
+
+**One voice per unit (`soundIdleGroupRadius`, default 10).** A unit is *many* pawns (a 5-monster stack is 5 pawns), so
+without de-dup all five snarl at once — a chaotic overlapping wall. When a pawn growls, any packmate within
+`soundIdleGroupRadius` world-units stays quiet until the interval passes, so a clustered formation speaks with **one voice
+per interval** and the "voice" rotates among its pawns as their timers come due. Units farther apart than the radius growl
+independently; a massed horde within it shares one occasional voice (usually what you want). `≤0` = per-pawn (every pawn
+growls — the old behaviour). Verified in-game on a 5-Abomination stack (2026-07-23): the wall-of-sound collapsed to one
+periodic snarl.
+
+So the full "replace a creature's voice" recipe is: `silenceDonorAudio: true` + a `soundIdleFile` growl (interval + group
+radius to taste) (+ optionally a Travel loop / attack one-shot later).
 
 ---
 

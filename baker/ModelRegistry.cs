@@ -108,6 +108,7 @@ public class ModelDef
     public string soundIdleFile = "";    // RUNTIME (not baked): CUSTOM audio one-shot growl played OCCASIONALLY WHILE IDLE (unit not moving) — a WAV in enc_sounds/. Replaces a donor's periodic idle vocalization (pair with silenceDonorAudio). The plugin fires it on a randomized per-pawn timer (see soundIdleInterval). Managed by the Unit Sound window.
     public float soundIdleVolume = 1f;   // RUNTIME (not baked): idle-growl one-shot volume (0..2).
     public float soundIdleInterval = 11f; // RUNTIME (not baked): AVERAGE seconds between idle growls, jittered 0.6..1.4x per pawn so a pack doesn't chorus. <=0 disables.
+    public float soundIdleGroupRadius = 10f; // RUNTIME (not baked): GROUP de-dup radius. A unit is many pawns; without this every pawn of a formation growls at once (a "cut-up" wall). Growls within this radius of another recent growl are suppressed, so a clustered unit snarls with ONE voice per interval. <=0 = per-pawn (no de-dup).
 }
 
 // An explicit override of another pack's asset: "this pack intentionally replaces <modId>'s skin on <pawnDescription>."

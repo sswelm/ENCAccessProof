@@ -111,9 +111,11 @@ namespace ENCAccessProof
         public string soundIdleFile = "";      // CUSTOM one-shot growl played OCCASIONALLY WHILE IDLE (not moving): a WAV in enc_sounds/. Replaces a donor's periodic idle vocalization (pair with silenceDonorAudio). Fired on a randomized timer per pawn.
         public float soundIdleVolume = 1f;     // idle-growl one-shot volume
         public float soundIdleInterval = 11f;  // AVERAGE seconds between idle growls (jittered 0.6..1.4x per pawn so a pack doesn't chorus). <=0 disables.
+        public float soundIdleGroupRadius = 10f; // GROUP de-dup: growls suppressed within this radius of another recent growl, so a clustered unit (many pawns) snarls with ONE voice per interval instead of all at once. <=0 = per-pawn (no de-dup).
         public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip;    // loaded once from the files
         public bool customClipTried;                                                 // don't retry a failed load every poll
         public readonly Dictionary<int, float> idleNextAt = new Dictionary<int, float>();   // sub-pawn instance id -> Time.time of its next idle growl (jittered)
+        public readonly List<KeyValuePair<UnityEngine.Vector3, float>> idleRecent = new List<KeyValuePair<UnityEngine.Vector3, float>>();  // recent growls (pos, Time.time) for group de-dup — pruned each poll
         public string assetDir = "";     // owning pack's asset root (set at registry load, never parsed from JSON): WAVs/PNGs resolve from <assetDir>/sounds|skins first, then the legacy shared enc_sounds/enc_skins
         public readonly Dictionary<int, UnityEngine.AudioSource> customSources = new Dictionary<int, UnityEngine.AudioSource>();  // sub-pawn instance id -> our looping AudioSource (played while moving)
         public readonly Dictionary<int, float> loopHoldUntil = new Dictionary<int, float>();   // instance id -> Time.time to hold the travel loop off until (so the spool-up one-shot isn't masked)
@@ -452,6 +454,7 @@ namespace ENCAccessProof
                                 soundIdleFile = (string)m["soundIdleFile"] ?? "",
                                 soundIdleVolume = m["soundIdleVolume"] != null ? (float)m["soundIdleVolume"] : 1f,
                                 soundIdleInterval = m["soundIdleInterval"] != null ? (float)m["soundIdleInterval"] : 11f,
+                                soundIdleGroupRadius = m["soundIdleGroupRadius"] != null ? (float)m["soundIdleGroupRadius"] : 10f,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
                                 attackRepeats = m["attackRepeats"] != null ? (int)m["attackRepeats"] : 1,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
@@ -500,6 +503,7 @@ namespace ENCAccessProof
                 var sif = Regex.Matches(text, "\"soundIdleFile\"\\s*:\\s*\"([^\"]*)\"");      // parity: custom WAV growl played occasionally while idle
                 var siv = Regex.Matches(text, "\"soundIdleVolume\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: idle-growl one-shot volume
                 var sii = Regex.Matches(text, "\"soundIdleInterval\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: avg seconds between idle growls
+                var sig = Regex.Matches(text, "\"soundIdleGroupRadius\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: group de-dup radius for idle growls
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
                 var arp = Regex.Matches(text, "\"attackRepeats\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: STATE-DRIVEN attack clip replay count per trigger (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
@@ -555,6 +559,7 @@ namespace ENCAccessProof
                         soundIdleFile = i < sif.Count ? sif[i].Groups[1].Value : "",
                         soundIdleVolume = i < siv.Count && float.TryParse(siv[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _siv) ? _siv : 1f,
                         soundIdleInterval = i < sii.Count && float.TryParse(sii[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sii) ? _sii : 11f,
+                        soundIdleGroupRadius = i < sig.Count && float.TryParse(sig[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sig) ? _sig : 10f,
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
                         attackRepeats = i < arp.Count && int.TryParse(arp[i].Groups[1].Value, out var _arp) ? _arp : 1,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
@@ -2795,7 +2800,24 @@ namespace ENCAccessProof
                             e.idleNextAt[id] = now + e.soundIdleInterval * UnityEngine.Random.Range(0.6f, 1.4f);
                         else if (now >= idleNext)
                         {
-                            UnityEngine.AudioSource.PlayClipAtPoint(e.customIdleClip, pos, e.soundIdleVolume);
+                            // GROUP de-dup: a unit is many pawns, so without this all 5 of a formation snarl at once (a
+                            // "cut-up" wall). Suppress this growl if another for THIS entry played within groupRadius in the
+                            // last interval — a nearby packmate is already the voice; this pawn just waits its next turn. The
+                            // voice rotates naturally as timers come due. radius<=0 disables (per-pawn, the old behaviour).
+                            bool nearbyRecent = false;
+                            if (e.soundIdleGroupRadius > 0f)
+                            {
+                                float cutoff = now - e.soundIdleInterval;
+                                e.idleRecent.RemoveAll(r => r.Value < cutoff);
+                                float r2 = e.soundIdleGroupRadius * e.soundIdleGroupRadius;
+                                for (int k = 0; k < e.idleRecent.Count; k++)
+                                    if ((e.idleRecent[k].Key - pos).sqrMagnitude <= r2) { nearbyRecent = true; break; }
+                            }
+                            if (!nearbyRecent)
+                            {
+                                UnityEngine.AudioSource.PlayClipAtPoint(e.customIdleClip, pos, e.soundIdleVolume);
+                                if (e.soundIdleGroupRadius > 0f) e.idleRecent.Add(new KeyValuePair<UnityEngine.Vector3, float>(pos, now));
+                            }
                             e.idleNextAt[id] = now + e.soundIdleInterval * UnityEngine.Random.Range(0.6f, 1.4f);
                         }
                     }
