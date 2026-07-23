@@ -112,7 +112,10 @@ namespace ENCAccessProof
         public float soundIdleVolume = 1f;     // idle-growl one-shot volume
         public float soundIdleInterval = 11f;  // AVERAGE seconds between idle growls (jittered 0.6..1.4x per pawn so a pack doesn't chorus). <=0 disables.
         public float soundIdleGroupRadius = 10f; // GROUP de-dup: growls suppressed within this radius of another recent growl, so a clustered unit (many pawns) snarls with ONE voice per interval instead of all at once. <=0 = per-pawn (no de-dup).
-        public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip;    // loaded once from the files
+        public string soundAttackFile = "";    // CUSTOM one-shot played ON ATTACK (each swing/shot) — a WAV in enc_sounds/. A DISTINCT, more violent sound than the idle growl; fired from OnPawnAttack with a per-pawn min-gap so rapid multi-swing fights don't machine-gun it.
+        public float soundAttackVolume = 1f;   // attack one-shot volume
+        public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip, customAttackClip;    // loaded once from the files
+        public readonly Dictionary<long, float> attackSoundNextAt = new Dictionary<long, float>();   // attacking-pawn id -> earliest Time.time it may play the attack sound again (min-gap)
         public bool customClipTried;                                                 // don't retry a failed load every poll
         public readonly Dictionary<int, float> idleNextAt = new Dictionary<int, float>();   // sub-pawn instance id -> Time.time of its next idle growl (jittered)
         public readonly List<KeyValuePair<UnityEngine.Vector3, float>> idleRecent = new List<KeyValuePair<UnityEngine.Vector3, float>>();  // recent growls (pos, Time.time) for group de-dup — pruned each poll
@@ -455,6 +458,8 @@ namespace ENCAccessProof
                                 soundIdleVolume = m["soundIdleVolume"] != null ? (float)m["soundIdleVolume"] : 1f,
                                 soundIdleInterval = m["soundIdleInterval"] != null ? (float)m["soundIdleInterval"] : 11f,
                                 soundIdleGroupRadius = m["soundIdleGroupRadius"] != null ? (float)m["soundIdleGroupRadius"] : 10f,
+                                soundAttackFile = (string)m["soundAttackFile"] ?? "",
+                                soundAttackVolume = m["soundAttackVolume"] != null ? (float)m["soundAttackVolume"] : 1f,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
                                 attackRepeats = m["attackRepeats"] != null ? (int)m["attackRepeats"] : 1,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
@@ -504,6 +509,8 @@ namespace ENCAccessProof
                 var siv = Regex.Matches(text, "\"soundIdleVolume\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: idle-growl one-shot volume
                 var sii = Regex.Matches(text, "\"soundIdleInterval\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: avg seconds between idle growls
                 var sig = Regex.Matches(text, "\"soundIdleGroupRadius\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: group de-dup radius for idle growls
+                var saf = Regex.Matches(text, "\"soundAttackFile\"\\s*:\\s*\"([^\"]*)\"");        // parity: custom WAV one-shot on attack
+                var sav = Regex.Matches(text, "\"soundAttackVolume\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: attack one-shot volume
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
                 var arp = Regex.Matches(text, "\"attackRepeats\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: STATE-DRIVEN attack clip replay count per trigger (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
@@ -560,6 +567,8 @@ namespace ENCAccessProof
                         soundIdleVolume = i < siv.Count && float.TryParse(siv[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _siv) ? _siv : 1f,
                         soundIdleInterval = i < sii.Count && float.TryParse(sii[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sii) ? _sii : 11f,
                         soundIdleGroupRadius = i < sig.Count && float.TryParse(sig[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sig) ? _sig : 10f,
+                        soundAttackFile = i < saf.Count ? saf[i].Groups[1].Value : "",
+                        soundAttackVolume = i < sav.Count && float.TryParse(sav[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sav) ? _sav : 1f,
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
                         attackRepeats = i < arp.Count && int.TryParse(arp[i].Groups[1].Value, out var _arp) ? _arp : 1,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
@@ -2149,7 +2158,26 @@ namespace ENCAccessProof
         // Arm the state-driven ATTACK clip for a pawn that just attacked — RANGED or MELEE. Not ranged-specific: it reads
         // the attacker pawn's unit def + world position and, if it's one of our state-attack models, records a FireInstance
         // the pose hook plays the attack clip from. `how` is just for the log ("ranged shot" / "melee attack").
-        internal static void OnPawnAttack(object attacker, string how)
+        // Play a one-shot attack cue that stays AUDIBLE regardless of camera distance. AudioSource.PlayClipAtPoint uses
+        // minDistance=1 + logarithmic rolloff, so during a battle (camera pulled far back) the roar attenuated to silence —
+        // the log showed it firing, but you couldn't hear it. Here: a temp AudioSource, mostly-2D blend + a large minDistance
+        // + linear rolloff, so an attack cue reads loud and clear at any zoom (it's a dramatic focal moment, not ambience).
+        static void PlayAttackOneShot(UnityEngine.AudioClip clip, UnityEngine.Vector3 pos, float vol)
+        {
+            var go = new UnityEngine.GameObject("HAF_attackSfx");
+            go.transform.position = pos;
+            var src = go.AddComponent<UnityEngine.AudioSource>();
+            src.clip = clip; src.volume = vol; src.spatialBlend = 0.35f;   // mostly 2D → always audible, slight directional flavour
+            src.minDistance = 60f; src.maxDistance = 1200f; src.rolloffMode = UnityEngine.AudioRolloffMode.Linear;
+            src.Play();
+            UnityEngine.Object.Destroy(go, clip.length + 0.15f);
+        }
+
+        // playSound/armAnim let a hook drive ONLY one channel: the melee attack SOUND fires from the EARLY fight-start hook
+        // (StartPawnAction — the moment the attack begins), while the attack ANIMATION arms from the PER-SWING hook
+        // (StartPairMeleeAttack). Firing the sound per-swing made the roar land near the END of the anim (too late);
+        // fight-start is "the moment you attack". Ranged still does both from its one shot hook (timing is fine there).
+        internal static void OnPawnAttack(object attacker, string how, bool playSound = true, bool armAnim = true)
         {
             try
             {
@@ -2157,28 +2185,44 @@ namespace ENCAccessProof
                 var list = entries;
                 if (list == null) return;
                 bool any = false;
-                foreach (var x in list) if (x.animStateDriven && x.attackAnimId >= 0) { any = true; break; }
-                if (!any) return;   // no state-attack model registered — skip the reflection walk entirely
+                foreach (var x in list) if ((x.animStateDriven && x.attackAnimId >= 0) || !string.IsNullOrEmpty(x.soundAttackFile)) { any = true; break; }
+                if (!any) return;   // no state-attack model AND no attack-sound model registered — skip the reflection walk entirely
                 var unit = GetMember(attacker, "PresentationUnit");
                 string unitDef = GetMember(unit, "UnitDefinition")?.ToString() ?? "";
                 var e = FindEntryForUnitDefinition(unitDef);
-                if (e == null || !e.animStateDriven || e.attackAnimId < 0) return;
+                if (e == null) return;
+                bool wantAnim = armAnim && e.animStateDriven && e.attackAnimId >= 0;
+                bool wantSound = playSound && e.customAttackClip != null;
+                if (!wantAnim && !wantSound) return;
                 if (!(GetMember(attacker, "Transform") is UnityEngine.Transform tr)) return;
-                // Key the fire by the ATTACKING PAWN's identity, and if that pawn already has an active fire, RESTART it
-                // (update start time + position) instead of stacking a second. Melee swings come faster than one attack
-                // window, and the pose hook plays the FIRST/oldest matching fire for the whole window — so without this a
-                // rapid second swing was swallowed by the first's window (looked like ONE long attack, or nothing when the
-                // window was tiny). Per-pawn restart = each swing replays the bite from frame 0. Object identity is stable
-                // per pawn for the session; distinct swarm pawns keep their own fires.
                 long pid = attacker.GetHashCode();
-                var fi = new FireInstance { pos = tr.position, startTime = UnityEngine.Time.time, pawnId = pid };
-                lock (e.activeFires)
+                float now = UnityEngine.Time.time;
+
+                // ATTACK SOUND: a DISTINCT, more violent one-shot at the attacker (vs the idle growl). Per-pawn min-gap so a
+                // rapid multi-swing fight doesn't machine-gun it — each distinct swing past the gap still triggers. Plays
+                // even when the model isn't state-driven (a unit can want an attack sound without our attack animation).
+                if (wantSound && (!e.attackSoundNextAt.TryGetValue(pid, out var nextS) || now >= nextS))
                 {
-                    int at = -1;
-                    for (int i = 0; i < e.activeFires.Count; i++) if (e.activeFires[i].pawnId == pid) { at = i; break; }
-                    if (at >= 0) e.activeFires[at] = fi; else e.activeFires.Add(fi);   // restart this pawn's bite, or arm a new one
+                    PlayAttackOneShot(e.customAttackClip, tr.position, e.soundAttackVolume);
+                    e.attackSoundNextAt[pid] = now + Math.Max(0.25f, Math.Min(e.customAttackClip.length, 1.2f));
                 }
-                Plugin.Log.LogInfo($"[State] '{e.resourceName}' {how} at {tr.position.ToString("0.0")} — attack clip armed (pawn {pid})");
+
+                // ATTACK ANIMATION: key the fire by the ATTACKING PAWN's identity, and if that pawn already has an active
+                // fire, RESTART it (update start time + position) instead of stacking a second. Melee swings come faster
+                // than one attack window, and the pose hook plays the FIRST/oldest matching fire for the whole window — so
+                // without this a rapid second swing was swallowed by the first's window (looked like ONE long attack, or
+                // nothing when the window was tiny). Per-pawn restart = each swing replays the bite from frame 0.
+                if (wantAnim)
+                {
+                    var fi = new FireInstance { pos = tr.position, startTime = now, pawnId = pid };
+                    lock (e.activeFires)
+                    {
+                        int at = -1;
+                        for (int i = 0; i < e.activeFires.Count; i++) if (e.activeFires[i].pawnId == pid) { at = i; break; }
+                        if (at >= 0) e.activeFires[at] = fi; else e.activeFires.Add(fi);   // restart this pawn's bite, or arm a new one
+                    }
+                }
+                Plugin.Log.LogInfo($"[State] '{e.resourceName}' {how} at {tr.position.ToString("0.0")} — {(wantAnim ? "attack clip armed" : "")}{(wantAnim && wantSound ? " + " : "")}{(wantSound ? "attack sound" : "")} (pawn {pid})");
             }
             catch (Exception ex) { Plugin.Log.LogError("[State] OnPawnAttack: " + ex); }
         }
@@ -2201,6 +2245,26 @@ namespace ENCAccessProof
                 if (ea == null && ed == null) return;
                 string scope = GetMember(action, "actionScope")?.ToString() ?? "?";
                 Plugin.Log.LogInfo($"[Rot] {kind} scope={scope} attacker={(ea != null ? "OURS:" + ea.resourceName : Tail(au))} defender={(ed != null ? "OURS:" + ed.resourceName : Tail(du))}");
+
+                // EARLY ATTACK SOUND: FaceEnemy.Start fires the moment OUR unit commits to the strike — it turns to face the
+                // enemy BEFORE the melee choreography/swing (verified: this line precedes 'melee start' in the log). That's as
+                // close to "the moment you order the attack" as the presentation gives us, so we fire the roar HERE instead of
+                // the later fight-start hook. Gate: our unit is the ATTACKER and has an attack clip. Per-attacker min-gap
+                // (keyed by our entry + the battle-unit) stops a double if FaceEnemy re-fires. Played mostly-2D at the camera
+                // so it's audible at any zoom (PlayAttackOneShot).
+                if (ea != null && ea.customAttackClip != null && kind == "FaceEnemy.Start"
+                    && scope != null && scope.IndexOf("Attacker", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    long key = ((long)ea.resourceName.GetHashCode() << 20) ^ (GetMember(action, "AttackerBattleUnit")?.GetHashCode() ?? 0);
+                    float now = UnityEngine.Time.time;
+                    if (!ea.attackSoundNextAt.TryGetValue(key, out var next) || now >= next)
+                    {
+                        var camPos = UnityEngine.Camera.main != null ? UnityEngine.Camera.main.transform.position : UnityEngine.Vector3.zero;
+                        PlayAttackOneShot(ea.customAttackClip, camPos, ea.soundAttackVolume);
+                        ea.attackSoundNextAt[key] = now + Math.Max(0.25f, Math.Min(ea.customAttackClip.length, 1.2f));
+                        Plugin.Log.LogInfo($"[State] '{ea.resourceName}' attack sound (FaceEnemy — early)");
+                    }
+                }
             }
             catch { }
         }
@@ -2715,7 +2779,7 @@ namespace ENCAccessProof
             {
                 var built = new List<ModelEntry>();
                 foreach (var x in list)
-                    if ((x.engineSound || x.silenceDonorAudio || !string.IsNullOrEmpty(x.soundFile) || !string.IsNullOrEmpty(x.soundStartFile) || !string.IsNullOrEmpty(x.soundStopFile) || !string.IsNullOrEmpty(x.soundIdleFile)) && !string.IsNullOrEmpty(x.pawnDescription))
+                    if ((x.engineSound || x.silenceDonorAudio || !string.IsNullOrEmpty(x.soundFile) || !string.IsNullOrEmpty(x.soundStartFile) || !string.IsNullOrEmpty(x.soundStopFile) || !string.IsNullOrEmpty(x.soundIdleFile) || !string.IsNullOrEmpty(x.soundAttackFile)) && !string.IsNullOrEmpty(x.pawnDescription))
                         built.Add(x);
                 _audioOn = built; _audioOnSrc = list;
             }
@@ -2728,7 +2792,7 @@ namespace ENCAccessProof
                 bool anyCustom = false;
                 foreach (var e in on)
                 {
-                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile) && string.IsNullOrEmpty(e.soundIdleFile)) continue;
+                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile) && string.IsNullOrEmpty(e.soundIdleFile) && string.IsNullOrEmpty(e.soundAttackFile)) continue;
                     anyCustom = true;
                     if (!e.customClipTried)
                     {
@@ -2737,6 +2801,7 @@ namespace ENCAccessProof
                         e.customStartClip = LoadCustom(e.soundStartFile, e.resourceName + "_start", e.assetDir);
                         e.customStopClip = LoadCustom(e.soundStopFile, e.resourceName + "_stop", e.assetDir);
                         e.customIdleClip = LoadCustom(e.soundIdleFile, e.resourceName + "_idle", e.assetDir);
+                        e.customAttackClip = LoadCustom(e.soundAttackFile, e.resourceName + "_attack", e.assetDir);
                     }
                 }
                 if (anyCustom) EnsureAudioListener();

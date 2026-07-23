@@ -113,11 +113,14 @@ namespace ENCAccessProof
             try
             {
                 var striker = FireProbe.Member(__instance, "striker");   // the pawn actually swinging this sequence
-                if (striker != null) UniversalInject.OnPawnAttack(striker, "melee swing");
+                if (striker != null) UniversalInject.OnPawnAttack(striker, "melee swing", playSound: false, armAnim: true);   // ANIMATION only; the SOUND fires from the earlier fight-start hook
             }
             catch (Exception e) { Plugin.Log.LogError("[Fire] melee-swing postfix: " + e); }
         }
     }
+
+    // (The melee attack SOUND fires EARLIER than any pawn-fight hook — from UnitActionFaceEnemy.StartUnitAction, handled in
+    // OnUnitActionDiag: the attacker turns to face the enemy before the strike. See UniversalInject.OnUnitActionDiag.)
 
     // SILENCE DONOR AUDIO (2026-07-23): drop every Wwise post on an emitter we've marked silenced. A custom creature that
     // reuses a donor (the Abomination borrows a BEAR) inherits the donor's sounds — the idle GROWL and the combat

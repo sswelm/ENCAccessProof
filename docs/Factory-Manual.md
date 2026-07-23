@@ -556,8 +556,24 @@ independently; a massed horde within it shares one occasional voice (usually wha
 growls — the old behaviour). Verified in-game on a 5-Abomination stack (2026-07-23): the wall-of-sound collapsed to one
 periodic snarl.
 
+### 14c. Attack sound (`soundAttackFile`)
+
+A **distinct, violent** one-shot for when the unit strikes — separate from the idle growl. `soundAttackFile` /
+`soundAttackVolume` (a WAV in `enc_sounds/`). Two things make it land right:
+
+- **Timing — fired at attack *commit*, not mid-swing.** The trigger is `UnitActionFaceEnemy.StartUnitAction` — the moment
+  the attacker turns to face its target, *before* the strike choreography. (Earlier attempts fired per-swing, which landed
+  the roar near the END of the animation; and even the fight-start hook was barely earlier than the swing. FaceEnemy is the
+  earliest clean "this unit is attacking" signal the presentation exposes — as close to "the moment you order it" as we get.)
+  A per-attacker min-gap stops a re-fire from doubling.
+- **Audibility — plays mostly-2D, camera-anchored.** A normal 3-D `PlayClipAtPoint` (minDistance 1, log rolloff) attenuated
+  to silence at battle-camera distance — the log showed it firing but you couldn't hear it. The attack cue instead plays at
+  `spatialBlend 0.35` with a 60-unit minDistance, so it reads loud and clear at any zoom (it's a dramatic focal moment, not
+  ambience). Verified in-game 2026-07-23.
+
 So the full "replace a creature's voice" recipe is: `silenceDonorAudio: true` + a `soundIdleFile` growl (interval + group
-radius to taste) (+ optionally a Travel loop / attack one-shot later).
+radius to taste) + a `soundAttackFile` roar. All three are set per-unit in the Unit Sound window (§14) and persist in the
+registry. The Abomination ships all three: bear silenced, an occasional bear/croc snarl at idle, a beam-roar on the strike.
 
 ---
 
