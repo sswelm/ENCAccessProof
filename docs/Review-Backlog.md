@@ -97,6 +97,28 @@ by when they'll bite.
   loads, settings carried, units/districts/audio normal). Still open for the package release: hardcoded paths,
   package scaffolding, the `ENCAccessProof` C# namespace (invisible externally; rename at leisure).
 
+## Future feature seams (mapped, not built — the discovery is done, only the build remains)
+
+- **Aim-layer REMAP — vanilla-style turret/head target tracking (requested 2026-07-24).** Vanilla units aim by a
+  procedural bone-rotation layer: the sim streams the aim angle, the presentation writes it onto specific bones on
+  top of the playing animation. **The layer still streams for our injected units** — but addressed to the DONOR's
+  bone indices, which resolve to the invalid-index sentinel (0xFFFFFFFF) on our replaced skeleton and land on
+  nothing (proven during the Law-5 fire investigation; the throttled `[Aim]` log in `ClearAimLayer` shows the
+  stream). The feature is therefore an ADDRESS REWRITE, not an aiming system: an `aimBone` registry knob (name
+  substring on our skeleton, the `handPropBone` pattern) + a remap mode where `ClearAimLayer` currently drops the
+  entries — rewrite their bone index to ours, with an axis/offset knob (donor axis conventions won't match every
+  model; stamp explicitly, the props import-angles lesson). Open: does elevation stream separately from traverse
+  (second bone)?; does the sim only stream for donors it considers aim-capable (a donor-matching criterion)?
+- **Death clip role (`clipDeath`)** — play the model's own death animation on `PresentationPawn.TriggerDeath` (the
+  hook already fires for the death SOUND; arming a one-shot clip window from the same seam is the pattern the
+  attack clip proved). Proving model: the gray wolf's `idle injured to dead reaction lft/rgt` (private test rig).
+- **Idle perimeter patrol** — presentation-only stroll around the tile while plain-idle (`idlePatrolRadius`/
+  `idlePatrolSpeed`): offset ObjectSpace.Translation along a slow closed loop (the position-offset path already
+  writes Translation per frame), play the MOVE clip, face the path tangent (needs an ObjectSpace.Rotation write —
+  read-only today). Risks: stride matching (path speed vs walk-clip foot speed, or it ice-skates), yielding to
+  every real state, battle second-PresentationUnit interactions. Composes with idle-alt: stroll → pause →
+  howl/eat → stroll.
+
 ## Verified clean (don't re-litigate without new evidence)
 
 GUID nibble-swap encoding + keep-GUID re-bake; registry corrupt-guard/atomic-write/backup lifecycle; two-window
