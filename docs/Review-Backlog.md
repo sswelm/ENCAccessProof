@@ -109,6 +109,13 @@ by when they'll bite.
   entries — rewrite their bone index to ours, with an axis/offset knob (donor axis conventions won't match every
   model; stamp explicitly, the props import-angles lesson). Open: does elevation stream separately from traverse
   (second bone)?; does the sim only stream for donors it considers aim-capable (a donor-matching criterion)?
+  **The static-model corollary ("turretize"):** this gives STATIC models a tracking turret with zero animation
+  authoring — split turret from hull (part-name detection exists), auto-create a 2-bone rig at the turret pivot
+  and bind each part full-weight (the mech bone-parent→skin conversion's exact mechanics, just with created bones),
+  bake through the animated path with a 2-frame identity clip (the held-stance pattern), then remap the aim stream
+  onto the turret bone — the ENGINE animates the aiming, same as vanilla armor. Reactive motion (aim/facing) never
+  needed clips even in vanilla; only cyclic motion (walks, bobs) does. Open extra: pivot placement quality
+  (auto part-centroid vs a manual nudge knob).
 - **Death clip role (`clipDeath`)** — play the model's own death animation on `PresentationPawn.TriggerDeath` (the
   hook already fires for the death SOUND; arming a one-shot clip window from the same seam is the pattern the
   attack clip proved). Proving model: the gray wolf's `idle injured to dead reaction lft/rgt` (private test rig).
