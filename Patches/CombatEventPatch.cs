@@ -119,6 +119,37 @@ namespace ENCAccessProof
         }
     }
 
+    // SILENCE DONOR AUDIO (2026-07-23): drop every Wwise post on an emitter we've marked silenced. A custom creature that
+    // reuses a donor (the Abomination borrows a BEAR) inherits the donor's sounds — the idle GROWL and the combat
+    // MAUL/SCRATCH — because they ride in on the reused animator/pawn-description, not on any nullable data field. Both
+    // funnel through the SAME chokepoint: AudioEmitter.PostEvent(AudioEventHandle) — the idle loop from
+    // PresentationSubPawn.InitializeAudio (decomp 75273) and the melee SFX from MecanimEvent.SFXEntry ->
+    // audioEmitter.PostEvent (decomp 371876/371895/373278). So this one prefix silences both. Gated by emitter InstanceID
+    // in UniversalInject._silencedEmitterIds (populated per-pawn by ProcessEngineAudio for silenceDonorAudio units);
+    // returns false to skip the original post. Runs for EVERY emitter in the game, so the empty-set fast path keeps it
+    // ~free until a unit opts in. Our OWN custom WAVs use Unity AudioSource (not this emitter), so they're unaffected.
+    [HarmonyPatch] internal static class Hk_SilenceAudio
+    {
+        static MethodBase TargetMethod()
+        {
+            var t = AccessTools.TypeByName("Amplitude.Wwise.Components.AudioEmitter");
+            var m = t != null ? AccessTools.Method(t, "PostEvent") : null;   // instance PostEvent(AudioEventHandle) — the one overload
+            if (m != null) Plugin.Log.LogInfo("[Audio] hooked AudioEmitter.PostEvent (donor-audio silence)");
+            else Plugin.Log.LogWarning("[Audio] NOT found: AudioEmitter.PostEvent — silenceDonorAudio won't work");
+            return m;
+        }
+        static bool Prefix(object __instance)
+        {
+            try
+            {
+                if (UniversalInject._silencedEmitterIds.Count == 0) return true;   // fast path: nobody opted in
+                if (__instance is UnityEngine.Object o && UniversalInject._silencedEmitterIds.Contains(o.GetInstanceID())) return false;   // suppress this post
+            }
+            catch { }
+            return true;
+        }
+    }
+
     // ---- ADJACENT-ATTACK ROTATION DIAGNOSTIC (2026-07-21): which facing actions run for OUR units, and does the
     // rotation FSM ever start? A custom unit turns to a ranged target but not an adjacent one — these three postfixes
     // localize where the adjacent path drops the turn. Quiet outside fights; filtered to registry units. ----

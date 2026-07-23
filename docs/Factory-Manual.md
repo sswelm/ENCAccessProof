@@ -524,6 +524,31 @@ tune a sound without launching the game.
 cache — never a per-frame `FindObjectsOfType` (an early version did, and it visibly cut FPS). If you extend it, keep any
 full scene scan off the hot path.
 
+### 14a. Silence an inherited donor sound (`silenceDonorAudio`)
+
+A custom creature that reuses a donor inherits the donor's **sounds** as well as its animation. The Abomination borrows a
+**bear**, so it played the bear's **idle growl** and combat **maul/scratch** — and neither is a data field you can blank:
+the idle loop is `PresentationPawnDescription.IdleAudioEvent` posted at spawn, and the attack SFX is baked into the borrowed
+animator's **MecanimEventData** (resolved by animator GUID). Both, however, funnel through the **same** chokepoint —
+`AudioEmitter.PostEvent` on the pawn's Wwise emitter.
+
+Tick **"Silence the borrowed donor's Wwise sound"** in the Unit Sound window (or set `silenceDonorAudio: true` in the
+registry). At runtime the plugin registers each of the unit's pawn emitters and **drops every Wwise post on them** (a
+Harmony prefix on `AudioEmitter.PostEvent`), plus a one-time `StopAll` to cut an idle loop already running since spawn. It
+silences **only Wwise** — your own custom WAVs (below) go through Unity's `AudioSource`, so they still play. Confirm it
+engaged in `LogOutput.log`: `[Audio] '<resource>' donor audio silenced (emitter <id>)` (one line per pawn). **Reusable** on
+any unit stuck with an unwanted inherited sound (e.g. a borrowed-rotor helicopter that drones forever).
+
+### 14b. Occasional idle growl (`soundIdleFile`)
+
+Pair the silence above with your own **idle vocalisation**: the **Idle growl** row in the Unit Sound window assigns a WAV
+played as a **one-shot occasionally while the unit stands still** (not moving). The plugin fires it on a per-pawn timer at
+**`soundIdleInterval`** seconds (default 11), **jittered 0.6–1.4×** so a pack doesn't growl in unison, and **suppressed
+while moving** (the cadence reschedules when it stops). This mirrors how the game's own idle vocalisations play — periodic,
+not a continuous wall of sound. Registry keys: `soundIdleFile` / `soundIdleVolume` / `soundIdleInterval` (`≤0` disables).
+Same WAV requirements as §14 (16-bit PCM; mono = 3-D). So the full "replace a creature's voice" recipe is:
+`silenceDonorAudio: true` + a `soundIdleFile` growl (+ optionally a Travel loop / attack one-shot later).
+
 ---
 
 ## 15. The Animation Lab window — a model's animation, in one place

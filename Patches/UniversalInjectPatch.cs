@@ -99,6 +99,7 @@ namespace ENCAccessProof
         // the plugin detects each instance starting/stopping (render-position delta, like deployOnStop) and posts the
         // captured Start/Stop AudioEventHandle onto that pawn's AudioEmitter, restoring the missing engine sound.
         public bool engineSound;
+        public bool silenceDonorAudio;         // SUPPRESS all of the borrowed donor's Wwise sound on this unit's pawns (idle growl + combat maul/scratch that ride in on the reused animator/description). Reusable: any unit that inherits an unwanted donor sound can set it. Silences ONLY Wwise (AudioEmitter.PostEvent) — our own custom WAVs (Unity AudioSource) still play, so it composes with soundIdleFile/soundFile.
         public string engineStartEvent = "";  // Wwise event NAME posted on move-START (e.g. Play_UNIT_Vehicles_StealthCorvette_Start). Set => posted BY NAME (works for the FIRST unit, no live capture); empty => fall back to the auto-captured handle.
         public string engineStopEvent = "";   // ... move-STOP (..._Stop). Extract names via the F8 "Dump Sound Catalog"; assign per unit in the registry.
         public string soundFile = "";          // CUSTOM audio, LOOP while moving: a WAV filename in BepInEx/config/enc_sounds/. Unity AudioSource, 3D. For units the game has NO sound for (drones, zeppelins) or a bespoke engine.
@@ -107,8 +108,12 @@ namespace ENCAccessProof
         public float soundVolume = 1f;         // travel-loop volume
         public float soundStartVolume = 1f;    // move-start one-shot volume
         public float soundStopVolume = 1f;     // move-stop one-shot volume
-        public UnityEngine.AudioClip customClip, customStartClip, customStopClip;    // loaded once from the three files
+        public string soundIdleFile = "";      // CUSTOM one-shot growl played OCCASIONALLY WHILE IDLE (not moving): a WAV in enc_sounds/. Replaces a donor's periodic idle vocalization (pair with silenceDonorAudio). Fired on a randomized timer per pawn.
+        public float soundIdleVolume = 1f;     // idle-growl one-shot volume
+        public float soundIdleInterval = 11f;  // AVERAGE seconds between idle growls (jittered 0.6..1.4x per pawn so a pack doesn't chorus). <=0 disables.
+        public UnityEngine.AudioClip customClip, customStartClip, customStopClip, customIdleClip;    // loaded once from the files
         public bool customClipTried;                                                 // don't retry a failed load every poll
+        public readonly Dictionary<int, float> idleNextAt = new Dictionary<int, float>();   // sub-pawn instance id -> Time.time of its next idle growl (jittered)
         public string assetDir = "";     // owning pack's asset root (set at registry load, never parsed from JSON): WAVs/PNGs resolve from <assetDir>/sounds|skins first, then the legacy shared enc_sounds/enc_skins
         public readonly Dictionary<int, UnityEngine.AudioSource> customSources = new Dictionary<int, UnityEngine.AudioSource>();  // sub-pawn instance id -> our looping AudioSource (played while moving)
         public readonly Dictionary<int, float> loopHoldUntil = new Dictionary<int, float>();   // instance id -> Time.time to hold the travel loop off until (so the spool-up one-shot isn't masked)
@@ -435,6 +440,7 @@ namespace ENCAccessProof
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
                                 deployOnStop = (bool?)m["deployOnStop"] ?? false,
                                 engineSound = (bool?)m["engineSound"] ?? false,
+                                silenceDonorAudio = (bool?)m["silenceDonorAudio"] ?? false,
                                 engineStartEvent = (string)m["engineStartEvent"] ?? "",
                                 engineStopEvent = (string)m["engineStopEvent"] ?? "",
                                 soundFile = (string)m["soundFile"] ?? "",
@@ -443,6 +449,9 @@ namespace ENCAccessProof
                                 soundVolume = m["soundVolume"] != null ? (float)m["soundVolume"] : 1f,
                                 soundStartVolume = m["soundStartVolume"] != null ? (float)m["soundStartVolume"] : 1f,
                                 soundStopVolume = m["soundStopVolume"] != null ? (float)m["soundStopVolume"] : 1f,
+                                soundIdleFile = (string)m["soundIdleFile"] ?? "",
+                                soundIdleVolume = m["soundIdleVolume"] != null ? (float)m["soundIdleVolume"] : 1f,
+                                soundIdleInterval = m["soundIdleInterval"] != null ? (float)m["soundIdleInterval"] : 11f,
                                 deployPoseTime = m["deployPoseTime"] != null ? (float)m["deployPoseTime"] : 1f,
                                 attackRepeats = m["attackRepeats"] != null ? (int)m["attackRepeats"] : 1,
                                 deploySpeed = m["deploySpeed"] != null ? (float)m["deploySpeed"] : 1f,
@@ -479,6 +488,7 @@ namespace ENCAccessProof
                 var foa = Regex.Matches(text, "\"fireOnAttack\"\\s*:\\s*(true|false)");     // parity: play the clip once on attack vs loop
                 var dos = Regex.Matches(text, "\"deployOnStop\"\\s*:\\s*(true|false)");     // parity: hold deployed when idle, undeploy while moving
                 var eng = Regex.Matches(text, "\"engineSound\"\\s*:\\s*(true|false)");      // parity: fire the per-ship engine move sound on our units
+                var sda = Regex.Matches(text, "\"silenceDonorAudio\"\\s*:\\s*(true|false)"); // parity: suppress the borrowed donor's Wwise sound (idle + combat)
                 var esa = Regex.Matches(text, "\"engineStartEvent\"\\s*:\\s*\"([^\"]*)\"");  // parity: Wwise event name posted on move-start
                 var eso = Regex.Matches(text, "\"engineStopEvent\"\\s*:\\s*\"([^\"]*)\"");    // parity: Wwise event name posted on move-stop
                 var sf = Regex.Matches(text, "\"soundFile\"\\s*:\\s*\"([^\"]*)\"");           // parity: custom WAV loop in enc_sounds/
@@ -487,6 +497,9 @@ namespace ENCAccessProof
                 var svl = Regex.Matches(text, "\"soundVolume\"\\s*:\\s*(-?[\\d.eE+]+)");       // parity: travel-loop volume
                 var svs = Regex.Matches(text, "\"soundStartVolume\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: start one-shot volume
                 var svp = Regex.Matches(text, "\"soundStopVolume\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: stop one-shot volume
+                var sif = Regex.Matches(text, "\"soundIdleFile\"\\s*:\\s*\"([^\"]*)\"");      // parity: custom WAV growl played occasionally while idle
+                var siv = Regex.Matches(text, "\"soundIdleVolume\"\\s*:\\s*(-?[\\d.eE+]+)");   // parity: idle-growl one-shot volume
+                var sii = Regex.Matches(text, "\"soundIdleInterval\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: avg seconds between idle growls
                 var dpt = Regex.Matches(text, "\"deployPoseTime\"\\s*:\\s*(-?[\\d.eE+]+)"); // parity: normalized clip time of the deployed pose (default 1)
                 var arp = Regex.Matches(text, "\"attackRepeats\"\\s*:\\s*(-?[\\d.eE+]+)");  // parity: STATE-DRIVEN attack clip replay count per trigger (default 1)
                 var dsp = Regex.Matches(text, "\"deploySpeed\"\\s*:\\s*(-?[\\d.eE+]+)");    // parity: gradual-deploy ramp speed multiplier (default 1)
@@ -530,6 +543,7 @@ namespace ENCAccessProof
                         fireOnAttack = i < foa.Count && foa[i].Groups[1].Value == "true",
                         deployOnStop = i < dos.Count && dos[i].Groups[1].Value == "true",
                         engineSound = i < eng.Count && eng[i].Groups[1].Value == "true",
+                        silenceDonorAudio = i < sda.Count && sda[i].Groups[1].Value == "true",
                         engineStartEvent = i < esa.Count ? esa[i].Groups[1].Value : "",
                         engineStopEvent = i < eso.Count ? eso[i].Groups[1].Value : "",
                         soundFile = i < sf.Count ? sf[i].Groups[1].Value : "",
@@ -538,6 +552,9 @@ namespace ENCAccessProof
                         soundVolume = i < svl.Count && float.TryParse(svl[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _svl) ? _svl : 1f,
                         soundStartVolume = i < svs.Count && float.TryParse(svs[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _svs) ? _svs : 1f,
                         soundStopVolume = i < svp.Count && float.TryParse(svp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _svp) ? _svp : 1f,
+                        soundIdleFile = i < sif.Count ? sif[i].Groups[1].Value : "",
+                        soundIdleVolume = i < siv.Count && float.TryParse(siv[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _siv) ? _siv : 1f,
+                        soundIdleInterval = i < sii.Count && float.TryParse(sii[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _sii) ? _sii : 11f,
                         deployPoseTime = i < dpt.Count && float.TryParse(dpt[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dpt) ? _dpt : 1f,
                         attackRepeats = i < arp.Count && int.TryParse(arp[i].Groups[1].Value, out var _arp) ? _arp : 1,
                         deploySpeed = i < dsp.Count && float.TryParse(dsp[i].Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var _dsp) ? _dsp : 1f,
@@ -2649,6 +2666,39 @@ namespace ENCAccessProof
         static float _spCacheAt;
         static List<ModelEntry> _audioOn;      // cached audio-enabled subset — the fields it filters on are set once at registry load
         static List<ModelEntry> _audioOnSrc;   // the entries list the cache was built from (rebuilt when the registry republishes)
+
+        // ---- SILENCE DONOR AUDIO ----
+        // AudioEmitter InstanceIDs whose Wwise posts we drop. Hk_SilenceAudio (prefix on AudioEmitter.PostEvent) reads this
+        // every post and returns false — no lock: both writer (this poll) and reader (the post) run on the presentation
+        // thread. Stale ids from destroyed emitters are harmless (they just never match a live emitter again).
+        internal static readonly HashSet<int> _silencedEmitterIds = new HashSet<int>();
+        static System.Reflection.MethodInfo _akStopAll; static bool _akStopAllTried;
+        // Cut everything currently playing on ONE emitter's Wwise game-object — the idle loop that already started at spawn,
+        // before this poll first registered the emitter. Future posts are handled by the suppress-prefix, so this is a
+        // one-shot per emitter. AkSoundEngine.StopAll(ulong gameObjectId); the id is the emitter's AudioEntityGUID (implicitly
+        // a ulong — we read the struct's backing 'guid' field). Best-effort: if the type/method can't be resolved the
+        // prefix still stops all FUTURE growls, only the current loop instance would linger.
+        static void StopAllOnEmitter(object emitter)
+        {
+            try
+            {
+                if (!_akStopAllTried)
+                {
+                    _akStopAllTried = true;
+                    var ak = AccessTools.TypeByName("Amplitude.Wwise.Interop.AkSoundEngine") ?? AccessTools.TypeByName("AkSoundEngine");
+                    if (ak != null)
+                        foreach (var m in ak.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                            if (m.Name == "StopAll" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == typeof(ulong)) { _akStopAll = m; break; }
+                    if (_akStopAll == null) Plugin.Log.LogWarning("[Audio] AkSoundEngine.StopAll(ulong) not found — an already-playing donor idle loop may linger until re-init");
+                }
+                if (_akStopAll == null) return;
+                var g = GetMember(emitter, "AudioEntityGUID"); if (g == null) return;   // AudioEntityGUID struct (boxed)
+                var raw = GetMember(g, "guid"); if (raw == null) return;                 // private readonly ulong backing field
+                _akStopAll.Invoke(null, new object[] { Convert.ToUInt64(raw) });
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning("[Audio] StopAllOnEmitter: " + ex.Message); }
+        }
+
         public static void ProcessEngineAudio()
         {
             var list = entries;
@@ -2660,7 +2710,7 @@ namespace ENCAccessProof
             {
                 var built = new List<ModelEntry>();
                 foreach (var x in list)
-                    if ((x.engineSound || !string.IsNullOrEmpty(x.soundFile) || !string.IsNullOrEmpty(x.soundStartFile) || !string.IsNullOrEmpty(x.soundStopFile)) && !string.IsNullOrEmpty(x.pawnDescription))
+                    if ((x.engineSound || x.silenceDonorAudio || !string.IsNullOrEmpty(x.soundFile) || !string.IsNullOrEmpty(x.soundStartFile) || !string.IsNullOrEmpty(x.soundStopFile) || !string.IsNullOrEmpty(x.soundIdleFile)) && !string.IsNullOrEmpty(x.pawnDescription))
                         built.Add(x);
                 _audioOn = built; _audioOnSrc = list;
             }
@@ -2673,7 +2723,7 @@ namespace ENCAccessProof
                 bool anyCustom = false;
                 foreach (var e in on)
                 {
-                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile)) continue;
+                    if (string.IsNullOrEmpty(e.soundFile) && string.IsNullOrEmpty(e.soundStartFile) && string.IsNullOrEmpty(e.soundStopFile) && string.IsNullOrEmpty(e.soundIdleFile)) continue;
                     anyCustom = true;
                     if (!e.customClipTried)
                     {
@@ -2681,6 +2731,7 @@ namespace ENCAccessProof
                         e.customClip = LoadCustom(e.soundFile, e.resourceName, e.assetDir);
                         e.customStartClip = LoadCustom(e.soundStartFile, e.resourceName + "_start", e.assetDir);
                         e.customStopClip = LoadCustom(e.soundStopFile, e.resourceName + "_stop", e.assetDir);
+                        e.customIdleClip = LoadCustom(e.soundIdleFile, e.resourceName + "_idle", e.assetDir);
                     }
                 }
                 if (anyCustom) EnsureAudioListener();
@@ -2708,6 +2759,15 @@ namespace ENCAccessProof
                     if (sp == null) continue;   // destroyed since the last refresh
                     var comp = sp as UnityEngine.Component;
                     int id = sp.GetInstanceID();
+
+                    // SILENCE DONOR AUDIO: register this pawn's emitter so Hk_SilenceAudio drops its future Wwise posts
+                    // (idle growl re-posts + combat maul/scratch), and StopAll ONCE to cut the idle loop already running
+                    // since spawn. Our custom WAVs (Unity AudioSource) don't post through the emitter, so they still play.
+                    if (e.silenceDonorAudio && GetMember(sp, "AudioEmitter") is UnityEngine.Object emo && emo != null && _silencedEmitterIds.Add(emo.GetInstanceID()))
+                    {
+                        StopAllOnEmitter(emo);
+                        Plugin.Log.LogInfo($"[Audio] '{e.resourceName}' donor audio silenced (emitter {emo.GetInstanceID()})");
+                    }
                     var pos = (GetMember(sp, "Transform") as UnityEngine.Transform)?.position ?? comp.transform.position;
                     bool moving = e.engineLastPos.TryGetValue(id, out var last) && (pos - last).sqrMagnitude > 0.06f * 0.06f;
                     e.engineLastPos[id] = pos;
@@ -2721,6 +2781,22 @@ namespace ENCAccessProof
                         {
                             UnityEngine.AudioSource.PlayClipAtPoint(oneShot, pos, moving ? e.soundStartVolume : e.soundStopVolume);
                             if (moving) e.loopHoldUntil[id] = now + oneShot.length;   // hold the loop off so it doesn't mask the spool-up
+                        }
+                    }
+
+                    // (A0) idle growl: an occasional one-shot WHILE IDLE (not moving), on a per-pawn jittered timer —
+                    // replaces a silenced donor's periodic idle vocalization. Moving cancels the cadence (reschedules on
+                    // stop) so it never fires mid-walk; jitter (0.6..1.4x) keeps a pack from growling in unison. The first
+                    // growl is one interval out, so a fresh spawn/stop doesn't bark instantly.
+                    if (e.customIdleClip != null && e.soundIdleInterval > 0f)
+                    {
+                        if (moving) e.idleNextAt.Remove(id);
+                        else if (!e.idleNextAt.TryGetValue(id, out var idleNext))
+                            e.idleNextAt[id] = now + e.soundIdleInterval * UnityEngine.Random.Range(0.6f, 1.4f);
+                        else if (now >= idleNext)
+                        {
+                            UnityEngine.AudioSource.PlayClipAtPoint(e.customIdleClip, pos, e.soundIdleVolume);
+                            e.idleNextAt[id] = now + e.soundIdleInterval * UnityEngine.Random.Range(0.6f, 1.4f);
                         }
                     }
 

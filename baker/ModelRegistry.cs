@@ -95,6 +95,7 @@ public class ModelDef
     public float tintG = 0f;            // RUNTIME (not baked): universal skin colour offset, green (-255..+255).
     public float tintB = 0f;            // RUNTIME (not baked): universal skin colour offset, blue (-255..+255).
     public string textureFile = "";     // RUNTIME (not baked): TEXTURE-ONLY RETEXTURE. A PNG filename in the game's BepInEx/config/enc_skins/. When set, the plugin hot-loads that PNG onto the unit's ISOLATED output layer (vanilla mesh kept, original untouched) — no bake/rebuild. Takes precedence over desaturate. Managed by the Unit Retexture window (Tools ▸ ENC ▸ Unit Retexture): paint on a dump of the unit's own atlas, drop it in enc_skins/.
+    public bool silenceDonorAudio = false; // RUNTIME (not baked): SUPPRESS all of the borrowed donor's Wwise sound on this unit's pawns. A custom creature that reuses a donor (e.g. the Abomination borrows a BEAR) inherits the donor's IDLE growl and combat MAUL/SCRATCH — they ride in on the reused animator/pawn-description, not on any nullable data field. The plugin drops every AudioEmitter.PostEvent on our opted-in pawns (the one chokepoint both sounds use) and StopAll's the idle loop once. Only silences Wwise; our own custom WAVs (soundFile etc., Unity AudioSource) still play, so it composes with a replacement sound. Reusable on any unit with an unwanted inherited sound.
     public bool engineSound = false;    // RUNTIME (not baked): fire the per-ship engine MOVE sound (Play_UNIT_Vehicles_<Type>_Start/_Stop) on this unit's instances. Our injected/retextured units never trigger it themselves (it rides the audio-service path tied to the vanilla unit's move state), so they're silent on move. The plugin detects each instance's move-start/stop (render-position delta) and posts the engine event onto the pawn's AudioEmitter. Naval units proven; land/air TBD.
     public string engineStartEvent = ""; // RUNTIME (not baked): Wwise event NAME posted on move-START (e.g. Play_UNIT_Vehicles_StealthCorvette_Start). Set => posted BY NAME so it works for the FIRST unit at load (no live capture). Empty => the plugin falls back to a handle auto-captured from any same-family vehicle that moved this session. Extract names via the F8 "Dump Sound Catalog" (writes enc_sound_catalog.txt).
     public string engineStopEvent = "";  // RUNTIME (not baked): Wwise event name posted on move-STOP (..._Stop).
@@ -104,6 +105,9 @@ public class ModelDef
     public float soundVolume = 1f;       // RUNTIME (not baked): travel-loop volume (0..2).
     public float soundStartVolume = 1f;  // RUNTIME (not baked): move-start one-shot volume (0..2).
     public float soundStopVolume = 1f;   // RUNTIME (not baked): move-stop one-shot volume (0..2).
+    public string soundIdleFile = "";    // RUNTIME (not baked): CUSTOM audio one-shot growl played OCCASIONALLY WHILE IDLE (unit not moving) — a WAV in enc_sounds/. Replaces a donor's periodic idle vocalization (pair with silenceDonorAudio). The plugin fires it on a randomized per-pawn timer (see soundIdleInterval). Managed by the Unit Sound window.
+    public float soundIdleVolume = 1f;   // RUNTIME (not baked): idle-growl one-shot volume (0..2).
+    public float soundIdleInterval = 11f; // RUNTIME (not baked): AVERAGE seconds between idle growls, jittered 0.6..1.4x per pawn so a pack doesn't chorus. <=0 disables.
 }
 
 // An explicit override of another pack's asset: "this pack intentionally replaces <modId>'s skin on <pawnDescription>."
