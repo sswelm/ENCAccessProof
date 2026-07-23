@@ -31,6 +31,14 @@ Underneath is the **`Animation Capabilities`** grid — individual toggles: `Mov
 
 **Decompile note:** the profile ∈ {`Animal Fighter`, `Animal Fighter Mount`} sets the presentation `PresentationPawn.IsAnimal`, which swaps in the `Cavalry1Animal*` charge‑curve constants (animals charge like cavalry, with a beast‑shaped curve). It's a *curve variant*, entirely data‑selected.
 
+**The profile also governs GROUP combat coordination (tested in‑game).** It's not only which *animation* plays — it changes how the whole stack fights:
+- **`Animal Fighter`** → only the beasts *nearest* the target engage; the rest hang back. Animals were only ever given solo / loose‑pack behavior, never coordinated group melee.
+- **`Human`** → the **entire stack advances and moves in for the kill** as a disciplined group. Switching a custom monster's pawn to `Human` makes all its units close in instead of just the closest.
+
+So the profile choice is a trade‑off, not just cosmetic: `Animal Fighter` gives the beast‑charge look but weaker group engagement; `Human` gives coordinated all‑in group combat but the drilled‑soldier animation. (Related coordination knobs on the `PresentationUnitDefinition`: `Same Row Attack`, `Coordinate Attack Movement`, `Use Disciplined Variation` — these tune staggering/formation once a profile is chosen.)
+
+*Open thread:* `Human` unlocks pairing with the `Melee` descriptor, but the descriptor alone was **not sufficient** to get full group engagement — the profile is doing the heavy lifting.
+
 ---
 
 ## 2. Combat *choreography* — advance vs fire‑in‑place (unit/pawn data)
