@@ -116,6 +116,13 @@ by when they'll bite.
   onto the turret bone — the ENGINE animates the aiming, same as vanilla armor. Reactive motion (aim/facing) never
   needed clips even in vanilla; only cyclic motion (walks, bobs) does. Open extra: pivot placement quality
   (auto part-centroid vs a manual nudge knob).
+- **Donor ground-FX suppression (`silenceDonorGroundFx`, spotted 2026-07-24).** Ground effects ride the DONOR like
+  audio does: the Light Assault Mech (legged) stamps WHEELED TRACK decals from its APC donor. Fix = the donor-audio
+  pattern, not a re-donor (animal donors are melee-presentation pawns — swapping would break the mech's ranged fight
+  infrastructure): find the track/decal emitter chokepoint (likely MecanimEvent- or movement-state-driven FX on the
+  sub-pawn — the same neighborhood the audio investigation mapped) and gate it per opted-in unit. Later composable
+  with a "replace with footprints" mode. Adds GROUND FX to the donor-matching criteria list (rotor/wheels, audio,
+  ranged capability, aim streaming, now decals).
 - **Death clip role (`clipDeath`)** — play the model's own death animation on `PresentationPawn.TriggerDeath` (the
   hook already fires for the death SOUND; arming a one-shot clip window from the same seam is the pattern the
   attack clip proved). Proving model: the gray wolf's `idle injured to dead reaction lft/rgt` (private test rig).
