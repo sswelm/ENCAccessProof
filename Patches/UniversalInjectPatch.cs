@@ -71,6 +71,8 @@ namespace ENCAccessProof
         public string turretBone = "";    // TURRETIZE (2026-07-24): bone-name SUBSTRING (renamed b###_<orig>) of a turret to aim at the target. The game already streams its aim/heading angle into a BoneRotation slot on an INVALID bone index — we retarget that slot's SkeletonBoneIndex to THIS bone so the engine's own aim yaws our turret. "" = no turret aim. Runtime-only (no re-bake).
         public int turretBoneIdx = -2;    // cached bone index for turretBone (-2 = not resolved yet, -1 = not found). Resolved once from e.skeleton.BoneInfos.
         public int turretAxis = -1;       // aim-axis override for the turret bone: -1 = keep the game's streamed axis (1 = "up" in ITS frame, which on a bone pointing along its own length reads as PITCH); 0/1/2 = force the bone's local X/Y/Z. A vehicle TURRET needs its YAW axis; a mechanized HOWITZER/ARTILLERY barrel needs its PITCH axis — hence per-model.
+        public string muzzleBone = "";    // MUZZLE-RELOCATE (2026-07-24): bone-name SUBSTRING (renamed b###_<orig>) that the weapon muzzle-flash should fire FROM. The donor's fire clip names ITS weapon socket (e.g. an AA gun's "Canon") in the FireProjectile mecanim event; that name is absent on our renamed rig, so AlterationFireProjectile falls back to the pawn's ROOT + the donor's socket-local offset -> the flash lands off-side. We hook PresentationSubPawn.GetBoneTRS and, when the requested bone isn't on our skeleton, redirect the lookup to THIS bone (e.g. the turret/gun) so the flash anchors on our unit. "" = leave the vanilla behavior. Runtime-only (no re-bake).
+        public string muzzleBoneName;     // cached FULL bone name resolved from muzzleBone (null = not resolved yet, "" = not found on our skeleton).
         public object handPropLayer;      // session-scoped: our PRIVATE clone of the borrowed weapon output layer, painted with the prop's own atlas (<prop>_Atlas)
         public UnityEngine.Texture2D propAtlasTex;   // session-scoped: the prop atlas — repainted EVERY TICK like the unit retexture (the game resets the material; a one-shot paint flip-flopped between sessions)
         public readonly Dictionary<long, UnityEngine.Vector3> stateLastPos = new Dictionary<long, UnityEngine.Vector3>();  // MAIN thread poll: unit GUID -> last render pos
@@ -467,6 +469,7 @@ namespace ENCAccessProof
                                 clearAimLayer = (bool?)m["clearAimLayer"] ?? false,
                                 turretBone = (string)m["turretBone"] ?? "",
                                 turretAxis = (int?)m["turretAxis"] ?? -1,
+                                muzzleBone = (string)m["muzzleBone"] ?? "",
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
                                 deployOnStop = (bool?)m["deployOnStop"] ?? false,
                                 engineSound = (bool?)m["engineSound"] ?? false,
@@ -571,6 +574,7 @@ namespace ENCAccessProof
                 var hpb = Regex.Matches(text, "\"handPropBone\"\\s*:\\s*\"([^\"]*)\"");     // parity: hand-prop bone-name substring
                 var tbn = Regex.Matches(text, "\"turretBone\"\\s*:\\s*\"([^\"]*)\"");       // parity: turret aim bone-name substring
                 var tax = Regex.Matches(text, "\"turretAxis\"\\s*:\\s*(-?\\d+)");           // parity: turret aim-axis override
+                var mzb = Regex.Matches(text, "\"muzzleBone\"\\s*:\\s*\"([^\"]*)\"");       // parity: muzzle-flash bone-name substring
                 var hpa = Regex.Matches(text, "\"handPropAngles\"\\s*:\\s*\"([^\"]*)\"");   // parity: hand-prop draw-time import angles csv
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
@@ -642,6 +646,7 @@ namespace ENCAccessProof
                         handPropBone = i < hpb.Count ? hpb[i].Groups[1].Value : "",
                         turretBone = i < tbn.Count ? tbn[i].Groups[1].Value : "",
                         turretAxis = i < tax.Count && int.TryParse(tax[i].Groups[1].Value, out var _tax) ? _tax : -1,
+                        muzzleBone = i < mzb.Count ? mzb[i].Groups[1].Value : "",
                         handPropAngles = i < hpa.Count ? hpa[i].Groups[1].Value : "",
                     });
                 }
@@ -2039,6 +2044,87 @@ namespace ENCAccessProof
                     if (a != 0f) { SetMember(br, "Angle", 0f); SetMember(entry, BoneRotationNames[i], br); }
                 }
             }
+        }
+
+        // ---- MUZZLE-RELOCATE (2026-07-24) — anchor the weapon muzzle-flash on OUR unit ----
+        // The donor's fire clip fires the muzzle via a FireProjectile mecanim event; AlterationFireProjectile.StartEvent does
+        //   startPosition = SubPawn.GetBoneTRS(mecanimEvent.ParentNameToLaunchVFXPosition).Transform(PositionToLaunchVFX)
+        // where that bone name is the DONOR's weapon socket (an AA gun's "Canon"). RepointMatch put OUR skeleton on the addon,
+        // so that donor name isn't found -> GetBoneTRS falls back to the pawn ROOT (+ the donor's socket-local offset) and the
+        // flash lands off-side. We redirect the lookup: when a SubPawn of ours asks GetBoneTRS for a bone absent from our rig
+        // and the entry carries a muzzleBone, hand back OUR muzzle bone's TRS instead (found -> the real path, no re-redirect).
+        static MethodBase gocaMethod;   // PresentationPawnDefinitionAddOn.GetOrCreateAddOn(PresentationPawnDefinition)
+        static bool gocaResolved, muzzleErrLogged;
+        static readonly Dictionary<Type, MethodBase> boneIdxMethods = new Dictionary<Type, MethodBase>();
+
+        // Full bone name for e.muzzleBone (substring) against OUR skeleton, cached in e.muzzleBoneName. null = unset / not found.
+        static string ResolveMuzzleBoneName(ModelEntry e)
+        {
+            if (e.muzzleBoneName != null) return e.muzzleBoneName.Length == 0 ? null : e.muzzleBoneName;
+            e.muzzleBoneName = "";
+            if (e.skeleton != null && !string.IsNullOrEmpty(e.muzzleBone) && GetMember(e.skeleton, "BoneInfos") is Array bones)
+                for (int i = 0; i < bones.Length; i++)
+                {
+                    var n = GetMember(bones.GetValue(i), "Name")?.ToString() ?? "";
+                    if (n.IndexOf(e.muzzleBone, StringComparison.OrdinalIgnoreCase) >= 0) { e.muzzleBoneName = n; break; }
+                }
+            Plugin.Log.LogInfo($"[Muzzle] '{e.resourceName}' muzzle bone '{e.muzzleBone}' -> '{(e.muzzleBoneName.Length == 0 ? "(not found)" : e.muzzleBoneName)}'");
+            return e.muzzleBoneName.Length == 0 ? null : e.muzzleBoneName;
+        }
+
+        // True if boneName resolves on this Amplitude skeleton (GetBoneIndex >= 0).
+        static bool SkelHasBone(object skel, string boneName)
+        {
+            if (skel == null || string.IsNullOrEmpty(boneName)) return false;
+            var t = skel.GetType();
+            if (!boneIdxMethods.TryGetValue(t, out var m)) { m = AccessTools.Method(t, "GetBoneIndex", new[] { typeof(string) }); boneIdxMethods[t] = m; }
+            if (m == null) return false;
+            try { return Convert.ToInt32(m.Invoke(skel, new object[] { boneName })) >= 0; } catch { return false; }
+        }
+
+        // The entry (with a muzzleBone) whose skeleton this SubPawn renders on. RepointMatch set addon.Skeleton = e.skeleton,
+        // so a reference match is exact and only our repointed pawns qualify.
+        static ModelEntry MuzzleEntryForSubPawn(object subPawn)
+        {
+            var pawnDef = GetMember(subPawn, "PresentationPawnDefinition");
+            if (pawnDef == null) return null;
+            if (!gocaResolved)
+            {
+                gocaResolved = true;
+                var addOnT = AccessTools.TypeByName("Amplitude.Mercury.Animation.PresentationPawnDefinitionAddOn");
+                gocaMethod = addOnT != null ? AccessTools.Method(addOnT, "GetOrCreateAddOn") : null;
+            }
+            if (gocaMethod == null) return null;
+            object addOn; try { addOn = gocaMethod.Invoke(null, new[] { pawnDef }); } catch { return null; }
+            var skel = GetMember(addOn, "Skeleton");
+            if (skel == null) return null;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                if (!string.IsNullOrEmpty(e.muzzleBone) && ReferenceEquals(e.skeleton, skel)) return e;
+            }
+            return null;
+        }
+
+        // Hook body: if this GetBoneTRS(boneName) is a donor socket missing on our rig, answer with OUR muzzle bone's TRS.
+        // Returns true if handled (result set, caller skips the original); false to run the original untouched.
+        internal static bool MuzzleRedirect(object subPawn, string boneName, MethodBase getBoneTRS, ref object result)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(boneName) || entries == null || entries.Count == 0) return false;
+                bool anyMuzzle = false;                                   // cheap early-out for the hot path (most units have no muzzleBone)
+                for (int i = 0; i < entries.Count; i++) if (!string.IsNullOrEmpty(entries[i].muzzleBone)) { anyMuzzle = true; break; }
+                if (!anyMuzzle) return false;
+                var e = MuzzleEntryForSubPawn(subPawn);
+                if (e == null) return false;
+                if (SkelHasBone(e.skeleton, boneName)) return false;      // the bone IS on our rig — a genuine lookup, leave it
+                var mn = ResolveMuzzleBoneName(e);
+                if (mn == null) return false;
+                result = getBoneTRS.Invoke(subPawn, new object[] { mn }); // reentrant, but mn is found -> the real TRS, no re-redirect
+                return true;
+            }
+            catch (Exception ex) { if (!muzzleErrLogged) { muzzleErrLogged = true; Plugin.Log.LogError("[Muzzle] redirect failed (disabled): " + ex); } return false; }
         }
 
         // Clear the procedural AIM layer (PawnEntry.BoneRotation0-3 = SkeletonBoneIndex/AxisIndex/Angle): the game aims an
@@ -4138,6 +4224,25 @@ namespace ENCAccessProof
             return (addon != null && animMgr != null) ? AccessTools.Method(addon, "Load", new[] { animMgr }) : null;
         }
         static void Postfix(object __instance, object __0) { UniversalInject.RepointMatch(__instance, __0); }
+    }
+
+    // muzzleBone: the donor's fire clip fires the muzzle flash from ITS weapon socket (e.g. an AA gun's "Canon"); that bone
+    // name is absent on our renamed rig, so AlterationFireProjectile falls back to the pawn root + the donor's offset and the
+    // flash lands off-side. Redirect the bone lookup to OUR muzzle bone. A PREFIX so we skip the original ONLY on the
+    // donor-name miss (no "Unable to find bone …" log spam); every real lookup and every non-muzzle unit runs untouched.
+    // Returns a TRS (value type) — read/written as boxed object (the plugin's established boxed-TRS pattern, see ObjectSpace).
+    [HarmonyPatch]
+    internal static class Hk_MuzzleRelocate
+    {
+        static MethodBase _getBoneTRS;
+        static MethodBase TargetMethod()
+        {
+            var t = AccessTools.TypeByName("Amplitude.Mercury.Presentation.PresentationSubPawn");
+            _getBoneTRS = t != null ? AccessTools.Method(t, "GetBoneTRS", new[] { typeof(string) }) : null;
+            return _getBoneTRS;
+        }
+        static bool Prefix(object __instance, string boneName, ref object __result)
+            => !UniversalInject.MuzzleRedirect(__instance, boneName, _getBoneTRS, ref __result);
     }
 
     // Per-pawn-per-frame: after the game writes a PawnEntry, let us override its pose for our animated models.

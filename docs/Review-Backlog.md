@@ -144,7 +144,10 @@ by when they'll bite.
   sub-pawn — the same neighborhood the audio investigation mapped) and gate it per opted-in unit. Later composable
   with a "replace with footprints" mode. Adds GROUND FX to the donor-matching criteria list (rotor/wheels, audio,
   ranged capability, aim streaming, now decals).
-- **Muzzle-flash relocate — `Muzzle` FX fires from the donor's weapon socket, not our gun (its own session, scoped 2026-07-24).**
+- **Muzzle-flash relocate — 🔧 BUILT & DEPLOYED 2026-07-24, in-game fire test PENDING** (was: its own scoped session).
+  Implemented as the `muzzleBone` field + `Hk_MuzzleRelocate` prefix on `PresentationSubPawn.GetBoneTRS(string)` — see the
+  cracked mechanism + fix below; ArmouredCar set to `muzzleBone: "Turret"`. Remaining: confirm in-game that the flash now
+  anchors on the turret/gun (relaunch + attack). If the turret pivot reads too low/centre, pick a barrel-tip bone instead.
   On the Ehrhardt armored car the MG muzzle flash fires off-side ("mirrored"). ROOT CAUSE (verified): the donor is
   `Unit_Era6_Common_AntiAirGuns_01` (an anti-air gun — bones `Azimuth`, `bras-*`, `Canon_down_*`), and the flash is
   the projectile's **`Muzzle` FxEvolverMaterial** ("launch flash", `ProjectileAsset.muzzle`) — a TRANSIENT VFX (NOT a
@@ -162,10 +165,18 @@ by when they'll bite.
   FireProjectile handling (NESTED-type friction with ilspycmd 8.2 -> use dnSpy or a newer ilspycmd) to pin the
   socket-NAME source + the muzzle-FX spawn call. QUICK-ALT CAVEAT: the `ProjectileAsset` is SHARED across all AA guns,
   so nulling its `Muzzle` in place breaks the real anti-air units -> needs a per-unit projectile OVERRIDE.
-  WHAT'S NEEDED for the session: (1) decompile the HgFx projectile spawn to find where it reads the muzzle
-  socket + how it resolves the fire-point transform (name vs index, against which skeleton); (2) Harmony-hook that
-  spawn and re-anchor the position to a central/turret bone of OUR skeleton (`muzzleBone` knob, the `handPropBone`
-  pattern) — or, if it's a data socket, add/rename a matching bone at bake. QUICK ALT (no relocate): null the
+  ✅ **MECHANISM FULLY CRACKED (2026-07-24, decompiled Assembly-CSharp whole).** `AlterationFireProjectile.StartEvent`
+  (the FireProjectile alteration handler): `TRS boneTRS = controller.SubPawn.GetBoneTRS(mecanimEvent.ParentNameToLaunchVFXPosition);
+  Vector3 startPosition = boneTRS.Transform(mecanimEvent.PositionToLaunchVFX);` then
+  `PresentationProjectileManager.Instance.LaunchMuzzle(projectileAsset, startPosition, startDirection, up)` (or
+  `LaunchProjectile` for the flying shot). So the muzzle position = **`SubPawn.GetBoneTRS(<donor socket name>).Transform(offset)`**
+  — and `ParentNameToLaunchVFXPosition` is the DONOR clip's socket name (the AA gun's Canon socket), absent on our
+  renamed rig. **THE FIX (low risk):** Harmony **postfix on `PresentationSubPawn.GetBoneTRS(string boneName)`** — for
+  our unit (match SubPawn→entry by SkeletonId, `GetEntryBySkeletonId` exists) with a `muzzleBone` set, when
+  `Skeleton.GetBoneIndex(boneName) < 0` (donor socket not on our rig), replace `__result` with `GetBoneTRS(ourMuzzleBone)`
+  (our bone IS found → no re-redirect → recursion terminates). Config = `muzzleBone` (substring, e.g. `Turret` or a
+  central bone), runtime-only. Broadness note: this redirects ALL unfound-socket VFX on our unit to `muzzleBone`,
+  which for a donor-mismatched rig is the DESIRED behavior (all its VFX land on our gun instead of off-side). QUICK ALT (no relocate): null the
   projectile's `Muzzle` → no launch flash (Projectiles.md already documents clearing it). Note: this donor is one of
   the few that fire MULTIPLE times (AA burst) so the flash repeats. General lesson recorded: **a donor's effect = its
   skeleton + weapon sockets** (already half-logged: `donor.Skeleton` / `BoneInfos` / `donor fragment[N]`). The new
