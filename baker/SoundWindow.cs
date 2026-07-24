@@ -186,11 +186,15 @@ public class SoundWindow : EditorWindow
         using (new EditorGUILayout.HorizontalScope())
         {
             EditorGUILayout.LabelField(label, GUILayout.Width(130));
-            // Show the file this clip is actually using: the just-browsed file if any, else the current registry filename.
-            string shown = !string.IsNullOrEmpty(path) ? "→ " + Path.GetFileName(path)
-                         : (string.IsNullOrEmpty(current) ? "(none)" : current);
-            EditorGUILayout.SelectableLabel(shown, EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+            // The stored value is a bare filename resolved against enc_sounds/ (all sound WAVs live there). Show the FOLDER +
+            // name inline, and the ABSOLUTE path as a hover tooltip — so the location is visible (parity with the model file),
+            // without a long common prefix crowding out the filename in this narrow field. A browsed (not-yet-imported) file
+            // shows "→ name" with its source path on hover.
             string playPath = !string.IsNullOrEmpty(path) ? path : (string.IsNullOrEmpty(current) ? "" : Path.Combine(SoundsDir, current));
+            string shown = !string.IsNullOrEmpty(path) ? "→ " + Path.GetFileName(path)
+                         : (string.IsNullOrEmpty(current) ? "(none)" : "enc_sounds/" + current);
+            string tip = string.IsNullOrEmpty(playPath) ? "" : Path.GetFullPath(playPath);
+            EditorGUILayout.LabelField(new GUIContent(shown, tip), EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight), GUILayout.MinWidth(0), GUILayout.ExpandWidth(true));
             using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(playPath) || !File.Exists(playPath)))
                 if (GUILayout.Button(new GUIContent("▶", "Preview this clip at the configured volume (and start offset, if set)"), GUILayout.Width(26)))
                     PreviewPlay(playPath, vol, previewOffset);
