@@ -209,6 +209,11 @@ public class ModelFactoryWindow : EditorWindow
                 }
             }
         }
+        // BROKEN-LINK REPORT: a referenced model file that isn't on disk (source moved/renamed) — warn as soon as the
+        // entry is shown, not only when Bake fails.
+        if (!string.IsNullOrWhiteSpace(cur.modelFile) && !System.IO.File.Exists(cur.modelFile))
+            EditorGUILayout.HelpBox("Model file not found on disk:\n" + cur.modelFile +
+                "\nThe source was moved or renamed — fix it with Browse (or reload the entry if the registry was already corrected).", MessageType.Warning);
         if ((cur.modelFile ?? "").ToLowerInvariant().EndsWith(".blend") && !UniversalBaker.BlenderAvailable())
             EditorGUILayout.HelpBox(".blend import needs Blender installed (auto-detected). Install it, or set EditorPrefs 'ENC.blenderPath' to blender.exe.", MessageType.Warning);
 

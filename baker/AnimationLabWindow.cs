@@ -454,6 +454,11 @@ public class AnimationLabWindow : EditorWindow
                     if (!string.IsNullOrEmpty(picked)) cur.modelFile = picked.Replace('\\', '/');
                 }
             }
+            // BROKEN-LINK REPORT: if a model file IS referenced but isn't on disk (source moved/renamed), warn right here
+            // so it's obvious the moment the entry is open — instead of only failing when you press ▶ Play clip or Bake.
+            if (!string.IsNullOrWhiteSpace(cur.modelFile) && !System.IO.File.Exists(cur.modelFile))
+                EditorGUILayout.HelpBox("Model file not found on disk:\n" + cur.modelFile +
+                    "\nThe source was moved or renamed. Fix it with Browse… (or press ⟳ Reload if the registry was already corrected outside this window).", MessageType.Warning);
         }
         // --- Deploy conversion (raw rigid-parts source → bone-per-part rig, part of the recipe) ---
         EditorGUILayout.Space();
