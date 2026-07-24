@@ -112,6 +112,10 @@ by when they'll bite.
   pipeline feature would be UDIM assembly at bake time. NOTE: a mesh authored with single-tile UVs (the armored car's
   *game* mesh) needs none of this — it bakes fine on the current flat-albedo path.
 
+- **✅ Aim-layer REMAP — SHIPPED as "turretize" (2026-07-24), verified in-game on the Ehrhardt armored car.** Built as
+  the `TurretizeAimLayer` runtime handler: `turretBone` (substring) + `turretAxis` (Lab dropdown) retarget the
+  streamed heading slot onto our turret bone. Axis is per-model (Ehrhardt: 2 = yaw; 1/0 = pitch — the pitch axis is
+  the future artillery-barrel elevation knob). Original design notes retained below for the static-model corollary.
 - **Aim-layer REMAP — vanilla-style turret/head target tracking (requested 2026-07-24).** Vanilla units aim by a
   procedural bone-rotation layer: the sim streams the aim angle, the presentation writes it onto specific bones on
   top of the playing animation. **The layer still streams for our injected units** — but addressed to the DONOR's
@@ -140,6 +144,21 @@ by when they'll bite.
   sub-pawn — the same neighborhood the audio investigation mapped) and gate it per opted-in unit. Later composable
   with a "replace with footprints" mode. Adds GROUND FX to the donor-matching criteria list (rotor/wheels, audio,
   ranged capability, aim streaming, now decals).
+- **Muzzle-flash relocate — `Muzzle` FX fires from the donor's weapon socket, not our gun (its own session, scoped 2026-07-24).**
+  On the Ehrhardt armored car the MG muzzle flash fires off-side ("mirrored"). ROOT CAUSE (verified): the donor is
+  `Unit_Era6_Common_AntiAirGuns_01` (an anti-air gun — bones `Azimuth`, `bras-*`, `Canon_down_*`), and the flash is
+  the projectile's **`Muzzle` FxEvolverMaterial** ("launch flash", `ProjectileAsset.muzzle`) — a TRANSIENT VFX (NOT a
+  fragment; every donor lists only its body mesh) spawned at the AA gun's `Canon` weapon socket, which doesn't exist
+  on our renamed `b###_` rig → it lands off-side. The spawn is NOT in `PawnRangedFightSequence` (stores the shooter
+  only) nor `PresentationPawn` (3525 lines, no muzzle/socket) — it's buried in the **HgFx projectile/particle
+  system**. WHAT'S NEEDED for the session: (1) decompile the HgFx projectile spawn to find where it reads the muzzle
+  socket + how it resolves the fire-point transform (name vs index, against which skeleton); (2) Harmony-hook that
+  spawn and re-anchor the position to a central/turret bone of OUR skeleton (`muzzleBone` knob, the `handPropBone`
+  pattern) — or, if it's a data socket, add/rename a matching bone at bake. QUICK ALT (no relocate): null the
+  projectile's `Muzzle` → no launch flash (Projectiles.md already documents clearing it). Note: this donor is one of
+  the few that fire MULTIPLE times (AA burst) so the flash repeats. General lesson recorded: **a donor's effect = its
+  skeleton + weapon sockets** (already half-logged: `donor.Skeleton` / `BoneInfos` / `donor fragment[N]`). The new
+  **Disable override** flag (`ModelDef.disabled`, runtime) A/B's our model vs the raw donor for exactly this kind of probe.
 - **Death clip role (`clipDeath`)** — play the model's own death animation on `PresentationPawn.TriggerDeath` (the
   hook already fires for the death SOUND; arming a one-shot clip window from the same seam is the pattern the
   attack clip proved). Proving model: the gray wolf's `idle injured to dead reaction lft/rgt` (private test rig).
