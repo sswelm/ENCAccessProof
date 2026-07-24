@@ -58,9 +58,9 @@ public class SoundWindow : EditorWindow
         // ── Silence inherited donor sound ──
         if (Section(ref foldSilence, "Silence inherited donor sound"))
         {
-            silenceDonor = EditorGUILayout.ToggleLeft(new GUIContent("Silence the borrowed donor's Wwise sound (idle growl + combat maul)",
-                "For a custom creature that reuses a donor (e.g. the Abomination borrows a BEAR): the donor's idle growl and " +
-                "attack maul/scratch ride in on the reused animator and can't be nulled in data. This drops them at runtime. " +
+            silenceDonor = EditorGUILayout.ToggleLeft(new GUIContent("Silence the borrowed donor's inherited sounds",
+                "For a custom unit that reuses a donor: the donor's own sounds (idle vocalisations, combat SFX, engine loops, etc.) " +
+                "ride in on the reused animator/description and can't be nulled in data. This drops them at runtime. " +
                 "Only silences the game's (Wwise) sound — your custom WAVs below still play, so use both to REPLACE the sound."), silenceDonor);        }
 
         // ── Idle growl ──

@@ -538,7 +538,7 @@ the idle loop is `PresentationPawnDescription.IdleAudioEvent` posted at spawn, a
 animator's **MecanimEventData** (resolved by animator GUID). Both, however, funnel through the **same** chokepoint —
 `AudioEmitter.PostEvent` on the pawn's Wwise emitter.
 
-Tick **"Silence the borrowed donor's Wwise sound"** in the Sound Studio window (or set `silenceDonorAudio: true` in the
+Tick **"Silence the borrowed donor's inherited sounds"** in the Sound Studio window (or set `silenceDonorAudio: true` in the
 registry). At runtime the plugin registers each of the unit's pawn emitters and **drops every Wwise post on them** (a
 Harmony prefix on `AudioEmitter.PostEvent`), plus a one-time `StopAll` to cut an idle loop already running since spawn. It
 silences **only Wwise** — your own custom WAVs (below) go through Unity's `AudioSource`, so they still play. Confirm it
