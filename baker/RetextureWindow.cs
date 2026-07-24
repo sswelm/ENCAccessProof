@@ -94,6 +94,15 @@ public class RetextureWindow : EditorWindow
                 if (!string.IsNullOrEmpty(p)) pngPath = p;
             }
         }
+        // BROKEN-LINK REPORT: the loaded entry references a skin PNG that isn't in enc_skins/ (deleted/renamed) and no new
+        // PNG is queued — warn so it's obvious the skin won't load (the unit would fall back to its own atlas).
+        if (string.IsNullOrEmpty(pngPath))
+        {
+            var curEntry = existing.FirstOrDefault(m => m.pawnDescription == pawn && !string.IsNullOrEmpty(m.textureFile));
+            if (curEntry != null && !File.Exists(Path.Combine(SkinsDir, curEntry.textureFile)))
+                EditorGUILayout.HelpBox("Skin PNG missing from enc_skins/: " + curEntry.textureFile +
+                    "\nBrowse a replacement, or the unit falls back to its own atlas.", MessageType.Warning);
+        }
         EditorGUILayout.LabelField("Adjustments — applied on top of the skin above (or the own atlas):", EditorStyles.miniLabel);
         brightness = EditorGUILayout.Slider(new GUIContent("Brightness (gamma)",
             "Gamma lift, applied FIRST: 1 = unchanged, >1 lighter, <1 darker. Multiplies along a curve that lifts dark/mid tones most " +

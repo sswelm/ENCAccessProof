@@ -210,6 +210,9 @@ public class SoundWindow : EditorWindow
             EditorGUILayout.LabelField($"×{perc * perc:0.00}", GUILayout.Width(48));
         }
         vol = perc * perc;
+        // BROKEN-LINK REPORT: a filename is saved in the registry but the WAV isn't in enc_sounds/ (deleted/renamed).
+        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(current) && !File.Exists(Path.Combine(SoundsDir, current)))
+            EditorGUILayout.HelpBox("Missing WAV in enc_sounds/: " + current + " — Browse… to re-point it.", MessageType.Warning);
     }
 
     void Apply(List<ModelDef> all)
