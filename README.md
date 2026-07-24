@@ -84,8 +84,10 @@ runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — al
   trap: on the legacy path a **rotating** bone flings off in-game (idle fine, movement flings) because the
   metre→centimetre FBX export leaves a **×100 sandwich** Amplitude's TRS composition mangles — the same mechanism
   as the soldier's head. The fix is **Convert raw rig ON + Fix 100× OFF** (cancels the ×100 at export), which
-  overturns the old "clean rigs skip convertRig" rule for any rig with a spinning part. Grounding is the runtime
-  **Position offset Z**, same knob as drone height — no re-bake. Extracted from an Unreal "Game Template" (Fab).
+  overturns the old "clean rigs skip convertRig" rule for any rig with a spinning part. It also grew a hands-free
+  **Auto-ground (sit on terrain)** bake toggle — drops the tyres to the skeleton origin, self-correcting and
+  **size-proof** (no manual height dial, stays grounded across Size changes). Extracted from an Unreal "Game
+  Template" (Fab).
 - **The Animation Lab — animation authoring in its own dialog (2026-07-18).** `Tools ▸ HAF ▸ Animation Lab` docks as
   a tab beside the Factory: the Factory owns the *model* (file, transform, size, shading), the Lab owns the
   *animation* (clip + bone-filter pickers, fire-on-attack, deploy-on-stop + recoil, and **Save (no bake)** for

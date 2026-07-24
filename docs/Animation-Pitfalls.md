@@ -130,10 +130,19 @@ bones (wheels, turret, propeller-on-bone) still needs convertRig ON, *unless* it
 0.01 object scale that already cancels the ×100 (the ReconDrone's luck — which is why the drone bakes fine OFF).
 When in doubt for a rig with any spinning part: **convertRig ON**.
 
-**Grounding is separate and is NOT a bake.** The animated path has no keel→z=0. Height is the **Position offset Z
-(waterline)** field, applied at **spawn by the plugin** (`ApplyPositionOffset`: `ObjectSpace.Translation.y += z`) —
-the same knob as drone/aircraft height. So sit it on the terrain with a **Save + relaunch, no re-bake**; do NOT
-bake the offset into the rig (it would double-apply on any animated model that already carries one).
+**Grounding — the animated path has no automatic keel→z=0 (only the static path does), so a vehicle whose tyres
+stick out below the hull sinks.** Two ways to sit it on the terrain:
+- **Auto-ground (sit on terrain)** toggle — *the hands-free way.* The bake drops the model's lowest point (the
+  tyre contact) to the skeleton origin (lift by `−minZ`). It's **self-correcting** (a raw file lifts fully, an
+  already-grounded one lifts ~0 → can't double-apply) and **size-proof**: the shift is in model space, so the bake's
+  `globalScale = size/longest` scales it automatically — change Size and it stays grounded. (An earlier attempt used
+  a "wheels-on minus wheels-off" *protrusion* measure — a fixed lift that FLOATED an already-grounded file; keel→
+  origin replaced it.) Verified on the Ehrhardt: model-space lift 0.671 × size-scale (4/6) ≈ 0.45 in-game, matching
+  the hand-dialed 0.42. OFF for a flyer/hover model (it would be pinned to the ground).
+- **Position offset Z (waterline)** — the manual/runtime knob, applied at **spawn by the plugin**
+  (`ApplyPositionOffset`: `ObjectSpace.Translation.y += z`), the same one you use for drone/aircraft height. It's in
+  **in-game units**, so it does NOT scale with Size (a value dialed at Size 4 is wrong at Size 5). Use it for hover
+  height, or as a small fine-tune on top of Auto-ground — Save + relaunch, no re-bake.
 
 ## What the legacy howitzer really was (calibrate your expectations)
 

@@ -55,8 +55,9 @@ legs, landing gear, a crane, turrets. Very common for Sketchfab vehicles.
   loop). **The non-obvious trap:** rotating bones **fling off in-game** on the legacy path even though the rig is
   clean and previews perfectly — the metre→centimetre export sandwich. Bake such a rig with **Convert raw rig ON +
   Fix 100× oversize OFF** (full explanation: [Animation-Pitfalls](Animation-Pitfalls.md) → "the rotating-bone
-  fling"). Sit it on the terrain with the **Position offset Z** field — applied at runtime like drone height, no
-  re-bake.
+  fling"). Sit it on the terrain with the **Auto-ground (sit on terrain)** toggle — the bake drops the tyres to the
+  skeleton origin, self-correcting and **size-proof** (no manual Position-offset dial, and it stays grounded if you
+  change Size). Verified end-to-end on the Ehrhardt.
 
 ### Level 3 — Full character rigs, including messy auto-rigs *(the breakthrough)*
 
