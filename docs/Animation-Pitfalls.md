@@ -89,6 +89,7 @@ What finally broke the debugging loop was not a cleverer theory — it was a **m
 | Unit invisible | wrong animation id (invisible ⇒ id, frozen ⇒ constant data — the diagnostic dichotomy) | check `[Uni] clip` log lines resolve |
 | Unit frozen mid-pose | constant clip data (hollow bake) | byte-check PoseData; re-slim (cache busters below) |
 | Whole unit tiny/huge/floating | FBX unit scale | **Fix 100× oversize** per model |
+| A **rotating** part (wheel) flings off / orbits in the air while the body sits still; idle fine, only *movement* flings | the m→cm ×100 export **sandwich** mangles rotating bones' TRS (and **Fix 100× ON re-creates it**) | **Convert raw rig ON** (cancels the ×100) **+ Fix 100× OFF** — see below |
 | Baked skin scrambled on one part (wheel) | multi-material albedos missing — the animated path now generates them (glbconv) but a failed extraction falls back to a single atlas, loudly | check `[glbconv]` Console errors, re-bake |
 | Preview (custom window) shows mirrored/giant parts | Law 4 (renderer bug) | render real instances (`AddSingleGO`), never hand-rolled BakeMesh draws |
 | Settings revert / edits ignored after compile | stale window form (survives domain reload) | the Lab re-syncs on reload + **↻ Reload** button; registry file is the truth |
@@ -101,6 +102,38 @@ What finally broke the debugging loop was not a cleverer theory — it was a **m
 | Model collapses flat onto the root, limbs flung (mech) | rig has NO skin weights — parts rigidly bone-parented; the join drops the binding, all verts fall to bone #0 (Unity warns) | fixed: conversion path converts bone-parenting to full-weight vertex groups (`rig_anim.py`) |
 | Skeleton ~100× off the mesh, rigid parts become a "wing" | wrapper empty with non-identity scale (mech: 0.010) survives export; Amplitude reads bind poses without it | fixed: conversion path flattens wrapper empties before `transform_apply` |
 | Huge stretch spikes in-game, Blender preview fine (detailed rig) | over Amplitude's 256-bone GPU skinning cap (mech: 332 bones) — verts on bone index >255 get garbage | fixed: zero-weight leaf bones removed to ≤240 (weighted bones untouched) |
+
+## The rotating-bone fling — the metre→centimetre sandwich
+
+Case study: the Ehrhardt armored car (first custom **spinning-wheels** vehicle, 2026-07-24). Wheels attached and
+still at idle, but the moment the movement clip **rotated** them they flew off and orbited through the air while
+the hull stayed put. The same class of bug as the Combine soldier whose "head rode off his shoulders."
+
+**Why:** Blender's FBX exporter writes metres→centimetres by scaling the ROOT objects **×100**. Unity compensates
+with **0.01 in every skinned-mesh bindpose + a ×100 root** — a *sandwich* Amplitude's uniform-scale TRS
+composition mangles on any bone that **rotates** (a static bone composes fine; a rotating one orbits about a
+mis-scaled pivot). That is why **idle looked perfect** (0° rotation) and only movement flung. The ▶ picker and
+Unity preview also look perfect — they use a clean import, not the sandwiched bake (Law 4).
+
+**The cruel part:** the size fix and the fling fix pull in opposite directions on the *legacy* path.
+- **Fix 100× oversize (`animUnitFix`) ON** → correct render size, **but keeps the sandwich** → wheels fling.
+- **Fix 100× OFF** → no sandwich, **but the model bakes ~100× too big** ("too large to see").
+
+**The answer is neither toggle — it's `convertRig`.** The conversion path exports with `global_scale=0.01`, which
+**cancels the exporter's ×100** at the source (`rig_anim.py` ~L691-699): net node scale 1, UnitScaleFactor 1, bind
+clusters 1 — the clean profile. So a rotating-bone rig bakes correct **and** grounded with:
+
+> **Convert raw rig ON  +  Fix 100× oversize OFF.**
+
+This **overturns** the old "convertRig OFF for clean purpose-made rigs" guidance: a purpose-made rig with rotating
+bones (wheels, turret, propeller-on-bone) still needs convertRig ON, *unless* its source file happens to carry a
+0.01 object scale that already cancels the ×100 (the ReconDrone's luck — which is why the drone bakes fine OFF).
+When in doubt for a rig with any spinning part: **convertRig ON**.
+
+**Grounding is separate and is NOT a bake.** The animated path has no keel→z=0. Height is the **Position offset Z
+(waterline)** field, applied at **spawn by the plugin** (`ApplyPositionOffset`: `ObjectSpace.Translation.y += z`) —
+the same knob as drone/aircraft height. So sit it on the terrain with a **Save + relaunch, no re-bake**; do NOT
+bake the offset into the rig (it would double-apply on any animated model that already carries one).
 
 ## What the legacy howitzer really was (calibrate your expectations)
 

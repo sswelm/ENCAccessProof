@@ -48,6 +48,15 @@ legs, landing gear, a crane, turrets. Very common for Sketchfab vehicles.
     a number re-keys `*leg*` parts as a clean travel→spread pure rotation (`1` = full source width — what the
     proven howitzer uses; `0.5` = half as wide). If a sliding part isn't named "leg", rename it or expect drift.
   - the hidden far-pivot **"RecoilArm"** — fakes the barrel's recoil slide as a long-arc rotation automatically.
+- **Skinned vehicles with spinning parts (wheels, turret, rotor-on-bone):** the Ehrhardt armored car (Era5
+  Armoured Car) is a purpose-made **skinned** rig — 4 wheel bones + a turret bone — whose **wheels spin in place
+  while moving and are still when parked** (state-driven: Idle = a held frame `Spin[0..0]`, Movement = a slice
+  `Spin[5..15]`). Author the spin in Blender by rotating each wheel bone about its own axle axis (LINEAR = seamless
+  loop). **The non-obvious trap:** rotating bones **fling off in-game** on the legacy path even though the rig is
+  clean and previews perfectly — the metre→centimetre export sandwich. Bake such a rig with **Convert raw rig ON +
+  Fix 100× oversize OFF** (full explanation: [Animation-Pitfalls](Animation-Pitfalls.md) → "the rotating-bone
+  fling"). Sit it on the terrain with the **Position offset Z** field — applied at runtime like drone height, no
+  re-bake.
 
 ### Level 3 — Full character rigs, including messy auto-rigs *(the breakthrough)*
 
