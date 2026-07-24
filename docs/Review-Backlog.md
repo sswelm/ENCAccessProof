@@ -109,6 +109,10 @@ by when they'll bite.
   entries — rewrite their bone index to ours, with an axis/offset knob (donor axis conventions won't match every
   model; stamp explicitly, the props import-angles lesson). Open: does elevation stream separately from traverse
   (second bone)?; does the sim only stream for donors it considers aim-capable (a donor-matching criterion)?
+  **Intended first test candidate (2026-07-24):** an **Ehrhardt‑style armored car** ("Ehrhdrdt E V" by Red Blue Pixel
+  Studio, Fab, Standard License, FBX + PBR) — it ships **already rigged with a turret bone**, so it's the EASY case
+  (point `aimBone` at the existing turret bone; no auto-rig step). Bake static first, then remap the aim stream onto
+  the turret bone once the feature lands.
   **The static-model corollary ("turretize"):** this gives STATIC models a tracking turret with zero animation
   authoring — split turret from hull (part-name detection exists), auto-create a 2-bone rig at the turret pivot
   and bind each part full-weight (the mech bone-parent→skin conversion's exact mechanics, just with created bones),
