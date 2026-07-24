@@ -105,6 +105,12 @@ by when they'll bite.
   into the pawn material's normal slot instead of clearing it. Low priority: at map zoom (~80px units) the payoff is
   marginal, which is why flat-albedo was chosen. TEST CANDIDATE READY: the **Ehrhardt armored car** has its `_Normal`
   (+ `_ORM`) maps exported alongside the albedo, so it's a drop-in test bed if/when this is built.
+  **Related same-bucket gap — UDIM / multi-tile textures:** the bake assumes ONE texture per material in a single 0–1 UV
+  tile. Higher-fidelity source assets (e.g. the armored car's *cinematics* mesh + its 5-tile `.1001–.1005` UDIM camo
+  variants) can't be consumed directly. Today's escape hatch is a manual Blender **texture-transfer bake** (paint the
+  hi-res/UDIM source, bake down onto the single-tile game UVs) — no pipeline change needed, just per-model effort. A real
+  pipeline feature would be UDIM assembly at bake time. NOTE: a mesh authored with single-tile UVs (the armored car's
+  *game* mesh) needs none of this — it bakes fine on the current flat-albedo path.
 
 - **Aim-layer REMAP — vanilla-style turret/head target tracking (requested 2026-07-24).** Vanilla units aim by a
   procedural bone-rotation layer: the sim streams the aim angle, the presentation writes it onto specific bones on
