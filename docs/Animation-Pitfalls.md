@@ -144,6 +144,24 @@ stick out below the hull sinks.** Two ways to sit it on the terrain:
   **in-game units**, so it does NOT scale with Size (a value dialed at Size 4 is wrong at Size 5). Use it for hover
   height, or as a small fine-tune on top of Auto-ground — Save + relaunch, no re-bake.
 
+## Turretize — aim a turret (or artillery barrel) at the target
+
+The game already computes the aim and streams it as a HEADING angle into a `PawnEntry.BoneRotation0-3` slot
+(`{SkeletonBoneIndex, AxisIndex, Angle}`) — but on an injected model that slot's `SkeletonBoneIndex` is the invalid
+`0xFFFFFFFF` sentinel, so it drives nothing. **Turretize retargets that slot to your turret bone**, so the engine's
+own aim math rotates it — no per-frame trig.
+
+- **Setup (runtime, no re-bake):** Animation Lab → **Turret bone** = a bone-name substring (e.g. `Turret`; the
+  plugin substring-matches it against the renamed `b###_<orig>` bones) → **Turret aim axis** → **Save (no bake)** +
+  relaunch. Verified on the Ehrhardt armored car (first custom unit with an aiming turret).
+- **THE gotcha — the axis is per-model, and the game's default reads as PITCH, not YAW.** The streamed channel is
+  "axis 1 = up in the GAME's frame", but on your turret bone (after the convert rebake folds the rig) that lands on
+  whatever local axis it lands on — so it usually tilts (pitches/rolls) instead of yawing. There are only THREE
+  local axes: try **0 / 1 / 2** in the *Turret aim axis* dropdown until it turns the way you want. (Ehrhardt: axis
+  **2** = yaw. axis **1** pitched up, axis **0** pitched down.)
+- **Yaw for a turret, PITCH for a barrel — same feature.** The axis that's "wrong" (tilts) for a turret is exactly
+  what a mechanized howitzer / artillery barrel needs to ELEVATE at range. One knob, two unit types.
+
 ## What the legacy howitzer really was (calibrate your expectations)
 
 The "old functionality" everyone remembers was **one clip + two runtime tricks**: hold the full deploy clip at

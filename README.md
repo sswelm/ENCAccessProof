@@ -88,6 +88,12 @@ runtime-hot-loaded skin or tint ([Capabilities.md](docs/Capabilities.md)) — al
   **Auto-ground (sit on terrain)** bake toggle — drops the tyres to the skeleton origin, self-correcting and
   **size-proof** (no manual height dial, stays grounded across Size changes). Extracted from an Unreal "Game
   Template" (Fab).
+- **A turret that AIMS at the target (turretize, 2026-07-24).** The armored car's turret now yaws to track the
+  enemy — by hijacking the game's OWN aim: the engine streams a heading angle into a `PawnEntry.BoneRotation` slot
+  that lands on an invalid bone index for injected models, so we retarget that slot to the turret bone and the
+  engine's aim math drives it (no per-frame trig). Runtime-only (**Turret bone** + **Turret aim axis** in the
+  Animation Lab, Save + relaunch). The aim axis is per-model — yaw for a turret, and the *same* knob gives **pitch**
+  for a future mechanized howitzer/artillery barrel to elevate at range.
 - **The Animation Lab — animation authoring in its own dialog (2026-07-18).** `Tools ▸ HAF ▸ Animation Lab` docks as
   a tab beside the Factory: the Factory owns the *model* (file, transform, size, shading), the Lab owns the
   *animation* (clip + bone-filter pickers, fire-on-attack, deploy-on-stop + recoil, and **Save (no bake)** for

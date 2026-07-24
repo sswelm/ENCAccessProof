@@ -67,6 +67,9 @@ namespace ENCAccessProof
         public string handPropBone = "";  // bone-name SUBSTRING on OUR skeleton (bones are renamed b###_<orig>); "" = "R_Hand"
         public string handPropAngles = "";// draw-time rotation "x,y,z" (deg) stamped onto the FxMesh asset BEFORE encoding; "" stamps ZERO (neutralizes the engine's -90X class default — baked angle values don't survive the bundle). Hand-edited escape hatch: change + relaunch, no bake/rebuild.
         public bool clearAimLayer;        // clear the game's procedural BoneRotation layer for THIS model (artillery: the donor streams aim/wheel junk that twists the rig). Replaces the old blanket fire/deploy rule for STATE-DRIVEN artillery — characters need the layer (facing), a migrated howitzer needs it cleared. Runtime-only.
+        public string turretBone = "";    // TURRETIZE (2026-07-24): bone-name SUBSTRING (renamed b###_<orig>) of a turret to aim at the target. The game already streams its aim/heading angle into a BoneRotation slot on an INVALID bone index — we retarget that slot's SkeletonBoneIndex to THIS bone so the engine's own aim yaws our turret. "" = no turret aim. Runtime-only (no re-bake).
+        public int turretBoneIdx = -2;    // cached bone index for turretBone (-2 = not resolved yet, -1 = not found). Resolved once from e.skeleton.BoneInfos.
+        public int turretAxis = -1;       // aim-axis override for the turret bone: -1 = keep the game's streamed axis (1 = "up" in ITS frame, which on a bone pointing along its own length reads as PITCH); 0/1/2 = force the bone's local X/Y/Z. A vehicle TURRET needs its YAW axis; a mechanized HOWITZER/ARTILLERY barrel needs its PITCH axis — hence per-model.
         public object handPropLayer;      // session-scoped: our PRIVATE clone of the borrowed weapon output layer, painted with the prop's own atlas (<prop>_Atlas)
         public UnityEngine.Texture2D propAtlasTex;   // session-scoped: the prop atlas — repainted EVERY TICK like the unit retexture (the game resets the material; a one-shot paint flip-flopped between sessions)
         public readonly Dictionary<long, UnityEngine.Vector3> stateLastPos = new Dictionary<long, UnityEngine.Vector3>();  // MAIN thread poll: unit GUID -> last render pos
@@ -459,6 +462,8 @@ namespace ENCAccessProof
                                 respawnAfterLoad = (bool?)m["respawnAfterLoad"] ?? false,
                                 freezeDonorAnim = (bool?)m["freezeDonorAnim"] ?? false,
                                 clearAimLayer = (bool?)m["clearAimLayer"] ?? false,
+                                turretBone = (string)m["turretBone"] ?? "",
+                                turretAxis = (int?)m["turretAxis"] ?? -1,
                                 fireOnAttack = (bool?)m["fireOnAttack"] ?? false,
                                 deployOnStop = (bool?)m["deployOnStop"] ?? false,
                                 engineSound = (bool?)m["engineSound"] ?? false,
@@ -560,6 +565,8 @@ namespace ENCAccessProof
                 var hpg = Regex.Matches(text, "\"handPropGuid\"\\s*:\\s*\"([^\"]*)\"");     // parity: hand-prop collection guid csv
                 var hpm = Regex.Matches(text, "\"handPropMat\"\\s*:\\s*\"([^\"]*)\"");      // parity: hand-prop borrowed material guid csv
                 var hpb = Regex.Matches(text, "\"handPropBone\"\\s*:\\s*\"([^\"]*)\"");     // parity: hand-prop bone-name substring
+                var tbn = Regex.Matches(text, "\"turretBone\"\\s*:\\s*\"([^\"]*)\"");       // parity: turret aim bone-name substring
+                var tax = Regex.Matches(text, "\"turretAxis\"\\s*:\\s*(-?\\d+)");           // parity: turret aim-axis override
                 var hpa = Regex.Matches(text, "\"handPropAngles\"\\s*:\\s*\"([^\"]*)\"");   // parity: hand-prop draw-time import angles csv
                 int G(Match m, int g) => int.TryParse(m.Groups[g].Value, out var r) ? r : 0;
                 float F(Match m, int g) => float.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var r) ? r : 0f;
@@ -628,6 +635,8 @@ namespace ENCAccessProof
                         handPropGuid = i < hpg.Count ? hpg[i].Groups[1].Value : "",
                         handPropMat = i < hpm.Count ? hpm[i].Groups[1].Value : "",
                         handPropBone = i < hpb.Count ? hpb[i].Groups[1].Value : "",
+                        turretBone = i < tbn.Count ? tbn[i].Groups[1].Value : "",
+                        turretAxis = i < tax.Count && int.TryParse(tax[i].Groups[1].Value, out var _tax) ? _tax : -1,
                         handPropAngles = i < hpa.Count ? hpa[i].Groups[1].Value : "",
                     });
                 }
@@ -1779,6 +1788,7 @@ namespace ENCAccessProof
             // soldier's ripped-off head). SanitizeAimLayer wraps such angles into 0..360 — same orientation, sane
             // magnitude — instead of zeroing (which would kill facing).
             if (((e.fireOnAttack || e.deployOnStop) && !e.animStateDriven) || e.clearAimLayer) ClearAimLayer(entry);   // legacy artillery rule, OR the explicit per-model knob (a STATE-DRIVEN howitzer still needs the donor's aim/wheel junk cleared; characters keep the layer for facing)
+            else if (!string.IsNullOrEmpty(e.turretBone)) TurretizeAimLayer(entry, e);   // retarget the game's aim/heading angle onto OUR turret bone (a vehicle turret tracks the target)
             else SanitizeAimLayer(entry);
             ApplyPositionOffset(e, entry);
             ApplyScale(e, entry);
@@ -1973,6 +1983,57 @@ namespace ENCAccessProof
                 poseTime = elapsed >= dur ? 0f : elapsed / dur;        // one pass, then rest (Update prunes finished fires)
             }
             return poseTime;
+        }
+
+        // TURRETIZE: aim a vehicle turret at the target by hijacking the game's OWN aim layer. The engine streams a
+        // HEADING angle (AxisIndex 1 = up) into a BoneRotation slot whose SkeletonBoneIndex is the INVALID sentinel on
+        // our injected models (so it hits nothing). We repoint that slot at OUR turret bone — the engine's aim yaw then
+        // rotates the turret, no per-frame trig. Wheel-spin junk (axis 0) is still zeroed (our wheels are baked). The
+        // turret bone index is resolved once from the skeleton's BoneInfos (same substring match as the hand prop).
+        static bool turretLogged;
+        static void TurretizeAimLayer(object entry, ModelEntry e)
+        {
+            if (e.turretBoneIdx == -2)   // resolve once
+            {
+                e.turretBoneIdx = -1;
+                if (e.skeleton != null && GetMember(e.skeleton, "BoneInfos") is Array bones)
+                    for (int i = 0; i < bones.Length; i++)
+                    {
+                        var n = GetMember(bones.GetValue(i), "Name")?.ToString() ?? "";
+                        if (n.IndexOf(e.turretBone, StringComparison.OrdinalIgnoreCase) >= 0) { e.turretBoneIdx = i; break; }
+                    }
+                Plugin.Log.LogInfo($"[Turret] '{e.resourceName}' turret bone '{e.turretBone}' -> skeleton index {e.turretBoneIdx}");
+            }
+            if (e.turretBoneIdx < 0) { SanitizeAimLayer(entry); return; }   // no such bone — fall back to the safe path
+            for (int i = 0; i < 4; i++)
+            {
+                var br = GetMember(entry, BoneRotationNames[i]);
+                if (br == null) continue;
+                long axis, boneIdx;
+                try { axis = Convert.ToInt64(GetMember(br, "AxisIndex")); boneIdx = Convert.ToInt64(GetMember(br, "SkeletonBoneIndex")); } catch { continue; }
+                bool invalid = boneIdx < 0 || boneIdx >= 100000;           // the 0xFFFFFFFF sentinel (aim meant for us)
+                if (!invalid) continue;                                    // a real game bone — leave it
+                if (axis == 1)                                             // HEADING channel -> aim our turret
+                {
+                    SetMember(br, "SkeletonBoneIndex", (uint)e.turretBoneIdx);
+                    if (e.turretAxis >= 0)                                  // override the rotation axis (yaw for a turret, pitch for an artillery barrel)
+                    {
+                        object curAx = GetMember(br, "AxisIndex"); Type axT = curAx?.GetType();
+                        object newAx = (axT != null && axT.IsEnum) ? Enum.ToObject(axT, e.turretAxis)
+                                     : (axT != null) ? Convert.ChangeType((long)e.turretAxis, axT)
+                                     : (object)(uint)e.turretAxis;
+                        SetMember(br, "AxisIndex", newAx);
+                    }
+                    SetMember(entry, BoneRotationNames[i], br);
+                    if (!turretLogged) { turretLogged = true; float ang = 0f; try { ang = Convert.ToSingle(GetMember(br, "Angle")); } catch { }
+                        Plugin.Log.LogInfo($"[Turret] '{e.resourceName}' slot {i} heading angle {ang:0.#}° -> bone {e.turretBoneIdx}, axis {(e.turretAxis >= 0 ? e.turretAxis.ToString() : "keep")}"); }
+                }
+                else                                                       // wheel-spin (axis 0) etc. -> zero
+                {
+                    float a; try { a = Convert.ToSingle(GetMember(br, "Angle")); } catch { continue; }
+                    if (a != 0f) { SetMember(br, "Angle", 0f); SetMember(entry, BoneRotationNames[i], br); }
+                }
+            }
         }
 
         // Clear the procedural AIM layer (PawnEntry.BoneRotation0-3 = SkeletonBoneIndex/AxisIndex/Angle): the game aims an
