@@ -151,7 +151,18 @@ by when they'll bite.
   fragment; every donor lists only its body mesh) spawned at the AA gun's `Canon` weapon socket, which doesn't exist
   on our renamed `b###_` rig → it lands off-side. The spawn is NOT in `PawnRangedFightSequence` (stores the shooter
   only) nor `PresentationPawn` (3525 lines, no muzzle/socket) — it's buried in the **HgFx projectile/particle
-  system**. WHAT'S NEEDED for the session: (1) decompile the HgFx projectile spawn to find where it reads the muzzle
+  system**. CHAIN TRACED (2026-07-24): the projectile+muzzle fire from a **FireProjectile mecanim event** on the
+  attack clip -- `PresentationSubPawn` scans the clip for `MecanimEvent.AlterationType.FireProjectile` and stores it
+  as `SimpleAttackMecanimEvent` (~L1255-1267), processed by `MecanimEventInterpreter` (`Amplitude.Mercury.Animation`)
+  as the clip plays. The bone->world resolver is **`PresentationSubPawn.GetBoneTRS(boneName)`** (~L378:
+  `GetBoneIndex(boneName)` -> `AnimationManager.GetBoneTRS`). The AIM layer resolves the SAME way (SubPawn ~L639/657:
+  `GetBoneIndex(reference.BoneName)` -- the donor's `Azimuth`/`Canon` names), so the muzzle socket almost certainly
+  resolves by the donor's weapon-bone NAME -> invalid on our `b###_` rig -> off-side. Fire info via
+  `IAlterationFireProjectileInfoProvider` (SubPawn L179/813 = the pawn). NEXT: decompile `MecanimEventInterpreter`'s
+  FireProjectile handling (NESTED-type friction with ilspycmd 8.2 -> use dnSpy or a newer ilspycmd) to pin the
+  socket-NAME source + the muzzle-FX spawn call. QUICK-ALT CAVEAT: the `ProjectileAsset` is SHARED across all AA guns,
+  so nulling its `Muzzle` in place breaks the real anti-air units -> needs a per-unit projectile OVERRIDE.
+  WHAT'S NEEDED for the session: (1) decompile the HgFx projectile spawn to find where it reads the muzzle
   socket + how it resolves the fire-point transform (name vs index, against which skeleton); (2) Harmony-hook that
   spawn and re-anchor the position to a central/turret bone of OUR skeleton (`muzzleBone` knob, the `handPropBone`
   pattern) — or, if it's a data socket, add/rename a matching bone at bake. QUICK ALT (no relocate): null the
